@@ -34,7 +34,7 @@ jobs:
 
       - name: Run DAYS-BOT
         run: python main.py ${{ github.event.inputs.mode || '' }}
-       env:
+        env:
           ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           POLYGON_API_KEY:   ${{ secrets.POLYGON_API_KEY }}
