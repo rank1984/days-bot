@@ -2,12 +2,12 @@ name: DAYS-BOT
 
 on:
   schedule:
-    - cron: "30 12 * * 1-5"
-    - cron: "45 13 * * 1-5"
+    - cron: "30 12 * * 1-5"   # 15:30 ישראל — Universe + Watchlist
+    - cron: "45 13 * * 1-5"   # 16:45 ישראל — Final Alerts
   workflow_dispatch:
     inputs:
       mode:
-        description: "Run mode: universe | alerts | full"
+        description: "universe | alerts | full"
         required: false
         default: "full"
 
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Restore database cache
+      - name: Restore database
         uses: actions/cache@v4
         with:
           path: database/database.db
@@ -43,7 +43,7 @@ jobs:
           TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
 
-      - name: Save database cache
+      - name: Save database
         if: always()
         uses: actions/cache/save@v4
         with:
