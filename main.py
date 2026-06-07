@@ -7,7 +7,7 @@ from scanner.premarket import scan_premarket
 from scanner.sympathy  import tag_sympathy
 from scanner.scoring   import score_candidates
 from database.db       import init_db, save_alert, already_sent_today
-from telegram.sender   import send_message, format_alert
+from telegram.sender   import send_message, format_alert, format_no_candidates
 from utils.config      import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, MIN_SCORE
 
 ET = pytz.timezone("America/New_York")
@@ -28,8 +28,8 @@ def run_alert_pipeline():
 
     if candidates.empty:
         print("[Main] No candidates. Exiting.")
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-                     f"🤖 DAYS-BOT {today}\nNo candidates above threshold today.")
+     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+                     format_no_candidates(today, len(universe)))
         return
 
     candidates = tag_sympathy(candidates)
