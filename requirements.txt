@@ -4,4 +4,3 @@ numpy
 requests
 pytz
 python-dotenv
-yfinance
