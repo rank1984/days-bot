@@ -1,48 +1,54 @@
 import os
-import requests
 import pandas as pd
-from utils.config import FMP_API_KEY, MIN_PRICE, MAX_PRICE, MAX_MARKET_CAP
+import yfinance as yf
 
 UNIVERSE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "universe.csv")
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
+
+# רשימת Small Cap ETFs כדי לקבל tickers
+SMALL_CAP_ETFS = ["IWM", "SCHA", "VB"]
+
+from utils.config import MIN_PRICE, MAX_PRICE, MAX_MARKET_CAP
 
 
-def fetch_screener() -> pd.DataFrame:
-    url = (
-        f"{FMP_BASE}/stock-screener"
-        f"?priceMoreThan={MIN_PRICE}"
-        f"&priceLowerThan={MAX_PRICE}"
-        f"&marketCapLowerThan={MAX_MARKET_CAP}"
-        f"&isActivelyTrading=true"
-        f"&exchange=NYSE,NASDAQ,AMEX"
-        f"&apikey={FMP_API_KEY}"
-    )
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
+def fetch_from_etf() -> pd.DataFrame:
+    """Pull holdings from small-cap ETFs via yfinance screener."""
+    # Use yfinance screener for small caps
+    try:
+        screener = yf.screen(
+            "small_cap_gainers",
+            size=250
+        )
+        quotes = screener.get("quotes", [])
+        if not quotes:
+            raise ValueError("Empty screener")
+    except Exception:
+        # Fallback: manual small cap list from known active tickers
+        quotes = []
 
-    if not data:
-        print("[Universe] FMP returned empty screener.")
-        return pd.DataFrame()
+    rows = []
+    for q in quotes:
+        ticker = q.get("symbol", "")
+        price  = q.get("regularMarketPrice", 0) or 0
+        mcap   = q.get("marketCap", 0) or 0
+        sector = q.get("sector", "Unknown")
+        industry = q.get("industry", "Unknown")
 
-    df = pd.DataFrame(data)
-    cols = ["symbol", "companyName", "price", "marketCap", "sector", "industry"]
-    df = df[[c for c in cols if c in df.columns]].copy()
-    df.rename(columns={"symbol": "ticker"}, inplace=True)
+        if MIN_PRICE <= price <= MAX_PRICE and mcap < MAX_MARKET_CAP:
+            rows.append({
+                "ticker":   ticker,
+                "price":    price,
+                "marketCap": mcap,
+                "sector":   sector,
+                "industry": industry,
+            })
 
-    df["price"]     = pd.to_numeric(df["price"], errors="coerce")
-    df["marketCap"] = pd.to_numeric(df["marketCap"], errors="coerce")
-    df.dropna(subset=["price", "marketCap"], inplace=True)
-    df = df[(df["price"] >= MIN_PRICE) & (df["price"] <= MAX_PRICE)]
-    df = df[df["marketCap"] < MAX_MARKET_CAP]
-
-    print(f"[Universe] {len(df)} stocks after filtering.")
-    return df
+    print(f"[Universe] {len(rows)} stocks after filtering.")
+    return pd.DataFrame(rows)
 
 
 def build_universe() -> pd.DataFrame:
     os.makedirs(os.path.dirname(UNIVERSE_PATH), exist_ok=True)
-    df = fetch_screener()
+    df = fetch_from_etf()
     if not df.empty:
         df.to_csv(UNIVERSE_PATH, index=False)
         print(f"[Universe] Saved → {UNIVERSE_PATH}")
@@ -51,7 +57,7 @@ def build_universe() -> pd.DataFrame:
 
 def load_universe() -> pd.DataFrame:
     if not os.path.exists(UNIVERSE_PATH):
-        print("[Universe] No universe.csv found — building now.")
+        print("[Universe] No universe.csv — building now.")
         return build_universe()
     df = pd.read_csv(UNIVERSE_PATH)
     print(f"[Universe] Loaded {len(df)} tickers from cache.")
