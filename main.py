@@ -21,15 +21,18 @@ def run_universe_build():
 def run_alert_pipeline():
     print("=== [DAYS-BOT] Phase 2: Scan + Score + Alert ===")
     init_db()
-    today = datetime.now(ET).strftime("%Y-%m-%d")
+    today    = datetime.now(ET).strftime("%Y-%m-%d")
+    universe = load_universe()
 
-    universe   = load_universe()
     candidates = scan_premarket(universe)
 
     if candidates.empty:
         print("[Main] No candidates. Exiting.")
-     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-                     format_no_candidates(today, len(universe)))
+        send_message(
+            TELEGRAM_TOKEN,
+            TELEGRAM_CHAT_ID,
+            format_no_candidates(today, len(universe))
+        )
         return
 
     candidates = tag_sympathy(candidates)
@@ -38,6 +41,11 @@ def run_alert_pipeline():
 
     if top.empty:
         print(f"[Main] No candidates scored above {MIN_SCORE}.")
+        send_message(
+            TELEGRAM_TOKEN,
+            TELEGRAM_CHAT_ID,
+            format_no_candidates(today, len(universe))
+        )
         return
 
     sent = 0
