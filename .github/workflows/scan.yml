@@ -1,0 +1,50 @@
+name: DAYS-BOT
+
+on:
+  schedule:
+    - cron: "30 12 * * 1-5"
+    - cron: "45 13 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode: universe | alerts | full"
+        required: false
+        default: "full"
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore database cache
+        uses: actions/cache@v4
+        with:
+          path: database/database.db
+          key: days-bot-db-${{ github.run_id }}
+          restore-keys: |
+            days-bot-db-
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run DAYS-BOT
+        run: python main.py ${{ github.event.inputs.mode || '' }}
+        env:
+          ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY:       ${{ secrets.FMP_API_KEY }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Save database cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: database/database.db
+          key: days-bot-db-${{ github.run_id }}
