@@ -1,0 +1,7 @@
+alpaca-py
+pandas
+numpy
+requests
+pytz
+python-dotenv
+yfinance
