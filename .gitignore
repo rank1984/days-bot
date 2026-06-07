@@ -1,0 +1,6 @@
+.env
+*.db
+data/universe.csv
+__pycache__/
+*.pyc
+.DS_Store
