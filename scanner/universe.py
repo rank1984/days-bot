@@ -1,10 +1,11 @@
 """
-universe.py — Alpaca Universe Builder (ללא Polygon)
+universe.py — Alpaca Universe Builder
 ----------------------------------------------------
 משתמש ב-Alpaca Assets API + Bars API:
 1. שולף רשימת מניות אקטיביות מ-Alpaca (חינמי)
 2. מוריד נתוני יום קודם בקריאה אחת (batch)
 3. מסנן לפי מחיר, volume
+4. שולף float מ-FMP (batch של 50)
 """
 
 import os
@@ -13,7 +14,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from utils.config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
-    MIN_PRICE, MAX_PRICE, MIN_AVG_VOLUME
+    MIN_PRICE, MAX_PRICE, MIN_AVG_VOLUME,
+    FMP_API_KEY,
 )
 
 UNIVERSE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "universe.csv")
@@ -48,7 +50,7 @@ def fetch_active_assets() -> list:
 
 
 def fetch_prev_day_bars(tickers: list) -> pd.DataFrame:
-    """נתוני יום קודם לכולם — batch אחד של 500."""
+    """נתוני יום קודם לכולם — batch של 500."""
     date = get_prev_trading_date()
     rows = []
     BATCH = 500
@@ -90,6 +92,39 @@ def fetch_prev_day_bars(tickers: list) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def fetch_floats(tickers: list) -> dict:
+    """
+    שולף float shares מ-FMP בקריאות batch של 50.
+    מחזיר dict: {ticker: float_shares}
+    """
+    float_map = {}
+    BATCH = 50
+
+    for i in range(0, len(tickers), BATCH):
+        batch = tickers[i:i + BATCH]
+        symbols_str = ",".join(batch)
+        try:
+            url  = f"https://financialmodelingprep.com/api/v3/shares_float"
+            params = {"symbol": symbols_str, "apikey": FMP_API_KEY}
+            resp = requests.get(url, params=params, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, list):
+                for item in data:
+                    sym = item.get("symbol", "")
+                    fl  = item.get("floatShares") or item.get("float") or 0
+                    if sym and fl:
+                        float_map[sym] = int(fl)
+        except Exception as e:
+            print(f"[Universe] Float batch {i//BATCH+1} error: {e}")
+
+        if (i // BATCH + 1) % 5 == 0:
+            print(f"[Universe] Float batch {i//BATCH+1}: {min(i+BATCH, len(tickers))}/{len(tickers)}")
+
+    print(f"[Universe] Got float for {len(float_map)}/{len(tickers)} tickers.")
+    return float_map
+
+
 def build_universe() -> pd.DataFrame:
     os.makedirs(os.path.dirname(UNIVERSE_PATH), exist_ok=True)
     tickers = fetch_active_assets()
@@ -105,9 +140,14 @@ def build_universe() -> pd.DataFrame:
         (df["price"] <= MAX_PRICE) &
         (df["volume"] >= MIN_AVG_VOLUME)
     ].copy()
+
     df["sector"]   = "Unknown"
     df["industry"] = "Unknown"
-    df["float"]    = 0
+
+    # שלוף float מ-FMP
+    float_map  = fetch_floats(df["ticker"].tolist())
+    df["float"] = df["ticker"].map(float_map).fillna(0).astype(int)
+
     df.sort_values("volume", ascending=False, inplace=True)
     df.reset_index(drop=True, inplace=True)
     print(f"[Universe] {before} → {len(df)} after filter.")
