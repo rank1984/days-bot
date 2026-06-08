@@ -21,12 +21,11 @@ PREFERRED_FLOAT      = 10_000_000
 
 # ── Premarket Filters ─────────────────────────────────────
 MIN_GAP_PCT          = 5.0
-MIN_PREMARKET_VOL    = 50_000
-MIN_RVOL             = 1.5
+MIN_PREMARKET_VOL = 10_000
+MIN_RVOL             = 0.0
 
 # שדרוג #5 — Dollar Volume
-MIN_DOLLAR_VOLUME    = 1_000_000       # מינימום $1M traded בפרימרקט
-
+MIN_DOLLAR_VOLUME = 100_000
 # ── Scoring ───────────────────────────────────────────────
 MIN_SCORE            = 60
 
