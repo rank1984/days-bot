@@ -1,16 +1,15 @@
 """
-premarket.py — שדרוגים #5 + #7
+premarket.py — שדרוגים #5 + #7 (תיקון Feed פרימרקט)
 --------------------------------
-#5: Dollar Volume = price × volume (לא רק volume)
+#5: Dollar Volume = price × volume
 #7: RVOL אמיתי = volume עכשיו / ממוצע באותה שעה
-
-תיקון: Alpaca הסיר snap.minute_bars — שולפים נפח פרימרקט דרך get_stock_bars
 """
 
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
+from alpaca.data.enums import DataFeed  # <-- הוספת ה-Enum של הפידים
 from datetime import datetime, timedelta
 import pytz
 
@@ -26,8 +25,7 @@ ET     = pytz.timezone("America/New_York")
 
 def get_premarket_volume(ticker: str) -> int:
     """
-    שולף נפח פרימרקט מ-04:00 עד עכשיו דרך get_stock_bars.
-    מחליף את snap.minute_bars שהוסר מה-API.
+    שולף נפח פרימרקט מ-04:00 עד עכשיו עם פיד מפורש (IEX).
     """
     try:
         now_et          = datetime.now(ET)
@@ -38,20 +36,29 @@ def get_premarket_volume(ticker: str) -> int:
             timeframe=TimeFrame.Minute,
             start=premarket_start,
             end=now_et,
+            feed=DataFeed.IEX  # <-- תיקון: הגדרת פיד מפורש לחשבונות חינמיים/Paper
         )
         bars = client.get_stock_bars(req)
-        ticker_bars = bars.get(ticker) if hasattr(bars, "get") else bars[ticker] if ticker in bars else None
+        
+        # גישה בטוחה ישירות למילון הנתונים ללא סיכון לקריסת אינדקסים
+        ticker_bars = bars.data.get(ticker) if (bars and hasattr(bars, "data")) else None
+
         if not ticker_bars:
+            print(f"[DEBUG-VOL] {ticker} no bars returned")
             return 0
-        return int(sum(b.volume for b in ticker_bars))
-    except Exception:
+            
+        total = int(sum(b.volume for b in ticker_bars))
+        print(f"[DEBUG-VOL] {ticker} bars={len(ticker_bars)} vol={total}")
+        return total
+        
+    except Exception as e:
+        print(f"[DEBUG-VOL] {ticker} exception: {e}")
         return 0
 
 
 def get_historical_rvol(ticker: str, current_volume: int) -> float:
     """
     שדרוג #7: RVOL אמיתי — משווה לאותה שעה בימים קודמים.
-    שולף 10 ימים אחרונים ומחשב ממוצע volume עד שעה זו.
     """
     try:
         now_et    = datetime.now(ET)
@@ -62,9 +69,12 @@ def get_historical_rvol(ticker: str, current_volume: int) -> float:
             start=start,
             end=now_et,
             limit=10,
+            feed=DataFeed.IEX  # <-- מיושר לפי אותו פיד של פרימרקט
         )
         bars = client.get_stock_bars(req)
-        ticker_bars = bars.get(ticker) if hasattr(bars, "get") else bars[ticker] if ticker in bars else None
+        
+        ticker_bars = bars.data.get(ticker) if (bars and hasattr(bars, "data")) else None
+
         if not ticker_bars or len(ticker_bars) < 3:
             return 0.0
 
@@ -79,7 +89,8 @@ def get_historical_rvol(ticker: str, current_volume: int) -> float:
             return 0.0
 
         return round(current_volume / expected_volume, 2)
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG ERROR] Failed to get RVOL for {ticker}: {e}")
         return 0.0
 
 
@@ -114,13 +125,11 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
 
             gap_pct = ((latest - prev_close) / prev_close) * 100
             
-            # תיקון ההזחה: בודק קודם כל אם ה-Gap מתאים לדרישות המינימום
             if gap_pct < MIN_GAP_PCT:
                 continue
 
-            # שליפת נפח פרימרקט דרך API (פעם אחת בלבד בשביל ביצועים)
+            # קריאה לפונקציה המעודכנת
             pm_volume = get_premarket_volume(ticker)
-            print(f"[DEBUG] {ticker} gap={gap_pct:.1f}% pm_vol={pm_volume}")
 
             if pm_volume < MIN_PREMARKET_VOL:
                 continue
