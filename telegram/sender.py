@@ -1,8 +1,7 @@
 """
-telegram/sender.py — שדרוגים #9 + #10
----------------------------------------
-#9:  הודעה משודרגת עם Float, News, Leader, Risk
-#10: Watchlist בבוקר + Final Alerts בפתיחה
+telegram/sender.py
+------------------
+Watchlist בוקר + Final Alerts עם דירוג AI
 """
 
 import requests
@@ -24,80 +23,106 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 
 
 def _float_label(f: int) -> str:
-    if f == 0:            return "לא ידוע"
-    if f < 5_000_000:     return f"{f/1_000_000:.1f}M 🔥"
-    if f < 10_000_000:    return f"{f/1_000_000:.1f}M ✅"
-    if f < 20_000_000:    return f"{f/1_000_000:.1f}M"
-    return f"{f/1_000_000:.0f}M ⚠️"
+    if f == 0:               return "?"
+    if f < 5_000_000:        return f"{f/1_000_000:.1f}M 🔥"
+    if f < 10_000_000:       return f"{f/1_000_000:.1f}M ✅"
+    if f < 20_000_000:       return f"{f/1_000_000:.1f}M"
+    return                          f"{f/1_000_000:.0f}M ⚠️"
+
+
+def _grade_emoji(grade: str) -> str:
+    return {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🔴"}.get(grade, "⚪")
 
 
 def _risk_label(score: float, gap: float, float_shares: int) -> str:
-    """הערכת סיכון פשוטה."""
     risk = 0
-    if gap > 30:           risk += 1
-    if float_shares < 3_000_000 and float_shares > 0: risk += 1
-    if score < 70:         risk += 1
-
-    if risk == 0:   return "🟢 נמוך"
-    if risk == 1:   return "🟡 בינוני"
-    return          "🔴 גבוה"
-
-
-def format_alert(row: dict) -> str:
-    """שדרוג #9 — הודעת התראה מלאה."""
-    float_label   = _float_label(int(row.get("float", 0)))
-    catalyst      = row.get("catalyst", "—")
-    is_leader     = row.get("is_leader", False)
-    leader_ticker = row.get("leader", "")
-    risk          = _risk_label(row.get("score", 0), row.get("gap_pct", 0), int(row.get("float", 0)))
-    dollar_vol    = row.get("dollar_volume", 0)
-    dvol_str      = f"${dollar_vol/1_000_000:.1f}M" if dollar_vol >= 1_000_000 else f"${dollar_vol:,.0f}"
-
-    leader_line = ""
-    if is_leader:
-        leader_line = "👑 <b>Sector Leader</b>\n"
-    elif leader_ticker:
-        leader_line = f"🔗 <b>Sympathy:</b> {leader_ticker}\n"
-
-    return (
-        f"🚀 <b>DAYS-BOT — התראת מסחר</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>מניה:</b>      {row['ticker']}\n"
-        f"💰 <b>מחיר:</b>      ${row['price']:.2f}\n"
-        f"📈 <b>גאפ:</b>       +{row['gap_pct']:.1f}%\n"
-        f"📊 <b>RVOL:</b>      {row.get('vol_ratio', 0):.1f}x\n"
-        f"💵 <b>$ Volume:</b>  {dvol_str}\n"
-        f"🏷️ <b>Float:</b>     {float_label}\n"
-        f"📰 <b>Catalyst:</b>  {catalyst}\n"
-        f"{leader_line}"
-        f"🏭 <b>תעשייה:</b>   {row.get('industry', 'לא ידוע')}\n"
-        f"⭐ <b>ציון:</b>      {row.get('score', 0):.0f} / 100\n"
-        f"⚠️ <b>סיכון:</b>    {risk}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🚫 לא המלצת השקעה"
-    )
+    if gap > 30:                                      risk += 1
+    if 0 < float_shares < 3_000_000:                 risk += 1
+    if score < 70:                                    risk += 1
+    return ["🟢 נמוך", "🟡 בינוני", "🔴 גבוה"][min(risk, 2)]
 
 
 def format_watchlist(candidates: list[dict], date: str) -> str:
-    """שדרוג #10 — Morning Watchlist (Phase 1)."""
+    """Watchlist בוקר — תמציתי וברור."""
     lines = [
         f"👀 <b>DAYS-BOT — Watchlist בוקר</b>",
         f"📅 {date}",
         f"━━━━━━━━━━━━━━━━━━",
     ]
+
     for i, row in enumerate(candidates[:15], 1):
-        float_m = int(row.get("float", 0)) / 1_000_000
-        float_s = f"{float_m:.1f}M" if float_m > 0 else "?"
+        ticker  = row["ticker"]
+        gap     = row.get("gap_pct", 0)
+        rvol    = row.get("vol_ratio", 0)
+        score   = row.get("score", 0)
+        grade   = row.get("ai_grade", "?")
+        float_s = _float_label(int(row.get("float", 0)))
+        emoji   = _grade_emoji(grade)
+        catalyst = row.get("catalyst", "")
+        cat_str  = f"  📰{catalyst}" if catalyst and catalyst != "—" else ""
+
         lines.append(
-            f"{i}. <b>{row['ticker']}</b>  "
-            f"+{row['gap_pct']:.1f}%  "
-            f"RVOL:{row.get('vol_ratio', 0):.1f}x  "
-            f"Float:{float_s}  "
-            f"⭐{row.get('score', 0):.0f}"
+            f"{i}. <b>{ticker}</b>  +{gap:.1f}%  "
+            f"RVOL:{rvol:.1f}x  Float:{float_s}  "
+            f"{emoji}AI:{grade}  ⭐{score:.0f}"
+            f"{cat_str}"
         )
-    lines.append(f"━━━━━━━━━━━━━━━━━━")
-    lines.append(f"⏰ Final Alerts בפתיחה")
+
+    lines += [
+        f"━━━━━━━━━━━━━━━━━━",
+        f"⏰ Final Alerts בפתיחה",
+    ]
     return "\n".join(lines)
+
+
+def format_alert(row: dict) -> str:
+    """התראת מסחר מלאה לפתיחה."""
+    ticker     = row["ticker"]
+    price      = row.get("price", 0)
+    gap        = row.get("gap_pct", 0)
+    rvol       = row.get("vol_ratio", 0)
+    score      = row.get("score", 0)
+    grade      = row.get("ai_grade", "?")
+    ai_reason  = row.get("ai_reason", "")
+    catalyst   = row.get("catalyst", "—")
+    float_s    = _float_label(int(row.get("float", 0)))
+    risk       = _risk_label(score, gap, int(row.get("float", 0)))
+    dvol       = row.get("dollar_volume", 0)
+    dvol_str   = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol:,.0f}"
+    grade_e    = _grade_emoji(grade)
+
+    is_leader     = row.get("is_leader", False)
+    leader_ticker = row.get("leader", "")
+    if is_leader:
+        leader_line = "👑 <b>Sector Leader</b>\n"
+    elif leader_ticker:
+        leader_line = f"🔗 <b>Sympathy:</b> {leader_ticker}\n"
+    else:
+        leader_line = ""
+
+    ai_line = ""
+    if grade != "?" and ai_reason:
+        ai_line = f"{grade_e} <b>AI:</b>       {grade} — {ai_reason}\n"
+    elif grade != "?":
+        ai_line = f"{grade_e} <b>AI:</b>       {grade}\n"
+
+    return (
+        f"🚀 <b>DAYS-BOT — התראת מסחר</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>מניה:</b>      {ticker}\n"
+        f"💰 <b>מחיר:</b>      ${price:.2f}\n"
+        f"📈 <b>גאפ:</b>       +{gap:.1f}%\n"
+        f"📊 <b>RVOL:</b>      {rvol:.1f}x\n"
+        f"💵 <b>$ Volume:</b>  {dvol_str}\n"
+        f"🏷️ <b>Float:</b>     {float_s}\n"
+        f"📰 <b>Catalyst:</b>  {catalyst}\n"
+        f"{leader_line}"
+        f"{ai_line}"
+        f"⭐ <b>ציון:</b>      {score:.0f}/100\n"
+        f"⚠️ <b>סיכון:</b>    {risk}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🚫 לא המלצת השקעה"
+    )
 
 
 def format_no_candidates(date: str, universe_size: int = 0) -> str:
@@ -106,8 +131,7 @@ def format_no_candidates(date: str, universe_size: int = 0) -> str:
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📅 <b>תאריך:</b> {date}\n"
         f"🔍 <b>מניות שנסרקו:</b> {universe_size}\n"
-        f"😴 <b>תוצאה:</b> לא נמצאו מועמדות\n"
-        f"     שעברו את הסף היום\n"
+        f"😴 <b>תוצאה:</b> לא נמצאו מועמדות שעברו את הסף היום\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⏰ הסריקה הבאה מחר בפתיחה"
     )
