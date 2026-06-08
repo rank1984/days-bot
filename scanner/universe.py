@@ -5,17 +5,18 @@ universe.py — Alpaca Universe Builder
 1. שולף רשימת מניות אקטיביות מ-Alpaca (חינמי)
 2. מוריד נתוני יום קודם בקריאה אחת (batch)
 3. מסנן לפי מחיר, volume
-4. שולף float מ-FMP (batch של 50)
+4. שולף float (Shares Outstanding) מ-Finnhub — חינמי עם מנגנון קצב קריאות
 """
 
 import os
+import time
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
 from utils.config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MIN_PRICE, MAX_PRICE, MIN_AVG_VOLUME,
-    FMP_API_KEY,
+    FINNHUB_API_KEY,
 )
 
 UNIVERSE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "universe.csv")
@@ -93,34 +94,25 @@ def fetch_prev_day_bars(tickers: list) -> pd.DataFrame:
 
 
 def fetch_floats(tickers: list) -> dict:
-    """
-    שולף float shares מ-FMP בקריאות batch של 50.
-    מחזיר dict: {ticker: float_shares}
-    """
+    """שולף float מ-Finnhub — חינמי ומונע חסימות קצב."""
     float_map = {}
-    BATCH = 50
-
-    for i in range(0, len(tickers), BATCH):
-        batch = tickers[i:i + BATCH]
-        symbols_str = ",".join(batch)
+    for i, ticker in enumerate(tickers):
         try:
-            url  = f"https://financialmodelingprep.com/api/v3/shares_float"
-            params = {"symbol": symbols_str, "apikey": FMP_API_KEY}
-            resp = requests.get(url, params=params, timeout=15)
+            url  = "https://finnhub.io/api/v1/stock/profile2"
+            resp = requests.get(url, params={"symbol": ticker, "token": FINNHUB_API_KEY}, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            if isinstance(data, list):
-                for item in data:
-                    sym = item.get("symbol", "")
-                    fl  = item.get("floatShares") or item.get("float") or 0
-                    if sym and fl:
-                        float_map[sym] = int(fl)
-        except Exception as e:
-            print(f"[Universe] Float batch {i//BATCH+1} error: {e}")
-
-        if (i // BATCH + 1) % 5 == 0:
-            print(f"[Universe] Float batch {i//BATCH+1}: {min(i+BATCH, len(tickers))}/{len(tickers)}")
-
+            fl   = data.get("shareOutstanding")  # מגיע במיליונים מ-Finnhub
+            if fl:
+                float_map[ticker] = int(fl * 1_000_000)
+        except Exception:
+            pass
+        
+        # Finnhub מאפשר עד 60 קריאות בדקה בחשבון החינמי
+        if (i + 1) % 55 == 0:
+            print(f"[Universe] Float {i+1}/{len(tickers)} — waiting 65s to respect rate limit...")
+            time.sleep(65)
+            
     print(f"[Universe] Got float for {len(float_map)}/{len(tickers)} tickers.")
     return float_map
 
@@ -144,7 +136,7 @@ def build_universe() -> pd.DataFrame:
     df["sector"]   = "Unknown"
     df["industry"] = "Unknown"
 
-    # שלוף float מ-FMP
+    # שלוף float מ-Finnhub החדש
     float_map  = fetch_floats(df["ticker"].tolist())
     df["float"] = df["ticker"].map(float_map).fillna(0).astype(int)
 
