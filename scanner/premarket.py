@@ -113,8 +113,9 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
                 continue
 
             gap_pct = ((latest - prev_close) / prev_close) * 100
-            if gap_pct < MIN_GAP_PCT:
-                continue
+            if gap_pct >= MIN_GAP_PCT:
+            pm_vol = get_premarket_volume(ticker)
+            print(f"[DEBUG] {ticker} gap={gap_pct:.1f}% pm_vol={pm_vol}")
 
             # תיקון: שולפים נפח פרימרקט דרך API במקום snap.minute_bars
             pm_volume = get_premarket_volume(ticker)
