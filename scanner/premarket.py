@@ -1,11 +1,3 @@
-"""
-premarket.py V3
-----------------
-Hard Filters:  gap > 8%, pm_volume > 100K, float < 150M
-Soft Scoring:  RVOL משפיע על ציון — לא פוסל
-שני RVOL:      daily_rvol + pm_rvol
-"""
-
 import requests
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
@@ -17,41 +9,46 @@ import pytz
 from utils.config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MIN_GAP_PCT, MIN_PREMARKET_VOL,
-    MIN_DOLLAR_VOLUME, MAX_FLOAT
+    MAX_FLOAT
 )
 
-client  = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-ET      = pytz.timezone("America/New_York")
+client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+ET     = pytz.timezone("America/New_York")
 
 
 def get_premarket_bars(ticker: str) -> list:
+    """שולף minute bars של פרימרקט — feed=iex (חינמי)."""
     try:
         now_et          = datetime.now(ET)
         premarket_start = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
+
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
             timeframe=TimeFrame.Minute,
             start=premarket_start,
             end=now_et,
+            feed="iex",          # ← זה התיקון הקריטי
         )
         bars_resp = client.get_stock_bars(req)
         df = bars_resp.df
+
         if df.empty:
             return []
-        if hasattr(df.index, 'levels'):
-            if ticker in df.index.get_level_values(0):
-                return df.loc[ticker].to_dict("records")
-        return df.to_dict("records")
+
+        if hasattr(df.index, "levels"):
+            lvl0 = df.index.get_level_values(0)
+            if ticker in lvl0:
+                return df.loc[ticker].reset_index().to_dict("records")
+            return []
+
+        return df.reset_index().to_dict("records")
+
     except Exception as e:
         print(f"[Premarket] bars error {ticker}: {e}")
         return []
 
 
 def calc_pm_rvol(pm_volume: int, avg_daily_volume: int) -> float:
-    """
-    Premarket RVOL מנורמל לשעות פרימרקט.
-    פרימרקט = 330 דקות, יום מסחר = 390 דקות
-    """
     if avg_daily_volume <= 0 or pm_volume <= 0:
         return 0.0
     avg_pm_expected = avg_daily_volume * (330 / 390)
@@ -75,7 +72,8 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             print(f"[Premarket] Alpaca error: {e}")
 
     avg_vol_map = universe.set_index("ticker")["volume"].to_dict()
-    float_map   = universe.set_index("ticker")["float"].to_dict() if "float" in universe.columns else {}
+    float_map   = universe.set_index("ticker")["float"].to_dict() \
+                  if "float" in universe.columns else {}
 
     for _, row in universe.iterrows():
         ticker = row["ticker"]
@@ -95,10 +93,17 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             if gap_pct < MIN_GAP_PCT:
                 continue
 
-            # שולף premarket bars
+            # שולף bars עם iex
             pm_bars   = get_premarket_bars(ticker)
-            pm_volume = sum(b.get("volume", b.get("v", 0)) for b in pm_bars) if pm_bars else 0
-            pm_high   = max((b.get("high", b.get("h", latest)) for b in pm_bars), default=latest)
+            pm_volume = 0
+            pm_high   = latest
+
+            if pm_bars:
+                for b in pm_bars:
+                    pm_volume += int(b.get("volume", b.get("v", 0)))
+                    h = b.get("high", b.get("h", 0))
+                    if h > pm_high:
+                        pm_high = h
 
             # HARD FILTER 2: Premarket Volume
             if pm_volume < MIN_PREMARKET_VOL:
@@ -110,16 +115,12 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             if float_shares > MAX_FLOAT and float_shares > 0:
                 continue
 
-            # Dollar Volume
             dollar_volume = latest * pm_volume
-
-            # שני RVOL — SOFT
-            avg_vol    = avg_vol_map.get(ticker, 0)
-            daily_rvol = round(pm_volume / avg_vol, 2) if avg_vol > 0 else 0.0
-            pm_rvol    = calc_pm_rvol(pm_volume, avg_vol)
-
-            # מרחק מ-PM High
-            pm_high_dist = round(((pm_high - latest) / latest) * 100, 2) if latest > 0 else 0
+            avg_vol       = avg_vol_map.get(ticker, 0)
+            daily_rvol    = round(pm_volume / avg_vol, 2) if avg_vol > 0 else 0.0
+            pm_rvol       = calc_pm_rvol(pm_volume, avg_vol)
+            pm_high_dist  = round(((pm_high - latest) / latest) * 100, 2) \
+                            if latest > 0 else 0
 
             results.append({
                 "ticker":        ticker,
@@ -137,7 +138,8 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
                 "sector":        row.get("sector", "Unknown"),
                 "industry":      row.get("industry", "Unknown"),
             })
-            print(f"[Premarket] ✅ {ticker} gap={gap_pct:.1f}% pm_vol={pm_volume:,} pm_rvol={pm_rvol}x")
+            print(f"[Premarket] ✅ {ticker} gap={gap_pct:.1f}% "
+                  f"pm_vol={pm_volume:,} pm_rvol={pm_rvol}x")
 
         except Exception as e:
             print(f"[Premarket] Error {ticker}: {e}")
