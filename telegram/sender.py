@@ -79,13 +79,12 @@ def format_alert(row: dict) -> str:
     )
 
 
-def format_watchlist(candidates: list, date: str) -> str:
-    top    = [r for r in candidates if r.get("grade") in ("A+", "A")][:5]
+def format_watchlist(candidates: list, date: str, phase: str = "watchlist") -> str:
+    title = "Watchlist בוקר" if phase == "watchlist" else "סריקה שוטפת"    top    = [r for r in candidates if r.get("grade") in ("A+", "A")][:5]
     others = [r for r in candidates if r.get("grade") not in ("A+", "A")][:5]
 
     lines = [
-        f"👀 <b>DAYS-BOT — Watchlist בוקר</b>",
-        f"📅 {date}",
+        f"👀 <b>DAYS-BOT — {title}</b>",        f"📅 {date}",
         f"━━━━━━━━━━━━━━━━━━",
         f"🔥 <b>TOP WATCH</b>",
     ]
