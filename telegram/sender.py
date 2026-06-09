@@ -1,9 +1,3 @@
-"""
-telegram/sender.py
-------------------
-Watchlist בוקר + Final Alerts עם דירוג AI
-"""
-
 import requests
 
 
@@ -22,116 +16,107 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def _float_label(f: int) -> str:
-    if f == 0:               return "?"
-    if f < 5_000_000:        return f"{f/1_000_000:.1f}M 🔥"
-    if f < 10_000_000:       return f"{f/1_000_000:.1f}M ✅"
-    if f < 20_000_000:       return f"{f/1_000_000:.1f}M"
-    return                          f"{f/1_000_000:.0f}M ⚠️"
-
-
 def _grade_emoji(grade: str) -> str:
-    return {"A": "🟢", "B": "🔵", "C": "🟡", "D": "🔴"}.get(grade, "⚪")
+    return {"A+": "🔥", "A": "✅", "B": "👀", "C": "💤"}.get(grade, "—")
 
 
-def _risk_label(score: float, gap: float, float_shares: int) -> str:
-    risk = 0
-    if gap > 30:                                      risk += 1
-    if 0 < float_shares < 3_000_000:                 risk += 1
-    if score < 70:                                    risk += 1
-    return ["🟢 נמוך", "🟡 בינוני", "🔴 גבוה"][min(risk, 2)]
+def _float_label(f: int) -> str:
+    if f <= 0:          return "❓ לא ידוע"
+    if f < 20_000_000:  return f"🟢 {f/1_000_000:.1f}M"
+    if f < 50_000_000:  return f"🟡 {f/1_000_000:.1f}M"
+    if f < 100_000_000: return f"🟠 {f/1_000_000:.0f}M"
+    return                     f"🔴 {f/1_000_000:.0f}M"
 
 
-def format_watchlist(candidates: list[dict], date: str) -> str:
-    """Watchlist בוקר — תמציתי וברור."""
+def _dvol_str(dv: float) -> str:
+    if dv >= 1_000_000: return f"${dv/1_000_000:.1f}M"
+    if dv >= 1_000:     return f"${dv/1_000:.0f}K"
+    return f"${dv:.0f}"
+
+
+def format_alert(row: dict) -> str:
+    grade      = row.get("grade", "B")
+    emoji      = _grade_emoji(grade)
+    catalyst   = row.get("catalyst", "—")
+    is_leader  = row.get("is_leader", False)
+    leader     = row.get("leader", "")
+    pm_high    = row.get("pm_high", 0)
+    pm_dist    = row.get("pm_high_dist", 0)
+    daily_rvol = row.get("daily_rvol", 0)
+    pm_rvol    = row.get("pm_rvol", row.get("vol_ratio", 0))
+
+    if pm_high > 0:
+        dist_str = "🔺 קרוב לפריצה!" if abs(pm_dist) < 2 else f"{pm_dist:+.1f}%"
+        pm_line  = f"📊 <b>PM High:</b>    ${pm_high:.2f}  {dist_str}\n"
+    else:
+        pm_line = ""
+
+    if is_leader:
+        sym_line = "👑 <b>Sector Leader</b>\n"
+    elif leader:
+        sym_line = f"🔗 <b>Sympathy:</b>   {leader}\n"
+    else:
+        sym_line = ""
+
+    return (
+        f"{emoji} <b>DAYS-BOT [{grade}] — {row['ticker']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>מחיר:</b>      ${row['price']:.2f}  "
+        f"(אתמול: ${row.get('prev_close', 0):.2f})\n"
+        f"📈 <b>גאפ:</b>       +{row['gap_pct']:.1f}%\n"
+        f"{pm_line}"
+        f"📦 <b>PM Volume:</b>  {row.get('pm_volume', 0):,}\n"
+        f"⚡ <b>PM RVOL:</b>   {pm_rvol:.1f}x  "
+        f"(יומי: {daily_rvol:.1f}x)\n"
+        f"💵 <b>$ Volume:</b>  {_dvol_str(row.get('dollar_volume', 0))}\n"
+        f"🏷️ <b>Float:</b>     {_float_label(int(row.get('float', 0)))}\n"
+        f"📰 <b>Catalyst:</b>  {catalyst}\n"
+        f"{sym_line}"
+        f"⭐ <b>ציון:</b>      {row.get('score', 0):.0f}/100  "
+        f"[{grade}]\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🚫 לא המלצת השקעה"
+    )
+
+
+def format_watchlist(candidates: list, date: str) -> str:
+    top    = [r for r in candidates if r.get("grade") in ("A+", "A")][:5]
+    others = [r for r in candidates if r.get("grade") not in ("A+", "A")][:5]
+
     lines = [
         f"👀 <b>DAYS-BOT — Watchlist בוקר</b>",
         f"📅 {date}",
         f"━━━━━━━━━━━━━━━━━━",
+        f"🔥 <b>TOP WATCH</b>",
     ]
-
-    for i, row in enumerate(candidates[:15], 1):
-        ticker  = row["ticker"]
-        gap     = row.get("gap_pct", 0)
-        rvol    = row.get("vol_ratio", 0)
-        score   = row.get("score", 0)
-        grade   = row.get("ai_grade", "?")
-        float_s = _float_label(int(row.get("float", 0)))
-        emoji   = _grade_emoji(grade)
-        catalyst = row.get("catalyst", "")
-        cat_str  = f"  📰{catalyst}" if catalyst and catalyst != "—" else ""
-
+    for i, r in enumerate(top, 1):
         lines.append(
-            f"{i}. <b>{ticker}</b>  +{gap:.1f}%  "
-            f"RVOL:{rvol:.1f}x  Float:{float_s}  "
-            f"{emoji}AI:{grade}  ⭐{score:.0f}"
-            f"{cat_str}"
+            f"{_grade_emoji(r.get('grade','B'))} {i}. <b>{r['ticker']}</b>  "
+            f"${r['price']:.2f}  +{r['gap_pct']:.1f}%  "
+            f"RVOL:{r.get('pm_rvol', r.get('vol_ratio',0)):.1f}x  "
+            f"Float:{_float_label(int(r.get('float',0)))}  "
+            f"[{r.get('grade','?')}]"
         )
-
-    lines += [
-        f"━━━━━━━━━━━━━━━━━━",
-        f"⏰ Final Alerts בפתיחה",
-    ]
+    if others:
+        lines.append(f"\n📋 <b>Extended Watch</b>")
+        for i, r in enumerate(others, 1):
+            lines.append(
+                f"  {i}. {r['ticker']}  "
+                f"${r['price']:.2f}  +{r['gap_pct']:.1f}%  "
+                f"[{r.get('grade','?')}]"
+            )
+    lines += [f"━━━━━━━━━━━━━━━━━━", f"⏰ Final Alerts בפתיחה"]
     return "\n".join(lines)
-
-
-def format_alert(row: dict) -> str:
-    """התראת מסחר מלאה לפתיחה."""
-    ticker     = row["ticker"]
-    price      = row.get("price", 0)
-    gap        = row.get("gap_pct", 0)
-    rvol       = row.get("vol_ratio", 0)
-    score      = row.get("score", 0)
-    grade      = row.get("ai_grade", "?")
-    ai_reason  = row.get("ai_reason", "")
-    catalyst   = row.get("catalyst", "—")
-    float_s    = _float_label(int(row.get("float", 0)))
-    risk       = _risk_label(score, gap, int(row.get("float", 0)))
-    dvol       = row.get("dollar_volume", 0)
-    dvol_str   = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol:,.0f}"
-    grade_e    = _grade_emoji(grade)
-
-    is_leader     = row.get("is_leader", False)
-    leader_ticker = row.get("leader", "")
-    if is_leader:
-        leader_line = "👑 <b>Sector Leader</b>\n"
-    elif leader_ticker:
-        leader_line = f"🔗 <b>Sympathy:</b> {leader_ticker}\n"
-    else:
-        leader_line = ""
-
-    ai_line = ""
-    if grade != "?" and ai_reason:
-        ai_line = f"{grade_e} <b>AI:</b>       {grade} — {ai_reason}\n"
-    elif grade != "?":
-        ai_line = f"{grade_e} <b>AI:</b>       {grade}\n"
-
-    return (
-        f"🚀 <b>DAYS-BOT — התראת מסחר</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📌 <b>מניה:</b>      {ticker}\n"
-        f"💰 <b>מחיר:</b>      ${price:.2f}\n"
-        f"📈 <b>גאפ:</b>       +{gap:.1f}%\n"
-        f"📊 <b>RVOL:</b>      {rvol:.1f}x\n"
-        f"💵 <b>$ Volume:</b>  {dvol_str}\n"
-        f"🏷️ <b>Float:</b>     {float_s}\n"
-        f"📰 <b>Catalyst:</b>  {catalyst}\n"
-        f"{leader_line}"
-        f"{ai_line}"
-        f"⭐ <b>ציון:</b>      {score:.0f}/100\n"
-        f"⚠️ <b>סיכון:</b>    {risk}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🚫 לא המלצת השקעה"
-    )
 
 
 def format_no_candidates(date: str, universe_size: int = 0) -> str:
     return (
         f"🤖 <b>DAYS-BOT — דוח יומי</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📅 <b>תאריך:</b> {date}\n"
+        f"📅 <b>תאריך:</b>      {date}\n"
         f"🔍 <b>מניות שנסרקו:</b> {universe_size}\n"
-        f"😴 <b>תוצאה:</b> לא נמצאו מועמדות שעברו את הסף היום\n"
+        f"😴 <b>תוצאה:</b>      לא נמצאו מועמדות\n"
+        f"                  (Gap>8%, PM Vol>100K, Float<150M)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⏰ הסריקה הבאה מחר בפתיחה"
     )
