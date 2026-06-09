@@ -13,8 +13,7 @@ from utils.config import (
 )
 
 client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-ET = pytz.timezone("America/New_York")
-
+NY_TZ = pytz.timezone("America/New_York")
 
 # =========================
 # PREMARKET BARS FIXED
@@ -22,25 +21,25 @@ ET = pytz.timezone("America/New_York")
 def get_premarket_bars(ticker: str) -> list:
     """שולף minute bars של פרימרקט — feed=iex (חינמי)."""
     try:
-        now_et = datetime.now(ET)
+        now_ny = datetime.now(NY_TZ)
+        premarket_start = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
 
-        premarket_start = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
+        # תיקון קריטי: ניהול זמנים מדויק אם הבוט רץ מוקדם או ב-GitHub Actions
+        if now_ny < premarket_start:
+            premarket_start -= timedelta(days=1)
+            # אם אנחנו לפני פתיחת הפרימרקט, מגדירים את הטווח ליום הקודם
+            now_ny = premarket_start.replace(hour=9, minute=30)
 
-        # 🔥 FIX: אם אנחנו לפני 4 בבוקר → לקחת את יום המסחר הקודם
-        if now_et.hour < 4:
-            premarket_start = premarket_start - timedelta(days=1)
-
-        # 🔥 FIX: הגנה קריטית end < start
-        if premarket_start >= now_et:
-            premarket_start = premarket_start - timedelta(days=1)
-
-        print(f"[DEBUG TIME] {ticker} start={premarket_start} end={now_et}")
+        # הגנה סופית: וידוא חוקיות זמנים מול ה-API
+        if premarket_start >= now_ny:
+            print(f"[WARN] {ticker} - Invalid time range. Start: {premarket_start}, End: {now_ny}")
+            return []
 
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
             timeframe=TimeFrame.Minute,
             start=premarket_start,
-            end=now_et,
+            end=now_ny,
             feed="iex",
         )
 
@@ -136,8 +135,8 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
                     if h > pm_high:
                         pm_high = h
             else:
-                # 🔥 FIX: אם אין data בכלל — לא להרוס הכל
-                print(f"[WARN] {ticker} no bars data")
+                # מדלגים בצורה בטוחה בלי לרסק את הסריקה
+                print(f"[WARN] {ticker} no bars data found")
                 continue
 
             # PREMARKET VOLUME FILTER
