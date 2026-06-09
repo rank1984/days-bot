@@ -1,97 +1,61 @@
 """
-premarket.py — שדרוגים #5 + #7 (תיקון Feed פרימרקט)
---------------------------------
-#5: Dollar Volume = price × volume
-#7: RVOL אמיתי = volume עכשיו / ממוצע באותה שעה
+premarket.py V3
+----------------
+Hard Filters:  gap > 8%, pm_volume > 100K, float < 150M
+Soft Scoring:  RVOL משפיע על ציון — לא פוסל
+שני RVOL:      daily_rvol + pm_rvol
 """
 
+import requests
 import pandas as pd
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockSnapshotRequest, StockBarsRequest
 from alpaca.data.timeframe import TimeFrame
-from alpaca.data.enums import DataFeed  # <-- הוספת ה-Enum של הפידים
 from datetime import datetime, timedelta
 import pytz
 
 from utils.config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
     MIN_GAP_PCT, MIN_PREMARKET_VOL,
-    MIN_RVOL, MIN_DOLLAR_VOLUME
+    MIN_DOLLAR_VOLUME, MAX_FLOAT
 )
 
-client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-ET     = pytz.timezone("America/New_York")
+client  = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+ET      = pytz.timezone("America/New_York")
 
 
-def get_premarket_volume(ticker: str) -> int:
-    """
-    שולף נפח פרימרקט מ-04:00 עד עכשיו עם פיד מפורש (IEX).
-    """
+def get_premarket_bars(ticker: str) -> list:
     try:
         now_et          = datetime.now(ET)
         premarket_start = now_et.replace(hour=4, minute=0, second=0, microsecond=0)
-
         req = StockBarsRequest(
             symbol_or_symbols=ticker,
             timeframe=TimeFrame.Minute,
             start=premarket_start,
             end=now_et,
-            feed=DataFeed.IEX  # <-- תיקון: הגדרת פיד מפורש לחשבונות חינמיים/Paper
         )
-        bars = client.get_stock_bars(req)
-        
-        # גישה בטוחה ישירות למילון הנתונים ללא סיכון לקריסת אינדקסים
-        ticker_bars = bars.data.get(ticker) if (bars and hasattr(bars, "data")) else None
-
-        if not ticker_bars:
-            print(f"[DEBUG-VOL] {ticker} no bars returned")
-            return 0
-            
-        total = int(sum(b.volume for b in ticker_bars))
-        print(f"[DEBUG-VOL] {ticker} bars={len(ticker_bars)} vol={total}")
-        return total
-        
+        bars_resp = client.get_stock_bars(req)
+        df = bars_resp.df
+        if df.empty:
+            return []
+        if hasattr(df.index, 'levels'):
+            if ticker in df.index.get_level_values(0):
+                return df.loc[ticker].to_dict("records")
+        return df.to_dict("records")
     except Exception as e:
-        print(f"[DEBUG-VOL] {ticker} exception: {e}")
-        return 0
+        print(f"[Premarket] bars error {ticker}: {e}")
+        return []
 
 
-def get_historical_rvol(ticker: str, current_volume: int) -> float:
+def calc_pm_rvol(pm_volume: int, avg_daily_volume: int) -> float:
     """
-    שדרוג #7: RVOL אמיתי — משווה לאותה שעה בימים קודמים.
+    Premarket RVOL מנורמל לשעות פרימרקט.
+    פרימרקט = 330 דקות, יום מסחר = 390 דקות
     """
-    try:
-        now_et    = datetime.now(ET)
-        start     = now_et - timedelta(days=14)
-        req       = StockBarsRequest(
-            symbol_or_symbols=ticker,
-            timeframe=TimeFrame.Day,
-            start=start,
-            end=now_et,
-            limit=10,
-            feed=DataFeed.IEX  # <-- מיושר לפי אותו פיד של פרימרקט
-        )
-        bars = client.get_stock_bars(req)
-        
-        ticker_bars = bars.data.get(ticker) if (bars and hasattr(bars, "data")) else None
-
-        if not ticker_bars or len(ticker_bars) < 3:
-            return 0.0
-
-        avg_daily = sum(b.volume for b in ticker_bars[:-1]) / len(ticker_bars[:-1])
-
-        premarket_start = now_et.replace(hour=4, minute=0, second=0)
-        minutes_elapsed = (now_et - premarket_start).total_seconds() / 60
-        pct_of_day      = min(minutes_elapsed / (6.5 * 60 + 330), 1.0)
-
-        expected_volume = avg_daily * pct_of_day
-        if expected_volume <= 0:
-            return 0.0
-
-        return round(current_volume / expected_volume, 2)
-    except Exception as e:
-        print(f"[DEBUG ERROR] Failed to get RVOL for {ticker}: {e}")
+    if avg_daily_volume <= 0 or pm_volume <= 0:
         return 0.0
+    avg_pm_expected = avg_daily_volume * (330 / 390)
+    return round(pm_volume / avg_pm_expected, 2)
 
 
 def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
@@ -106,9 +70,12 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             req  = StockSnapshotRequest(symbol_or_symbols=batch)
             snap = client.get_stock_snapshot(req)
             snapshots.update(snap)
-            print(f"[Premarket] Snapshot batch {i//BATCH + 1}: {len(snap)} results")
+            print(f"[Premarket] Snapshot batch {i//BATCH+1}: {len(snap)} results")
         except Exception as e:
             print(f"[Premarket] Alpaca error: {e}")
+
+    avg_vol_map = universe.set_index("ticker")["volume"].to_dict()
+    float_map   = universe.set_index("ticker")["float"].to_dict() if "float" in universe.columns else {}
 
     for _, row in universe.iterrows():
         ticker = row["ticker"]
@@ -123,26 +90,36 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             if not prev_close or not latest or prev_close == 0:
                 continue
 
+            # HARD FILTER 1: Gap
             gap_pct = ((latest - prev_close) / prev_close) * 100
-            
             if gap_pct < MIN_GAP_PCT:
                 continue
 
-            # קריאה לפונקציה המעודכנת
-            pm_volume = get_premarket_volume(ticker)
+            # שולף premarket bars
+            pm_bars   = get_premarket_bars(ticker)
+            pm_volume = sum(b.get("volume", b.get("v", 0)) for b in pm_bars) if pm_bars else 0
+            pm_high   = max((b.get("high", b.get("h", latest)) for b in pm_bars), default=latest)
 
+            # HARD FILTER 2: Premarket Volume
             if pm_volume < MIN_PREMARKET_VOL:
+                print(f"[DEBUG] {ticker} gap={gap_pct:.1f}% pm_vol={pm_volume} — low volume")
                 continue
 
-            # שדרוג #5 — Dollar Volume
+            # HARD FILTER 3: Float
+            float_shares = int(float_map.get(ticker, 0))
+            if float_shares > MAX_FLOAT and float_shares > 0:
+                continue
+
+            # Dollar Volume
             dollar_volume = latest * pm_volume
-            if dollar_volume < MIN_DOLLAR_VOLUME:
-                continue
 
-            # שדרוג #7 — RVOL אמיתי
-            rvol = get_historical_rvol(ticker, pm_volume)
-            if rvol > 0 and rvol < MIN_RVOL:
-                continue
+            # שני RVOL — SOFT
+            avg_vol    = avg_vol_map.get(ticker, 0)
+            daily_rvol = round(pm_volume / avg_vol, 2) if avg_vol > 0 else 0.0
+            pm_rvol    = calc_pm_rvol(pm_volume, avg_vol)
+
+            # מרחק מ-PM High
+            pm_high_dist = round(((pm_high - latest) / latest) * 100, 2) if latest > 0 else 0
 
             results.append({
                 "ticker":        ticker,
@@ -150,12 +127,17 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
                 "prev_close":    round(prev_close, 2),
                 "gap_pct":       round(gap_pct, 2),
                 "pm_volume":     int(pm_volume),
+                "pm_high":       round(pm_high, 2),
+                "pm_high_dist":  pm_high_dist,
                 "dollar_volume": int(dollar_volume),
-                "vol_ratio":     rvol,
-                "float":         int(row.get("float", 0)),
+                "daily_rvol":    daily_rvol,
+                "pm_rvol":       pm_rvol,
+                "vol_ratio":     pm_rvol,
+                "float":         float_shares,
                 "sector":        row.get("sector", "Unknown"),
                 "industry":      row.get("industry", "Unknown"),
             })
+            print(f"[Premarket] ✅ {ticker} gap={gap_pct:.1f}% pm_vol={pm_volume:,} pm_rvol={pm_rvol}x")
 
         except Exception as e:
             print(f"[Premarket] Error {ticker}: {e}")
@@ -165,5 +147,5 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
         df.sort_values("dollar_volume", ascending=False, inplace=True)
         df.reset_index(drop=True, inplace=True)
 
-    print(f"[Premarket] {len(df)} candidates passed all filters.")
+    print(f"[Premarket] {len(df)} candidates passed hard filters.")
     return df
