@@ -34,26 +34,25 @@ def run_alert_pipeline(send_watchlist: bool = True):
     universe = load_universe()
 
     if universe.empty:
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, "⚠️ DAYS-BOT: שגיאה - יוניברס ריק.")
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, "DAYS BOT Error: Universe is empty")
         return
 
     # סריקת פרימרקט
     candidates = scan_premarket(universe)
 
-    # שדרוג קריטי: מניעת קריסת טלגרם (400 Bad Request) כשהרשימה ריקה
     if candidates.empty:
         print("[Main] No candidates passed the filters today.")
         send_message(
             TELEGRAM_TOKEN, 
             TELEGRAM_CHAT_ID, 
-            "⚠️ DAYS-BOT: הסריקה הסתיימה. אין היום מניות שעברו את סינוני המחיר והווליום הקשוחים בפרימרקט."
+            f"DAYS BOT Scan complete. No stocks passed the strict volume and price filters today."
         )
         return
 
     # Sympathy Engine
     candidates = tag_sympathy(candidates)
 
-    # ציון מומנטום נקי מבוסס פרייס אקשן וווליום
+    # ציון
     candidates = score_candidates(candidates)
 
     # Watchlist בוקר
@@ -71,7 +70,7 @@ def run_alert_pipeline(send_watchlist: bool = True):
         send_message(
             TELEGRAM_TOKEN, 
             TELEGRAM_CHAT_ID, 
-            f"⚠️ DAYS-BOT: יש מניות בסריקה, אך אף אחת לא עברה את ציון המינימום ({MIN_SCORE})."
+            f"DAYS BOT: Found tickers but none scored above minimum score of {MIN_SCORE}"
         )
         return
 
@@ -79,7 +78,6 @@ def run_alert_pipeline(send_watchlist: bool = True):
     for _, row in top.iterrows():
         ticker = row["ticker"]
 
-        # Cooldown
         if already_sent_today(today, ticker):
             print(f"[Main] {ticker} in cooldown — skipping.")
             continue
