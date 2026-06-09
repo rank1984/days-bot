@@ -72,38 +72,47 @@ def format_alert(row: dict) -> str:
         f"🏷️ <b>Float:</b>     {_float_label(int(row.get('float', 0)))}\n"
         f"📰 <b>Catalyst:</b>  {catalyst}\n"
         f"{sym_line}"
-        f"⭐ <b>ציון:</b>      {row.get('score', 0):.0f}/100  "
-        f"[{grade}]\n"
+        f"⭐ <b>ציון:</b>      {row.get('score', 0):.0f}/100  [{grade}]\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🚫 לא המלצת השקעה"
     )
 
 
 def format_watchlist(candidates: list, date: str, phase: str = "watchlist") -> str:
-title = "Watchlist בוקר" if phase == "watchlist" else "סריקה שוטפת"
-top = [r for r in candidates if r.get("grade") in ("A+", "A")][:5]
+    title  = "Watchlist בוקר" if phase == "watchlist" else "סריקה שוטפת"
+    top    = [r for r in candidates if r.get("grade") in ("A+", "A")][:5]
+    others = [r for r in candidates if r.get("grade") not in ("A+", "A")][:5]
+
     lines = [
-        f"👀 <b>DAYS-BOT — {title}</b>",        f"📅 {date}",
+        f"👀 <b>DAYS-BOT — {title}</b>",
+        f"📅 {date}",
         f"━━━━━━━━━━━━━━━━━━",
-        f"🔥 <b>TOP WATCH</b>",
     ]
-    for i, r in enumerate(top, 1):
-        lines.append(
-            f"{_grade_emoji(r.get('grade','B'))} {i}. <b>{r['ticker']}</b>  "
-            f"${r['price']:.2f}  +{r['gap_pct']:.1f}%  "
-            f"RVOL:{r.get('pm_rvol', r.get('vol_ratio',0)):.1f}x  "
-            f"Float:{_float_label(int(r.get('float',0)))}  "
-            f"[{r.get('grade','?')}]"
-        )
+
+    if top:
+        lines.append("🔥 <b>TOP WATCH</b>")
+        for i, r in enumerate(top, 1):
+            lines.append(
+                f"{_grade_emoji(r.get('grade','B'))} {i}. <b>{r['ticker']}</b>  "
+                f"${r['price']:.2f}  +{r['gap_pct']:.1f}%  "
+                f"RVOL:{r.get('pm_rvol', r.get('vol_ratio',0)):.1f}x  "
+                f"Float:{_float_label(int(r.get('float',0)))}  "
+                f"[{r.get('grade','?')}]"
+            )
+
     if others:
-        lines.append(f"\n📋 <b>Extended Watch</b>")
+        lines.append("\n📋 <b>Extended Watch</b>")
         for i, r in enumerate(others, 1):
             lines.append(
                 f"  {i}. {r['ticker']}  "
                 f"${r['price']:.2f}  +{r['gap_pct']:.1f}%  "
                 f"[{r.get('grade','?')}]"
             )
-    lines += [f"━━━━━━━━━━━━━━━━━━", f"⏰ Final Alerts בפתיחה"]
+
+    if not top and not others:
+        lines.append("😴 אין מועמדות כרגע")
+
+    lines += ["━━━━━━━━━━━━━━━━━━", "⏰ Final Alerts בפתיחה"]
     return "\n".join(lines)
 
 
