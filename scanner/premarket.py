@@ -15,24 +15,17 @@ from utils.config import (
 client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 NY_TZ = pytz.timezone("America/New_York")
 
-# =========================
-# PREMARKET BARS FIXED
-# =========================
+
 def get_premarket_bars(ticker: str) -> list:
-    """שולף minute bars של פרימרקט — feed=iex (חינמי)."""
     try:
         now_ny = datetime.now(NY_TZ)
         premarket_start = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
 
-        # תיקון קריטי: ניהול זמנים מדויק אם הבוט רץ מוקדם או ב-GitHub Actions
         if now_ny < premarket_start:
             premarket_start -= timedelta(days=1)
-            # אם אנחנו לפני פתיחת הפרימרקט, מגדירים את הטווח ליום הקודם
             now_ny = premarket_start.replace(hour=9, minute=30)
 
-        # הגנה סופית: וידוא חוקיות זמנים מול ה-API
         if premarket_start >= now_ny:
-            print(f"[WARN] {ticker} - Invalid time range. Start: {premarket_start}, End: {now_ny}")
             return []
 
         req = StockBarsRequest(
@@ -62,9 +55,6 @@ def get_premarket_bars(ticker: str) -> list:
         return []
 
 
-# =========================
-# RVOL
-# =========================
 def calc_pm_rvol(pm_volume: int, avg_daily_volume: int) -> float:
     if avg_daily_volume <= 0 or pm_volume <= 0:
         return 0.0
@@ -72,9 +62,6 @@ def calc_pm_rvol(pm_volume: int, avg_daily_volume: int) -> float:
     return round(pm_volume / avg_pm_expected, 2)
 
 
-# =========================
-# SCANNER
-# =========================
 def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
     tickers = universe["ticker"].tolist()
     results = []
@@ -82,9 +69,6 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
 
     BATCH = 500
 
-    # =====================
-    # SNAPSHOTS
-    # =====================
     for i in range(0, len(tickers), BATCH):
         batch = tickers[i:i + BATCH]
         try:
@@ -98,9 +82,6 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
     avg_vol_map = universe.set_index("ticker")["volume"].to_dict()
     float_map = universe.set_index("ticker")["float"].to_dict() if "float" in universe.columns else {}
 
-    # =====================
-    # MAIN LOOP
-    # =====================
     for _, row in universe.iterrows():
         ticker = row["ticker"]
         snap = snapshots.get(ticker)
@@ -115,14 +96,11 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             if not prev_close or not latest or prev_close == 0:
                 continue
 
-            # GAP
             gap_pct = ((latest - prev_close) / prev_close) * 100
             if gap_pct < MIN_GAP_PCT:
                 continue
 
-            # =====================
-            # PREMARKET BARS
-            # =====================
+            # שאיבת הברים (נסיון ראשון לקבל ווליום מפורט)
             pm_bars = get_premarket_bars(ticker)
 
             pm_volume = 0
@@ -134,28 +112,26 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
                     h = b.get("high", b.get("h", 0) or 0)
                     if h > pm_high:
                         pm_high = h
-            else:
-                # מדלגים בצורה בטוחה בלי לרסק את הסריקה
-                print(f"[WARN] {ticker} no bars data found")
-                continue
+            
+            # אם הברים ריקים או הווליום יצא 0, נשתמש בווליום המצטבר של ה-Snapshot ליום הנוכחי
+            if pm_volume == 0 and snap.daily_bar:
+                pm_volume = int(snap.daily_bar.volume)
+                print(f"[INFO] {ticker} missing minute bars. Using snapshot volume: {pm_volume}")
 
-            # PREMARKET VOLUME FILTER
+            # מסנן ווליום קשוח! אם אין ווליום - המניה בחוץ. אין המצאות.
             if pm_volume < MIN_PREMARKET_VOL:
                 print(f"[DEBUG] {ticker} gap={gap_pct:.1f}% pm_vol={pm_volume} — low volume")
                 continue
 
-            # FLOAT FILTER
             float_shares = int(float_map.get(ticker, 0))
             if float_shares > MAX_FLOAT and float_shares > 0:
                 continue
 
-            # METRICS
             dollar_volume = latest * pm_volume
             avg_vol = avg_vol_map.get(ticker, 0)
 
             daily_rvol = round(pm_volume / avg_vol, 2) if avg_vol > 0 else 0.0
             pm_rvol = calc_pm_rvol(pm_volume, avg_vol)
-
             pm_high_dist = round(((pm_high - latest) / latest) * 100, 2) if latest > 0 else 0
 
             results.append({
@@ -175,7 +151,7 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
                 "industry": row.get("industry", "Unknown"),
             })
 
-            print(f"[Premarket] ✅ {ticker} gap={gap_pct:.1f}% pm_vol={pm_volume:,} pm_rvol={pm_rvol}x")
+            print(f"[Premarket] ✅ {ticker} PASSED! gap={gap_pct:.1f}% pm_vol={pm_volume:,} pm_rvol={pm_rvol}x")
 
         except Exception as e:
             print(f"[Premarket] Error {ticker}: {e}")
