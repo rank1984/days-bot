@@ -10,7 +10,8 @@ from scanner.scoring   import score_candidates
 from scanner.news      import score_news, get_catalyst_label
 from database.db       import init_db, save_alert, already_sent_today
 from telegram.sender   import (
-    send_message, format_preopen_list,
+    send_message,
+    format_preopen_list,
     format_no_candidates
 )
 from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, MIN_SCORE
@@ -43,22 +44,15 @@ def run_full_pipeline():
                      format_no_candidates(today, 0))
         return
 
-    # סריקת פרימרקט
     candidates = scan_premarket(universe)
 
     if candidates.empty:
-        # אין מניות שעברו פילטרים — שלח הודעה ברורה, לא זבל
-        send_message(
-            TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-            format_no_candidates(today, len(universe))
-        )
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+                     format_no_candidates(today, len(universe)))
         return
 
-    # Sympathy + News + Score
     candidates = tag_sympathy(candidates)
     candidates = enrich_with_news(candidates)
-
-    # סינון Offering
     candidates = candidates[candidates["news_score"] >= -10].copy()
 
     if candidates.empty:
@@ -68,25 +62,23 @@ def run_full_pipeline():
 
     candidates = score_candidates(candidates)
 
-    # רק מניות מעל MIN_SCORE
     top = candidates[candidates["score"] >= MIN_SCORE].head(5)
 
     if top.empty:
-        # יש מניות אבל ציון נמוך — שלח עם אזהרה
-        top = candidates.head(3)
-        rows = top.to_dict("records")
-        msg  = format_preopen_list(rows, today, low_quality=True)
+        top        = candidates.head(3)
+        low_quality = True
     else:
-        rows = top.to_dict("records")
-        msg  = format_preopen_list(rows, today, low_quality=False)
+        low_quality = False
 
-    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    rows = top.to_dict("records")
+    send_message(
+        TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+        format_preopen_list(rows, today, low_quality=low_quality)
+    )
     print(f"[Main] Sent {len(rows)} candidates.")
 
-    # שמור בDB
     for _, row in top.iterrows():
-        ticker = row["ticker"]
-        if not already_sent_today(today, ticker):
+        if not already_sent_today(today, row["ticker"]):
             save_alert(today, row.to_dict())
 
     print("[Main] Done.")
