@@ -3,18 +3,22 @@ import time
 from datetime import datetime
 import pytz
 
-from scanner.universe  import build_universe, load_universe
+from scanner.universe import build_universe, load_universe
 from scanner.premarket import scan_premarket
-from scanner.sympathy  import tag_sympathy
-from scanner.scoring   import score_candidates
-from scanner.news      import score_news, get_catalyst_label
-from database.db       import init_db, save_alert, already_sent_today
-from telegram.sender   import (
+from scanner.sympathy import tag_sympathy
+from scanner.scoring import score_candidates
+from scanner.news import score_news, get_catalyst_label
+from database.db import init_db, save_alert, already_sent_today
+from telegram.sender import (
     send_message,
     format_preopen_list,
     format_no_candidates
 )
 from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, MIN_SCORE
+
+# השדרוגים החדשים - ביצועים ודוחות
+from scanner.performance import update_daily_performance
+from scanner.weekly_report import build_weekly_report
 
 ET = pytz.timezone("America/New_York")
 
@@ -84,7 +88,23 @@ def run_full_pipeline():
     print("[Main] Done.")
 
 
+def run_end_of_day():
+    """רץ ב-23:00 ישראל — מעדכן ביצועים ושולח דוח שבועי בשישי."""
+    print("[Main] End of day update...")
+    update_daily_performance()
+
+    now_et = datetime.now(ET)
+    if now_et.weekday() == 4:  # שישי
+        report = build_weekly_report()
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, report)
+        print("[Main] Weekly report sent.")
+
+
 if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "full"
     print(f"[Main] Mode: {mode}")
-    run_full_pipeline()
+    
+    if mode == "eod":
+        run_end_of_day()
+    else:
+        run_full_pipeline()
