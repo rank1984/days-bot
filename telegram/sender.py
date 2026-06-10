@@ -38,8 +38,7 @@ def _dvol_str(dv: float) -> str:
     return f"${dv:.0f}"
 
 
-def format_preopen_list(candidates: list, date: str) -> str:
-    """
+def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:    """
     הודעה ראשית — רשימה לפני פתיחה.
     מציגה TOP 5 עם כל הנתונים הרלוונטיים.
     """
@@ -47,7 +46,7 @@ def format_preopen_list(candidates: list, date: str) -> str:
     time_str = now_et.strftime("%H:%M ET")
 
     lines = [
-        f"🎯 <b>DAYS-BOT — לפני פתיחה</b>",
+        f"⚠️ <b>ציון נמוך — בדוק בזהירות</b>" if low_quality else "",
         f"📅 {date}  |  🕐 {time_str}",
         f"━━━━━━━━━━━━━━━━━━",
     ]
