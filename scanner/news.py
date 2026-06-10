@@ -1,38 +1,44 @@
 """
-news.py — שדרוג #2: News Catalyst Detection
---------------------------------------------
-מ-Polygon News API:
-✅ FDA, Contract, Acquisition, Earnings, Patent → ציון חיובי
-❌ Offering, Dilution, Shelf → ציון שלילי (מסנן החוצה)
+news.py — Finnhub News Catalyst
+---------------------------------
+סורק חדשות 24 שעות אחרונות לכל מניה.
+מחזיר ציון + תווית קריאה לאדם.
 """
 
 import requests
-from utils.config import POLYGON_API_KEY, POSITIVE_CATALYSTS, NEGATIVE_CATALYSTS
+from datetime import datetime, timedelta
+from utils.config import FINNHUB_API_KEY, POSITIVE_CATALYSTS, NEGATIVE_CATALYSTS
 
-POLYGON_BASE = "https://api.polygon.io"
 
-
-def fetch_news(ticker: str, limit: int = 5) -> list[dict]:
-    """שולף חדשות אחרונות עבור מניה מ-Polygon."""
+def fetch_news(ticker: str, hours: int = 24) -> list:
+    """שולף חדשות מ-Finnhub עבור טווח שעות אחרון."""
     try:
-        url  = (
-            f"{POLYGON_BASE}/v2/reference/news"
-            f"?ticker={ticker}&limit={limit}&apiKey={POLYGON_API_KEY}"
+        now   = datetime.utcnow()
+        start = (now - timedelta(hours=hours)).strftime("%Y-%m-%d")
+        end   = now.strftime("%Y-%m-%d")
+        url   = "https://finnhub.io/api/v1/company-news"
+        resp  = requests.get(
+            url,
+            params={
+                "symbol": ticker,
+                "from":   start,
+                "to":     end,
+                "token":  FINNHUB_API_KEY,
+            },
+            timeout=5,
         )
-        resp = requests.get(url, timeout=5)
         if resp.status_code == 200:
-            return resp.json().get("results", [])
+            return resp.json()[:10]
     except Exception:
         pass
     return []
 
 
-def score_news(ticker: str) -> tuple[int, str]:
+def score_news(ticker: str) -> tuple:
     """
-    מחשב news_score ומחזיר (score, headline).
-
-    score > 0  → חדשות טובות
-    score < 0  → offering/dilution → לסנן
+    מחזיר (score, headline).
+    score > 0  → חדשות חיוביות
+    score < 0  → offering/dilution — לסנן
     score = 0  → אין חדשות
     """
     articles = fetch_news(ticker)
@@ -43,51 +49,46 @@ def score_news(ticker: str) -> tuple[int, str]:
     best_headline = "No catalyst"
 
     for article in articles:
-        headline = article.get("title", "").lower()
-        desc     = article.get("description", "").lower()
-        text     = headline + " " + desc
+        headline = article.get("headline", "").lower()
+        summary  = article.get("summary",  "").lower()
+        text     = headline + " " + summary
         score    = 0
 
-        # חדשות שליליות — offering/dilution
+        # חדשות שליליות
         for neg in NEGATIVE_CATALYSTS:
             if neg in text:
                 score -= 40
                 break
 
-        # חדשות חיוביות — catalyst
-        for pos in POSITIVE_CATALYSTS:
-            if pos in text:
-                if "fda" in text or "approval" in text:
-                    score += 30
-                elif "acquisition" in text or "merger" in text:
-                    score += 25
-                elif "contract" in text or "award" in text:
-                    score += 20
-                elif "earnings" in text or "revenue" in text:
-                    score += 15
-                else:
-                    score += 10
-                break
+        # חדשות חיוביות
+        if score >= 0:
+            if "fda" in text or "approval" in text or "approved" in text:
+                score += 30
+            elif "acquisition" in text or "merger" in text or "acquires" in text:
+                score += 25
+            elif "contract" in text or "award" in text or "grant" in text:
+                score += 20
+            elif "earnings" in text or "revenue" in text or "profit" in text:
+                score += 15
+            elif "patent" in text or "partnership" in text:
+                score += 10
+            elif any(p in text for p in POSITIVE_CATALYSTS):
+                score += 5
 
         if score > best_score:
             best_score    = score
-            best_headline = article.get("title", "")[:60]
+            best_headline = article.get("headline", "")[:80]
 
     return best_score, best_headline
 
 
 def get_catalyst_label(news_score: int, headline: str) -> str:
-    """ממיר ציון חדשות לתווית קריאה."""
-    if news_score >= 30:
-        return f"🔥 FDA/Approval"
-    elif news_score >= 25:
-        return f"🤝 M&A"
-    elif news_score >= 20:
-        return f"📄 Contract"
-    elif news_score >= 15:
-        return f"💰 Earnings"
-    elif news_score >= 10:
-        return f"📰 News"
-    elif news_score < 0:
-        return f"⚠️ Offering"
+    """ממיר ציון לתווית קריאה קצרה."""
+    if news_score >= 30: return "🔥 FDA/Approval"
+    if news_score >= 25: return "🤝 רכישה/מיזוג"
+    if news_score >= 20: return "📄 חוזה/מענק"
+    if news_score >= 15: return "💰 תוצאות רבעוניות"
+    if news_score >= 10: return "📋 פטנט/שותפות"
+    if news_score >= 5:  return "📰 חדשות חיוביות"
+    if news_score < 0:   return "⚠️ הנפקה/דילול"
     return "—"
