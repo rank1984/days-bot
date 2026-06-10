@@ -1,19 +1,13 @@
 """
 scoring.py V3
 --------------
-Gap           25  — הכי חשוב
-PM RVOL       20  — soft, לא פוסל
-Dollar Volume 15  — נזילות
-News          15  — catalyst
-Float         15  — קטן = חזק
-Price          5  — sweet spot
-Momentum       5  — gap × dvol
-
-Grade:
-A+  85+   — פריצה מיידית
-A   70-84  — Watch closely
-B   55-69  — Secondary
-C   <55    — Ignore
+News Catalyst   30
+Gap %           20
+RVOL            20
+Float           15
+Dollar Volume   10
+Sector Sympathy  5
+סה"כ           100
 """
 
 import pandas as pd
@@ -28,7 +22,7 @@ def _norm(series: pd.Series, lo: float, hi: float) -> pd.Series:
 def get_grade(score: float) -> str:
     if score >= 85: return "A+"
     if score >= 70: return "A"
-    if score >= 55: return "B"
+    if score >= 60: return "B"
     return "C"
 
 
@@ -38,67 +32,70 @@ def score_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
     out = df.copy()
 
-    # Gap Score (25)
-    out["gap_score"] = (_norm(out["gap_pct"], 8, 35) * 25).round(1)
-
-    # PM RVOL Score (20) — SOFT
-    rvol_col = "pm_rvol" if "pm_rvol" in out.columns else "vol_ratio"
-    out["rvol_score"] = out[rvol_col].apply(
-        lambda r: min(r * 8, 20) if r > 0 else 2
-    ).round(1)
-
-    # Dollar Volume Score (15)
-    if "dollar_volume" in out.columns:
-        out["dvol_score"] = (_norm(out["dollar_volume"], 100_000, 5_000_000) * 15).round(1)
-    else:
-        out["dvol_score"] = 0
-
-    # News Score (15)
+    # News Catalyst (30) — הכי חשוב
     if "news_score" in out.columns:
         out["news_pts"] = out["news_score"].apply(
-            lambda s: 15 if s >= 30 else
-                      12 if s >= 25 else
-                      10 if s >= 20 else
-                       7 if s >= 10 else
-                       0 if s < 0  else 3
+            lambda s: 30 if s >= 30 else   # FDA/Approval
+                      25 if s >= 25 else   # M&A
+                      20 if s >= 20 else   # Contract
+                      15 if s >= 15 else   # Earnings
+                      10 if s >= 10 else   # Patent
+                       5 if s >= 5  else   # News
+                       0 if s < 0   else   # Offering — לא פוסל אבל 0
+                       3                   # אין חדשות
         )
     else:
         out["news_pts"] = 3
 
-    # Float Score (15)
+    # Gap % (20)
+    out["gap_score"] = (_norm(out["gap_pct"], 5, 40) * 20).round(1)
+
+    # RVOL (20) — מודל ניקוד לפי טיירים
+    rvol_col = "pm_rvol" if "pm_rvol" in out.columns else "vol_ratio"
+    def rvol_pts(r):
+        if r >= 3: return 20
+        if r >= 2: return 15
+        if r >= 1: return 5
+        return 0
+    out["rvol_score"] = out[rvol_col].apply(rvol_pts)
+
+    # Float (15)
     def float_pts(f):
-        if f == 0:                return 7
-        if f < 5_000_000:         return 15
-        if f < 10_000_000:        return 13
-        if f < 20_000_000:        return 10
-        if f < 50_000_000:        return 7
-        if f < 100_000_000:       return 4
+        if f == 0:              return 7   # לא ידוע
+        if f < 5_000_000:       return 15
+        if f < 10_000_000:      return 13
+        if f < 20_000_000:      return 10
+        if f < 50_000_000:      return 7
+        if f < 100_000_000:     return 4
         return 2
     out["float_score"] = out["float"].apply(float_pts)
 
-    # Price Score (5)
-    def price_pts(p):
-        if 2 <= p <= 10:   return 5
-        if 10 < p <= 15:   return 3
-        if 1 <= p < 2:     return 2
-        return 1
-    out["price_score"] = out["price"].apply(price_pts)
-
-    # Momentum (5)
+    # Dollar Volume (10)
     if "dollar_volume" in out.columns:
-        m_raw = np.log1p(out["gap_pct"] * out["dollar_volume"] / 1_000_000)
-        out["momentum_score"] = (_norm(m_raw, 0, np.log1p(30 * 5)) * 5).round(1)
+        out["dvol_score"] = (_norm(out["dollar_volume"], 250_000, 5_000_000) * 10).round(1)
     else:
-        out["momentum_score"] = 0
+        out["dvol_score"] = 0
+
+    # Sector Sympathy (5)
+    if "is_leader" in out.columns:
+        out["sympathy_score"] = out.apply(
+            lambda r: 5 if r.get("is_leader") else
+                      3 if r.get("is_sympathy") else 0,
+            axis=1
+        )
+    else:
+        out["sympathy_score"] = 0
 
     # Total
     out["score"] = (
-        out["gap_score"]  + out["rvol_score"]  + out["dvol_score"] +
-        out["news_pts"]   + out["float_score"] + out["price_score"] +
-        out["momentum_score"]
+        out["news_pts"]      +
+        out["gap_score"]     +
+        out["rvol_score"]    +
+        out["float_score"]   +
+        out["dvol_score"]    +
+        out["sympathy_score"]
     ).round(1).clip(0, 100)
 
-    # Grade
     out["grade"] = out["score"].apply(get_grade)
 
     out.sort_values("score", ascending=False, inplace=True)
@@ -106,5 +103,6 @@ def score_candidates(df: pd.DataFrame) -> pd.DataFrame:
 
     if len(out) > 0:
         top = out.iloc[0]
-        print(f"[Scoring] Top: {top['ticker']} score={top['score']:.1f} grade={top['grade']}")
+        print(f"[Scoring] Top: {top['ticker']} "
+              f"score={top['score']:.1f} grade={top['grade']}")
     return out
