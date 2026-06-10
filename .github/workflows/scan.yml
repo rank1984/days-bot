@@ -5,7 +5,7 @@ on:
     # Phase 1: Universe — 12:00 UTC = 15:00 ישראל (30 דק' לפני פתיחה)
     - cron: "0 12 * * 1-5"
     # Phase 2: Alerts — 13:45 UTC = 16:45 ישראל (15 דק' אחרי פתיחה)
-    - cron: "45 13 * * 1-5"
+    - cron: "0 13 * * 1-5"
 
   workflow_dispatch:
     inputs:
