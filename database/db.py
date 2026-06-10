@@ -1,10 +1,3 @@
-"""
-database/db.py — שדרוגים #3 + #4
-----------------------------------
-#3: Performance Tracker — שומר alert_price ובודק לאחר שעה / סגירה
-#4: Cooldown — לא לשלוח אותה מניה תוך 4 שעות
-"""
-
 import sqlite3
 import os
 from datetime import datetime, timedelta
@@ -21,53 +14,48 @@ def get_conn():
 
 def init_db():
     with get_conn() as conn:
-        # טבלת התראות
         conn.execute("""
             CREATE TABLE IF NOT EXISTS alerts (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                date            TEXT    NOT NULL,
-                ticker          TEXT    NOT NULL,
-                score           REAL,
-                price           REAL,
-                gap_pct         REAL,
-                vol_ratio       REAL,
-                dollar_volume   REAL,
-                float_shares    INTEGER,
-                news_score      INTEGER,
-                catalyst        TEXT,
-                industry        TEXT,
-                reason          TEXT,
-                sent_at         TEXT,
-                sent            INTEGER DEFAULT 0
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                date          TEXT NOT NULL,
+                ticker        TEXT NOT NULL,
+                alert_price   REAL,
+                score         REAL,
+                grade         TEXT,
+                gap_pct       REAL,
+                pm_volume     INTEGER,
+                vol_ratio     REAL,
+                dollar_volume REAL,
+                float_shares  INTEGER,
+                news_score    INTEGER,
+                catalyst      TEXT,
+                sent_at       TEXT
             )
         """)
-
-        # שדרוג #3 — Performance Tracker
         conn.execute("""
             CREATE TABLE IF NOT EXISTS performance (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticker          TEXT    NOT NULL,
-                alert_date      TEXT    NOT NULL,
-                alert_price     REAL,
-                price_1h        REAL,
-                price_4h        REAL,
-                price_close     REAL,
-                price_next_day  REAL,
-                pnl_1h_pct      REAL,
-                pnl_4h_pct      REAL,
-                pnl_close_pct   REAL,
-                pnl_next_pct    REAL,
-                updated_at      TEXT
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker        TEXT NOT NULL,
+                alert_date    TEXT NOT NULL,
+                alert_price   REAL,
+                open_price    REAL,
+                hod           REAL,
+                close_price   REAL,
+                next_day_open REAL,
+                pnl_open_pct  REAL,
+                pnl_hod_pct   REAL,
+                pnl_close_pct REAL,
+                updated_at    TEXT,
+                UNIQUE(ticker, alert_date)
             )
         """)
         conn.commit()
 
 
-# ── שדרוג #4: Cooldown ───────────────────────────────────
-
 def already_sent_today(date: str, ticker: str) -> bool:
-    """בדיקת cooldown — לא לשלוח אותה מניה תוך COOLDOWN_HOURS."""
-    cutoff = (datetime.utcnow() - timedelta(hours=COOLDOWN_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = (
+        datetime.utcnow() - timedelta(hours=COOLDOWN_HOURS)
+    ).strftime("%Y-%m-%d %H:%M:%S")
     with get_conn() as conn:
         row = conn.execute(
             "SELECT 1 FROM alerts WHERE ticker=? AND sent_at > ?",
@@ -81,75 +69,91 @@ def save_alert(date: str, row: dict):
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO alerts
-                (date, ticker, score, price, gap_pct, vol_ratio,
-                 dollar_volume, float_shares, news_score, catalyst,
-                 industry, reason, sent_at, sent)
+                (date, ticker, alert_price, score, grade, gap_pct,
+                 pm_volume, vol_ratio, dollar_volume, float_shares,
+                 news_score, catalyst, sent_at)
             VALUES
-                (:date, :ticker, :score, :price, :gap_pct, :vol_ratio,
-                 :dollar_volume, :float_shares, :news_score, :catalyst,
-                 :industry, :reason, :sent_at, 1)
+                (:date, :ticker, :alert_price, :score, :grade, :gap_pct,
+                 :pm_volume, :vol_ratio, :dollar_volume, :float_shares,
+                 :news_score, :catalyst, :sent_at)
         """, {
             "date":          date,
             "ticker":        row.get("ticker"),
+            "alert_price":   row.get("price"),
             "score":         row.get("score"),
-            "price":         row.get("price"),
+            "grade":         row.get("grade"),
             "gap_pct":       row.get("gap_pct"),
-            "vol_ratio":     row.get("vol_ratio"),
+            "pm_volume":     row.get("pm_volume"),
+            "vol_ratio":     row.get("vol_ratio", row.get("pm_rvol", 0)),
             "dollar_volume": row.get("dollar_volume"),
             "float_shares":  row.get("float"),
             "news_score":    row.get("news_score", 0),
             "catalyst":      row.get("catalyst", ""),
-            "industry":      row.get("industry", ""),
-            "reason":        row.get("reason", ""),
             "sent_at":       sent_at,
         })
-        conn.commit()
-
-        # שדרוג #3 — צור רשומת performance ריקה לעדכון מאוחר
+        # פתיחת רשומת performance ריקה
         conn.execute("""
-            INSERT INTO performance (ticker, alert_date, alert_price, updated_at)
+            INSERT OR IGNORE INTO performance
+                (ticker, alert_date, alert_price, updated_at)
             VALUES (?, ?, ?, ?)
         """, (row.get("ticker"), date, row.get("price"), sent_at))
         conn.commit()
 
 
-# ── שדרוג #3: Performance Tracker ───────────────────────
-
-def update_performance(ticker: str, alert_date: str, field: str, price: float):
-    """מעדכן מחיר בשלב מסוים (1h, 4h, close, next_day)."""
-    allowed = {"price_1h", "price_4h", "price_close", "price_next_day"}
+def update_performance(ticker: str, date: str, field: str, price: float):
+    """מעדכן שדה מחיר ברשומת performance."""
+    allowed = {"open_price", "hod", "close_price", "next_day_open"}
     if field not in allowed:
         return
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
     with get_conn() as conn:
         row = conn.execute(
             "SELECT alert_price FROM performance WHERE ticker=? AND alert_date=?",
-            (ticker, alert_date)
+            (ticker, date)
         ).fetchone()
-
         if not row:
             return
 
-        alert_price = row["alert_price"]
-        pnl = ((price - alert_price) / alert_price * 100) if alert_price else 0
+        alert_price = row["alert_price"] or 0
+        pnl = round(((price - alert_price) / alert_price * 100), 2) if alert_price else 0
+        pnl_field = field.replace("_price", "_pct").replace("hod", "hod_pct")
+        pnl_map = {
+            "open_price":    "pnl_open_pct",
+            "hod":           "pnl_hod_pct",
+            "close_price":   "pnl_close_pct",
+            "next_day_open": None,
+        }
+        pnl_col = pnl_map.get(field)
 
-        pnl_field = field.replace("price_", "pnl_") + "_pct"
-        conn.execute(f"""
-            UPDATE performance
-            SET {field}=?, {pnl_field}=?, updated_at=?
-            WHERE ticker=? AND alert_date=?
-        """, (price, round(pnl, 2), datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-              ticker, alert_date))
+        if pnl_col:
+            conn.execute(f"""
+                UPDATE performance
+                SET {field}=?, {pnl_col}=?, updated_at=?
+                WHERE ticker=? AND alert_date=?
+            """, (price, pnl, now, ticker, date))
+        else:
+            conn.execute(f"""
+                UPDATE performance
+                SET {field}=?, updated_at=?
+                WHERE ticker=? AND alert_date=?
+            """, (price, now, ticker, date))
         conn.commit()
 
 
-def get_pending_performance() -> list:
-    """מחזיר רשומות שחסר להן עדיין מידע."""
+def get_week_performance() -> list:
+    """מחזיר ביצועים של 7 ימים אחרונים."""
+    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
     with get_conn() as conn:
         rows = conn.execute("""
-            SELECT ticker, alert_date, alert_price
-            FROM performance
-            WHERE price_close IS NULL
-              AND alert_date >= date('now', '-3 days')
-        """).fetchall()
+            SELECT p.ticker, p.alert_date, p.alert_price,
+                   p.open_price, p.hod, p.close_price,
+                   p.pnl_open_pct, p.pnl_hod_pct, p.pnl_close_pct,
+                   a.catalyst, a.grade
+            FROM performance p
+            LEFT JOIN alerts a
+                ON p.ticker = a.ticker AND p.alert_date = a.date
+            WHERE p.alert_date >= ?
+            ORDER BY p.alert_date DESC
+        """, (week_ago,)).fetchall()
     return [dict(r) for r in rows]
