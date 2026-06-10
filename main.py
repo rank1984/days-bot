@@ -11,7 +11,7 @@ from scanner.news      import score_news, get_catalyst_label
 from database.db       import init_db, save_alert, already_sent_today
 from telegram.sender   import (
     send_message, format_preopen_list,
-    format_alert, format_no_candidates
+    format_no_candidates
 )
 from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, MIN_SCORE
 
@@ -35,62 +35,56 @@ def enrich_with_news(candidates):
 def run_full_pipeline():
     print(f"=== [DAYS-BOT] {datetime.now(ET).strftime('%Y-%m-%d %H:%M ET')} ===")
     init_db()
-    today = datetime.now(ET).strftime("%Y-%m-%d")
-
-    # שלב 1 — Universe
+    today    = datetime.now(ET).strftime("%Y-%m-%d")
     universe = build_universe()
+
     if universe.empty:
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
                      format_no_candidates(today, 0))
         return
 
-    # שלב 2 — Premarket scan
+    # סריקת פרימרקט
     candidates = scan_premarket(universe)
 
-    # שלב 3 — אם אין כלום — שלח בכל זאת top 5 לפי גאפ בלבד
     if candidates.empty:
-        print("[Main] No candidates passed filters — sending top gap list.")
-        candidates = universe.copy()
-        candidates["gap_pct"]       = 0.0
-        candidates["pm_volume"]     = 0
-        candidates["pm_high"]       = candidates["price"]
-        candidates["pm_high_dist"]  = 0.0
-        candidates["dollar_volume"] = 0
-        candidates["daily_rvol"]    = 0.0
-        candidates["pm_rvol"]       = 0.0
-        candidates["vol_ratio"]     = 0.0
-        candidates["prev_close"]    = candidates["price"]
-        candidates["float"]         = candidates.get("float", 0)
-        candidates["news_score"]    = 0
-        candidates["catalyst"]      = "—"
-        candidates["is_leader"]     = False
-        candidates["leader"]        = ""
-        candidates["reason"]        = ""
-        candidates["score"]         = 0.0
-        candidates["grade"]         = "C"
-        candidates = candidates.head(5)
+        # אין מניות שעברו פילטרים — שלח הודעה ברורה, לא זבל
+        send_message(
+            TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+            format_no_candidates(today, len(universe))
+        )
+        return
+
+    # Sympathy + News + Score
+    candidates = tag_sympathy(candidates)
+    candidates = enrich_with_news(candidates)
+
+    # סינון Offering
+    candidates = candidates[candidates["news_score"] >= -10].copy()
+
+    if candidates.empty:
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
                      format_no_candidates(today, len(universe)))
         return
 
-    # שלב 4 — Sympathy + News + Score
-    candidates = tag_sympathy(candidates)
-    candidates = enrich_with_news(candidates)
-    candidates = candidates[candidates["news_score"] >= -10].copy()
     candidates = score_candidates(candidates)
 
-    # שלב 5 — שלח רשימה תמיד
-    top5 = candidates.head(5)
-    rows = top5.to_dict("records")
+    # רק מניות מעל MIN_SCORE
+    top = candidates[candidates["score"] >= MIN_SCORE].head(5)
 
-    send_message(
-        TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-        format_preopen_list(rows, today)
-    )
-    print(f"[Main] Sent list of {len(rows)} candidates.")
+    if top.empty:
+        # יש מניות אבל ציון נמוך — שלח עם אזהרה
+        top = candidates.head(3)
+        rows = top.to_dict("records")
+        msg  = format_preopen_list(rows, today, low_quality=True)
+    else:
+        rows = top.to_dict("records")
+        msg  = format_preopen_list(rows, today, low_quality=False)
 
-    # שלב 6 — שמור בDB
-    for _, row in top5.iterrows():
+    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    print(f"[Main] Sent {len(rows)} candidates.")
+
+    # שמור בDB
+    for _, row in top.iterrows():
         ticker = row["ticker"]
         if not already_sent_today(today, ticker):
             save_alert(today, row.to_dict())
