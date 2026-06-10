@@ -2,10 +2,8 @@ name: DAYS-BOT
 
 on:
   schedule:
-    # Phase 1: Universe — 12:00 UTC = 15:00 ישראל (30 דק' לפני פתיחה)
-    - cron: "0 12 * * 1-5"
-    # Phase 2: Alerts — 13:45 UTC = 16:45 ישראל (15 דק' אחרי פתיחה)
-    - cron: "0 13 * * 1-5"
+    # 14:30 ישראל = 11:30 UTC — שעתיים לפני פתיחת השוק
+    - cron: "30 11 * * 1-5"
 
   workflow_dispatch:
     inputs:
@@ -36,7 +34,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run DAYS-BOT
-        run: python main.py ${{ github.event.inputs.mode || '' }}
+        run: python main.py full
         env:
           ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
