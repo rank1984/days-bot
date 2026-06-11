@@ -132,8 +132,12 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
             pm_high_dist  = round(((pm_high - latest) / latest) * 100, 2) if latest > 0 else 0.0
 
             # HARD FILTER 3: Float
+            print(f"[FLOAT] {ticker} float={float_shares:,} MAX={MAX_FLOAT:,}")
             if float_shares > MAX_FLOAT and float_shares > 0:
+                print(f"[FLOAT] {ticker} filtered — float too large")
                 continue
+            if float_shares == 0:
+                print(f"[FLOAT] {ticker} float=0 — unknown, passing through")
 
             # HARD FILTER 4: Dollar Volume מינימום $1.5M
             if dollar_volume < MIN_DOLLAR_VOLUME:
