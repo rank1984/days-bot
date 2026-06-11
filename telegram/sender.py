@@ -91,7 +91,7 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         strength = round(
             r.get("gap_pct", 0) * 0.3 +
             pm_rvol * 10 +
-            max(0, 100 - pm_dist) if pm_dist >= 0 else 0,
+            max(0, 20 - pm_dist) if pm_dist >= 0 else 0,
             1
         )
         lines.append(
