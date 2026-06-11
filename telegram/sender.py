@@ -73,6 +73,27 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
             f"[{grade}]"
         )
         lines.append(f"   📰 {catalyst}")
+   # PM High Distance
+        pm_dist  = r.get("pm_high_dist", -1)
+        if pm_dist >= 0:
+            if pm_dist <= 2:
+                dist_str = f"🔺 {pm_dist:.1f}% — קרוב לפריצה!"
+            elif pm_dist <= 10:
+                dist_str = f"⚡ {pm_dist:.1f}%"
+            elif pm_dist <= 25:
+                dist_str = f"⚠️ {pm_dist:.1f}%"
+            else:
+                dist_str = f"🔴 {pm_dist:.1f}% — רחוק מהשיא"
+        else:
+            dist_str = "—"
+
+        # Strength Score
+        strength = round(
+            r.get("gap_pct", 0) * 0.3 +
+            pm_rvol * 10 +
+            max(0, 100 - pm_dist) if pm_dist >= 0 else 0,
+            1
+        )
         lines.append(
             f"   🏷️ Float: {_float_label(int(r.get('float', 0)))}  "
             f"| RVOL: {pm_rvol:.1f}x"
@@ -81,6 +102,8 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
             f"   📦 PM Vol: {pm_vol:,}  "
             f"| 💵 {_dvol_str(dvol)}"
         )
+        lines.append(f"   🎯 PM High Dist: {dist_str}")
+        lines.append(f"   💪 Strength: {strength}")
 
     lines.append("\n━━━━━━━━━━━━━━━━━━")
     lines.append("⚠️ בדוק כל מניה לפני כניסה")
