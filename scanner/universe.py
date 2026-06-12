@@ -1,181 +1,184 @@
+import os
+import time
 import requests
 import pandas as pd
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockSnapshotRequest, StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
 from datetime import datetime, timedelta
-import pytz
-
 from utils.config import (
     ALPACA_API_KEY, ALPACA_SECRET_KEY,
-    MIN_GAP_PCT, MIN_PREMARKET_VOL,
-    MAX_FLOAT
+    MIN_PRICE, MAX_PRICE, MIN_AVG_VOLUME,
+    FINNHUB_API_KEY
 )
 
-client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-NY_TZ = pytz.timezone("America/New_York")
+UNIVERSE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "universe.csv")
+ALPACA_DATA   = "https://data.alpaca.markets/v2"
+HEADERS = {
+    "APCA-API-KEY-ID":     ALPACA_API_KEY,
+    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+}
 
-MIN_DOLLAR_VOLUME = 1_500_000
-
-
-def get_premarket_bars(ticker: str) -> list:
-    try:
-        now_ny          = datetime.now(NY_TZ)
-        premarket_start = now_ny.replace(hour=4, minute=0, second=0, microsecond=0)
-
-        if now_ny < premarket_start:
-            premarket_start -= timedelta(days=1)
-            now_ny = premarket_start.replace(hour=9, minute=30)
-
-        if premarket_start >= now_ny:
-            return []
-
-        req = StockBarsRequest(
-            symbol_or_symbols=ticker,
-            timeframe=TimeFrame.Minute,
-            start=premarket_start,
-            end=now_ny,
-            feed="iex",
-        )
-        bars_resp = client.get_stock_bars(req)
-        df        = bars_resp.df
-
-        if df is None or df.empty:
-            return []
-
-        if hasattr(df.index, "levels"):
-            lvl0 = df.index.get_level_values(0)
-            if ticker in lvl0:
-                return df.loc[ticker].reset_index().to_dict("records")
-            return []
-
-        return df.reset_index().to_dict("records")
-
-    except Exception as e:
-        print(f"[Premarket] bars error {ticker}: {e}")
-        return []
+BLOCK_TICKERS = {
+    "MSTU","TSLL","TSDD","BITO","ETHA","ETHU","SOXS","TZA","UVIX",
+    "DRIP","NVD","QID","SQQQ","TQQQ","SPXS","SPXL","FAS","FAZ",
+    "LABD","LABU","PURR","BMNU","MSOS",
+}
+BLOCK_NAME_KEYWORDS = [
+    "etf","etn","fund","trust","index","proshares","direxion",
+    "ultrashort","leveraged","inverse","bitcoin","ethereum","crypto",
+    "2x","3x","-2x","-3x",
+]
 
 
-def calc_pm_rvol(pm_volume: int, avg_daily_volume: int) -> float:
-    if avg_daily_volume <= 0 or pm_volume <= 0:
-        return 0.0
-    avg_pm_expected = avg_daily_volume * (330 / 390)
-    return round(pm_volume / avg_pm_expected, 2)
+def get_prev_trading_date() -> str:
+    d = datetime.utcnow() - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
 
 
-def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
-    tickers   = universe["ticker"].tolist()
-    results   = []
-    snapshots = {}
+def is_real_stock(asset: dict) -> bool:
+    ticker = asset.get("symbol", "").upper()
+    name   = asset.get("name", "").lower()
+    if ticker in BLOCK_TICKERS:
+        return False
+    if len(ticker) > 5 or not ticker.isalpha():
+        return False
+    for kw in BLOCK_NAME_KEYWORDS:
+        if kw in name:
+            return False
+    return asset.get("tradable", False)
 
+
+def fetch_active_assets() -> list:
+    url    = "https://paper-api.alpaca.markets/v2/assets"
+    params = {"status": "active", "asset_class": "us_equity"}
+    resp   = requests.get(url, headers=HEADERS, params=params, timeout=30)
+    resp.raise_for_status()
+    assets  = resp.json()
+    tickers = [a["symbol"] for a in assets if is_real_stock(a)]
+    print(f"[Universe] {len(tickers)} real stocks (ETFs filtered).")
+    return tickers
+
+
+def fetch_prev_day_bars(tickers: list) -> pd.DataFrame:
+    date  = get_prev_trading_date()
+    rows  = []
     BATCH = 500
+
     for i in range(0, len(tickers), BATCH):
-        batch = tickers[i:i + BATCH]
+        batch  = tickers[i:i + BATCH]
+        params = {
+            "symbols":   ",".join(batch),
+            "timeframe": "1Day",
+            "start":     date + "T00:00:00Z",
+            "end":       date + "T23:59:59Z",
+            "limit":     10000,
+            "feed":      "iex",
+        }
         try:
-            req  = StockSnapshotRequest(symbol_or_symbols=batch)
-            snap = client.get_stock_snapshot(req)
-            snapshots.update(snap)
-            print(f"[Premarket] Snapshot batch {i//BATCH+1}: {len(snap)} results")
+            resp = requests.get(
+                f"{ALPACA_DATA}/stocks/bars",
+                headers=HEADERS, params=params, timeout=30
+            )
+            resp.raise_for_status()
+            bars_data = resp.json().get("bars", {})
+            for ticker, bars in bars_data.items():
+                if not bars:
+                    continue
+                bar = bars[-1]
+                rows.append({
+                    "ticker": ticker,
+                    "price":  round(bar.get("c", 0), 2),
+                    "open":   round(bar.get("o", 0), 2),
+                    "high":   round(bar.get("h", 0), 2),
+                    "volume": int(bar.get("v", 0)),
+                    "vwap":   round(bar.get("vw", 0), 2),
+                })
         except Exception as e:
-            print(f"[Premarket] Alpaca error: {e}")
+            print(f"[Universe] Batch {i} error: {e}")
 
-    avg_vol_map = universe.set_index("ticker")["volume"].to_dict()
-    float_map   = universe.set_index("ticker")["float"].to_dict() \
-                  if "float" in universe.columns else {}
+        print(f"[Universe] Bars {i//BATCH+1}: {min(i+BATCH,len(tickers))}/{len(tickers)}")
 
-    for _, row in universe.iterrows():
-        ticker = row["ticker"]
-        snap   = snapshots.get(ticker)
-        if snap is None:
-            continue
+    return pd.DataFrame(rows)
 
+
+def fetch_floats(tickers: list) -> dict:
+    """שולף float מ-Finnhub — shareOutstanding כקירוב."""
+    float_map = {}
+    total     = len(tickers)
+
+    for i, ticker in enumerate(tickers):
         try:
-            prev_close = snap.previous_daily_bar.close if snap.previous_daily_bar else None
-            latest     = snap.latest_trade.price        if snap.latest_trade     else None
+            resp = requests.get(
+                "https://finnhub.io/api/v1/stock/profile2",
+                params={"symbol": ticker, "token": FINNHUB_API_KEY},
+                timeout=5
+            )
+            if resp.status_code == 200:
+                fl = resp.json().get("shareOutstanding")
+                if fl and fl > 0:
+                    float_map[ticker] = int(fl * 1_000_000)
+        except Exception:
+            pass
 
-            if not prev_close or not latest or prev_close == 0:
-                continue
+        # Finnhub free: 60 req/min
+        if (i + 1) % 55 == 0:
+            print(f"[Universe] Float {i+1}/{total} — waiting 65s...")
+            time.sleep(65)
 
-            # FILTER 1: Gap מינימום
-            gap_pct = ((latest - prev_close) / prev_close) * 100
-            if gap_pct < MIN_GAP_PCT:
-                continue
+    print(f"[Universe] Got float for {len(float_map)}/{total} tickers.")
+    return float_map
 
-            # שאיבת minute bars
-            pm_bars   = get_premarket_bars(ticker)
-            pm_volume = 0
-            pm_high   = latest
 
-            if pm_bars:
-                for b in pm_bars:
-                    pm_volume += int(b.get("volume", b.get("v", 0)) or 0)
-                    h = float(b.get("high", b.get("h", 0)) or 0)
-                    if h > pm_high:
-                        pm_high = h
+def build_universe() -> pd.DataFrame:
+    os.makedirs(os.path.dirname(UNIVERSE_PATH), exist_ok=True)
+    tickers = fetch_active_assets()
+    df      = fetch_prev_day_bars(tickers)
 
-            # Fallback לנפח יומי
-            if pm_volume == 0 and snap.daily_bar:
-                pm_volume = int(snap.daily_bar.volume)
-                print(f"[INFO] {ticker} fallback to snapshot volume: {pm_volume}")
+    if df.empty:
+        print("[Universe] No data.")
+        return df
 
-            # FILTER 2: נפח פרימרקט
-            if pm_volume < MIN_PREMARKET_VOL:
-                continue
+    # סינון בסיסי — מחיר ונפח
+    df = df[
+        (df["price"] >= MIN_PRICE) &
+        (df["price"] <= MAX_PRICE) &
+        (df["volume"] >= MIN_AVG_VOLUME) &
+        (df["ticker"].str.match(r"^[A-Z]{1,5}$")) &
+        (~df["ticker"].isin(BLOCK_TICKERS))
+    ].copy()
 
-            # חישובים
-            float_shares  = int(float_map.get(ticker, 0))
-            dollar_volume = latest * pm_volume
-            avg_vol       = avg_vol_map.get(ticker, 0)
-            daily_rvol    = round(pm_volume / avg_vol, 2) if avg_vol > 0 else 0.0
-            pm_rvol       = calc_pm_rvol(pm_volume, avg_vol)
-            pm_high_dist  = round(((pm_high - latest) / latest) * 100, 2) \
-                            if latest > 0 else 0.0
+    print(f"[Universe] After price/volume filter: {len(df)} stocks")
 
-            # FILTER 3: Float — חייב להיות אמיתי
-            if float_shares <= 0:
-                print(f"[FLOAT] {ticker} rejected — float unknown")
-                continue
-            if float_shares > MAX_FLOAT:
-                print(f"[FLOAT] {ticker} rejected — float={float_shares:,}")
-                continue
+    # שליפת float
+    float_map      = fetch_floats(df["ticker"].tolist())
+    df["float"]    = df["ticker"].map(float_map).fillna(0).astype(int)
+    df["sector"]   = "Unknown"
+    df["industry"] = "Unknown"
 
-            # FILTER 4: Dollar Volume
-            if dollar_volume < MIN_DOLLAR_VOLUME:
-                print(f"[DEBUG] {ticker} dvol=${dollar_volume:,.0f} — below min")
-                continue
+    # סינון float — רק מניות עם נתון אמיתי
+    before = len(df)
+    df     = df[df["float"] > 0]
+    print(f"[Universe] Float filter (>0): {before} → {len(df)}")
 
-            # ELITE FILTER: RVOL נמוך + Dollar Volume נמוך
-            if pm_rvol < 1.5 and dollar_volume < 2_000_000:
-                print(f"[DEBUG] {ticker} rejected: rvol={pm_rvol} dvol=${dollar_volume:,.0f}")
-                continue
+    # כיסוי float
+    coverage = (df["float"] > 0).sum()
+    print(f"[Universe] Float coverage: {coverage}/{len(df)}")
 
-            results.append({
-                "ticker":        ticker,
-                "price":         round(latest, 2),
-                "prev_close":    round(prev_close, 2),
-                "gap_pct":       round(gap_pct, 2),
-                "pm_volume":     int(pm_volume),
-                "pm_high":       round(pm_high, 2),
-                "pm_high_dist":  pm_high_dist,
-                "dollar_volume": int(dollar_volume),
-                "daily_rvol":    daily_rvol,
-                "pm_rvol":       pm_rvol,
-                "vol_ratio":     pm_rvol,
-                "float":         float_shares,
-                "sector":        row.get("sector", "Unknown"),
-                "industry":      row.get("industry", "Unknown"),
-            })
-            print(f"[Premarket] ✅ {ticker} gap={gap_pct:.1f}% "
-                  f"pm_vol={pm_volume:,} rvol={pm_rvol}x "
-                  f"float={float_shares:,} dvol=${dollar_volume:,.0f}")
+    # מיון לפי נפח
+    df.sort_values("volume", ascending=False, inplace=True)
+    df.reset_index(drop=True, inplace=True)
 
-        except Exception as e:
-            print(f"[Premarket] Error {ticker}: {e}")
-
-    df = pd.DataFrame(results)
-    if not df.empty:
-        df.sort_values("dollar_volume", ascending=False, inplace=True)
-        df.reset_index(drop=True, inplace=True)
-
-    print(f"[Premarket] {len(df)} candidates passed all filters.")
+    df.to_csv(UNIVERSE_PATH, index=False)
+    print(f"[Universe] Saved {len(df)} stocks → {UNIVERSE_PATH}")
     return df
+
+
+def load_universe() -> pd.DataFrame:
+    if os.path.exists(UNIVERSE_PATH):
+        mtime     = datetime.utcfromtimestamp(os.path.getmtime(UNIVERSE_PATH))
+        age_hours = (datetime.utcnow() - mtime).total_seconds() / 3600
+        if age_hours < 8:
+            df = pd.read_csv(UNIVERSE_PATH)
+            print(f"[Universe] Loaded {len(df)} tickers ({age_hours:.1f}h old).")
+            return df
+    return build_universe()
