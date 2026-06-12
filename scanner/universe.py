@@ -63,6 +63,7 @@ def fetch_prev_day_bars(tickers: list) -> pd.DataFrame:
     date  = get_prev_trading_date()
     rows  = []
     BATCH = 500
+
     for i in range(0, len(tickers), BATCH):
         batch  = tickers[i:i + BATCH]
         params = {
@@ -94,12 +95,17 @@ def fetch_prev_day_bars(tickers: list) -> pd.DataFrame:
                 })
         except Exception as e:
             print(f"[Universe] Batch {i} error: {e}")
+
         print(f"[Universe] Bars {i//BATCH+1}: {min(i+BATCH,len(tickers))}/{len(tickers)}")
+
     return pd.DataFrame(rows)
 
 
 def fetch_floats(tickers: list) -> dict:
+    """שולף float מ-Finnhub — shareOutstanding כקירוב."""
     float_map = {}
+    total     = len(tickers)
+
     for i, ticker in enumerate(tickers):
         try:
             resp = requests.get(
@@ -113,10 +119,13 @@ def fetch_floats(tickers: list) -> dict:
                     float_map[ticker] = int(fl * 1_000_000)
         except Exception:
             pass
+
+        # Finnhub free: 60 req/min
         if (i + 1) % 55 == 0:
-            print(f"[Universe] Float {i+1}/{len(tickers)} — waiting 65s...")
+            print(f"[Universe] Float {i+1}/{total} — waiting 65s...")
             time.sleep(65)
-    print(f"[Universe] Got float for {len(float_map)}/{len(tickers)} tickers.")
+
+    print(f"[Universe] Got float for {len(float_map)}/{total} tickers.")
     return float_map
 
 
@@ -124,9 +133,12 @@ def build_universe() -> pd.DataFrame:
     os.makedirs(os.path.dirname(UNIVERSE_PATH), exist_ok=True)
     tickers = fetch_active_assets()
     df      = fetch_prev_day_bars(tickers)
+
     if df.empty:
+        print("[Universe] No data.")
         return df
 
+    # סינון בסיסי — מחיר ונפח
     df = df[
         (df["price"] >= MIN_PRICE) &
         (df["price"] <= MAX_PRICE) &
@@ -135,15 +147,29 @@ def build_universe() -> pd.DataFrame:
         (~df["ticker"].isin(BLOCK_TICKERS))
     ].copy()
 
-    float_map    = fetch_floats(df["ticker"].tolist())
-    df["float"]  = df["ticker"].map(float_map).fillna(0).astype(int)
-    df["sector"] = "Unknown"
+    print(f"[Universe] After price/volume filter: {len(df)} stocks")
+
+    # שליפת float
+    float_map      = fetch_floats(df["ticker"].tolist())
+    df["float"]    = df["ticker"].map(float_map).fillna(0).astype(int)
+    df["sector"]   = "Unknown"
     df["industry"] = "Unknown"
 
+    # סינון float — רק מניות עם נתון אמיתי
+    before = len(df)
+    df     = df[df["float"] > 0]
+    print(f"[Universe] Float filter (>0): {before} → {len(df)}")
+
+    # כיסוי float
+    coverage = (df["float"] > 0).sum()
+    print(f"[Universe] Float coverage: {coverage}/{len(df)}")
+
+    # מיון לפי נפח
     df.sort_values("volume", ascending=False, inplace=True)
     df.reset_index(drop=True, inplace=True)
+
     df.to_csv(UNIVERSE_PATH, index=False)
-    print(f"[Universe] Saved {len(df)} real stocks → {UNIVERSE_PATH}")
+    print(f"[Universe] Saved {len(df)} stocks → {UNIVERSE_PATH}")
     return df
 
 
