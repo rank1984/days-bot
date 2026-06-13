@@ -20,154 +20,145 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def _grade_emoji(grade: str) -> str:
-    return {"A+": "🔥", "A": "✅", "B": "👀", "C": "💤"}.get(grade, "—")
-
-
 def _float_label(f: int) -> str:
-    if f <= 0:
-        return "❓"
-    if f < 20_000_000:
-        return f"🟢 {f/1_000_000:.1f}M"
-    if f < 50_000_000:
-        return f"🟡 {f/1_000_000:.1f}M"
-    if f < 100_000_000:
-        return f"🟠 {f/1_000_000:.0f}M"
-    return f"🔴 {f/1_000_000:.0f}M"
+    if f <= 0:           return "❓"
+    if f < 20_000_000:   return f"🟢 {f/1_000_000:.1f}M"
+    if f < 50_000_000:   return f"🟡 {f/1_000_000:.1f}M"
+    if f < 100_000_000:  return f"🟠 {f/1_000_000:.0f}M"
+    return                      f"🔴 {f/1_000_000:.0f}M"
 
 
-def _dvol_str(dv: float) -> str:
-    if dv >= 1_000_000:
-        return f"${dv/1_000_000:.1f}M"
-    if dv >= 1_000:
-        return f"${dv/1_000:.0f}K"
+def _dvol(dv: float) -> str:
+    if dv >= 1_000_000: return f"${dv/1_000_000:.1f}M"
+    if dv >= 1_000:     return f"${dv/1_000:.0f}K"
     return f"${dv:.0f}"
 
 
 def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
-    now_et = datetime.now(ET)
-    time_str = now_et.strftime("%H:%M ET")
+    time_str = datetime.now(ET).strftime("%H:%M ET")
 
     lines = [
-        f"🎯 <b>DAYS-BOT — לפני פתיחה</b>",
+        f"🎯 <b>DAYS-BOT Elite — לפני פתיחה</b>",
         f"📅 {date}  |  🕐 {time_str}",
+        f"━━━━━━━━━━━━━━━━━━",
     ]
 
     if low_quality:
-        lines.append("⚠️ <b>ציון נמוך — בדוק בזהירות</b>")
-
-    lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("⚠️ <b>ציון נמוך — בדוק בזהירות</b>\n")
 
     for i, r in enumerate(candidates[:5], 1):
-        grade = r.get("grade", "C")
-        emoji = _grade_emoji(grade)
+        fresh   = r.get("freshness", 0)
+        mom_s   = r.get("momentum_score", 0)
+        combined = r.get("combined", 0)
+        pm_rvol = r.get("pm_rvol", 0)
+        pm_vol  = r.get("pm_volume", 0)
+        dvol    = r.get("dollar_volume", 0)
+
+        # PM High
+        pm_dist = r.get("pm_high_dist", 0)
+        if pm_dist <= 2:    dist_e = "🔺"
+        elif pm_dist <= 10: dist_e = "⚡"
+        else:               dist_e = "⚠️"
+
+        # PM High Age
+        age = r.get("pm_high_age", 999)
+        if age <= 5:    age_e = "🟢"
+        elif age <= 15: age_e = "🟡"
+        elif age < 999: age_e = "🔴"
+        else:           age_e = "❓"
+
+        # Momentum
+        mom5  = r.get("momentum_5m", 0)
+        mom_e = "📈" if mom5 >= 0 else "📉"
+
+        # VWAP
+        vd    = r.get("vwap_dist", 0)
+        vd_e  = "🟢" if vd >= 0 else "🔴"
+
+        # Vol Accel
+        accel = r.get("vol_accel", 1.0)
+        if accel >= 2.0:    ac_e = "🚀"
+        elif accel >= 1.5:  ac_e = "⚡"
+        else:               ac_e = "➡️"
+
         catalyst = r.get("catalyst", "—")
-        pm_rvol = r.get("pm_rvol", r.get("vol_ratio", 0))
-        pm_vol = r.get("pm_volume", 0)
-        dvol = r.get("dollar_volume", 0)
 
         lines.append(
-            f"\n{emoji} <b>{i}. {r['ticker']}</b>  "
-            f"${r['price']:.2f}  "
-            f"+{r['gap_pct']:.1f}%  "
-            f"[{grade}]"
+            f"\n<b>{i}. {r['ticker']}</b>  "
+            f"${r['price']:.2f}  +{r['gap_pct']:.1f}%"
         )
         lines.append(f"   📰 {catalyst}")
-   # PM High Distance
-        pm_dist  = r.get("pm_high_dist", -1)
-        if pm_dist >= 0:
-            if pm_dist <= 2:
-                dist_str = f"🔺 {pm_dist:.1f}% — קרוב לפריצה!"
-            elif pm_dist <= 10:
-                dist_str = f"⚡ {pm_dist:.1f}%"
-            elif pm_dist <= 25:
-                dist_str = f"⚠️ {pm_dist:.1f}%"
-            else:
-                dist_str = f"🔴 {pm_dist:.1f}% — רחוק מהשיא"
-        else:
-            dist_str = "—"
-
-        # Strength Score
-        strength = round(
-            r.get("gap_pct", 0) * 0.3 +
-            pm_rvol * 10 +
-            max(0, 20 - pm_dist) if pm_dist >= 0 else 0,
-            1
+        lines.append(
+            f"   🏷️ {_float_label(int(r.get('float',0)))}  "
+            f"| 📦 {pm_vol:,}  | 💵 {_dvol(dvol)}"
         )
         lines.append(
-            f"   🏷️ Float: {_float_label(int(r.get('float', 0)))}  "
-            f"| RVOL: {pm_rvol:.1f}x"
+            f"   {dist_e} PM High: {pm_dist:.1f}%  "
+            f"| {age_e} Age: {age}min"
         )
         lines.append(
-            f"   📦 PM Vol: {pm_vol:,}  "
-            f"| 💵 {_dvol_str(dvol)}"
+            f"   {mom_e} 5min: {mom5:+.1f}%  "
+            f"| {vd_e} VWAP: {vd:+.1f}%  "
+            f"| {ac_e} Accel: {accel:.1f}x"
         )
-        lines.append(f"   🎯 PM High Dist: {dist_str}")
-        lines.append(f"   💪 Strength: {strength}")
+        lines.append(
+            f"   🌊 Fresh: <b>{fresh:.0f}</b>  "
+            f"| ⚡ Mom: <b>{mom_s:.0f}</b>  "
+            f"| 🎯 Combined: <b>{combined:.0f}</b>"
+        )
 
-    lines.append("\n━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ בדוק כל מניה לפני כניסה")
-    lines.append("🚫 לא המלצת השקעה")
+    lines += [
+        "\n━━━━━━━━━━━━━━━━━━",
+        "⚠️ בדוק כל מניה לפני כניסה",
+        "🚫 לא המלצת השקעה",
+    ]
     return "\n".join(lines)
-
-
-def format_alert(row: dict) -> str:
-    grade = row.get("grade", "B")
-    emoji = _grade_emoji(grade)
-    catalyst = row.get("catalyst", "—")
-    pm_high = row.get("pm_high", 0)
-    pm_dist = row.get("pm_high_dist", 0)
-    daily_rvol = row.get("daily_rvol", 0)
-    pm_rvol = row.get("pm_rvol", row.get("vol_ratio", 0))
-    is_leader = row.get("is_leader", False)
-    leader = row.get("leader", "")
-
-    pm_line = ""
-    sym_line = ""
-
-    if pm_high > 0:
-        dist_str = "🔺 קרוב לפריצה!" if abs(pm_dist) < 2 else f"{pm_dist:+.1f}% מהשיא"
-        pm_line = f"📊 <b>PM High:</b>    ${pm_high:.2f}  {dist_str}\n"
-
-    if is_leader:
-        sym_line = "👑 <b>Sector Leader</b>\n"
-    elif leader:
-        sym_line = f"🔗 <b>Sympathy:</b>   {leader}\n"
-
-    return (
-        f"{emoji} <b>DAYS-BOT [{grade}] — {row['ticker']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>מחיר:</b>     ${row['price']:.2f}  "
-        f"(אתמול: ${row.get('prev_close', 0):.2f})\n"
-        f"📈 <b>גאפ:</b>      +{row['gap_pct']:.1f}%\n"
-        f"{pm_line}"
-        f"📰 <b>Catalyst:</b> {catalyst}\n"
-        f"🏷️ <b>Float:</b>    {_float_label(int(row.get('float', 0)))}\n"
-        f"📦 <b>PM Vol:</b>   {row.get('pm_volume', 0):,}\n"
-        f"⚡ <b>PM RVOL:</b>  {pm_rvol:.1f}x  "
-        f"(יומי: {daily_rvol:.1f}x)\n"
-        f"💵 <b>$ Vol:</b>    {_dvol_str(row.get('dollar_volume', 0))}\n"
-        f"{sym_line}"
-        f"⭐ <b>ציון:</b>     {row.get('score', 0):.0f}/100  [{grade}]\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🚫 לא המלצת השקעה"
-    )
 
 
 def format_watchlist(candidates: list, date: str, phase: str = "watchlist") -> str:
     return format_preopen_list(candidates, date)
 
 
+def format_alert(row: dict) -> str:
+    pm_high  = row.get("pm_high", 0)
+    pm_dist  = row.get("pm_high_dist", 0)
+    pm_rvol  = row.get("pm_rvol", row.get("vol_ratio", 0))
+    catalyst = row.get("catalyst", "—")
+    fresh    = row.get("freshness", 0)
+    mom_s    = row.get("momentum_score", 0)
+    combined = row.get("combined", 0)
+
+    pm_line = (
+        f"📊 <b>PM High:</b> ${pm_high:.2f}  "
+        f"{'🔺 פריצה!' if abs(pm_dist) < 2 else f'{pm_dist:+.1f}%'}\n"
+    ) if pm_high > 0 else ""
+
+    return (
+        f"🎯 <b>DAYS-BOT — {row['ticker']}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💰 ${row['price']:.2f}  📈 +{row['gap_pct']:.1f}%\n"
+        f"{pm_line}"
+        f"📰 {catalyst}\n"
+        f"🏷️ {_float_label(int(row.get('float',0)))}  "
+        f"| ⚡ RVOL: {pm_rvol:.1f}x\n"
+        f"📦 {row.get('pm_volume',0):,}  "
+        f"| 💵 {_dvol(row.get('dollar_volume',0))}\n"
+        f"🌊 Fresh: <b>{fresh:.0f}</b>  "
+        f"| ⚡ Mom: <b>{mom_s:.0f}</b>  "
+        f"| 🎯 <b>{combined:.0f}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🚫 לא המלצת השקעה"
+    )
+
+
 def format_no_candidates(date: str, universe_size: int = 0) -> str:
-    now_et = datetime.now(ET)
-    time_str = now_et.strftime("%H:%M ET")
+    time_str = datetime.now(ET).strftime("%H:%M ET")
     return (
         f"🤖 <b>DAYS-BOT — לפני פתיחה</b>\n"
         f"📅 {date}  |  🕐 {time_str}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔍 נסרקו: {universe_size} מניות\n"
         f"😴 אין מועמדות היום\n"
-        f"   (Gap>3%, PM Vol>100K, Float<150M)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⏰ מחר ב-14:30"
     )
