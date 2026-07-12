@@ -227,8 +227,8 @@ def scan_premarket(universe: pd.DataFrame) -> pd.DataFrame:
 
             # HARD FILTER 1: Gap
             gap_pct = ((latest - prev_close) / prev_close) * 100
-            if gap_pct < MIN_GAP_HARD:
-                continue
+           if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+           continue
 
             # Bars
             pm_bars  = get_premarket_bars(ticker)
