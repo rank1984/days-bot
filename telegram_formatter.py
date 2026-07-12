@@ -6,6 +6,7 @@ from datetime import datetime
 import pytz
 import json
 import traceback
+import re
 
 ET = pytz.timezone("America/New_York")
 
@@ -16,21 +17,21 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
     
     if not token:
         print("[Telegram] ❌ TELEGRAM_TOKEN is missing or empty!")
-        print(f"[Telegram] Token value: '{token}'")
         return False
     
     if not chat_id:
         print("[Telegram] ❌ TELEGRAM_CHAT_ID is missing or empty!")
-        print(f"[Telegram] Chat ID value: '{chat_id}'")
         return False
     
     if not text or len(text.strip()) == 0:
         print("[Telegram] ❌ Message text is empty!")
         return False
     
-    # הדפס את ההודעה לקונסול לבדיקה
+    # ניקוי הטקסט מתווים מיוחדים
+    text = clean_text_for_telegram(text)
+    
     print(f"[Telegram] Message length: {len(text)} chars")
-    print(f"[Telegram] Message preview (first 300 chars):")
+    print(f"[Telegram] Message preview:")
     print("-" * 40)
     print(text[:300] + "..." if len(text) > 300 else text)
     print("-" * 40)
@@ -41,12 +42,11 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         payload = {
             "chat_id": chat_id,
             "text": text,
-            "parse_mode": "HTML",
+            "parse_mode": "Markdown",
             "disable_web_page_preview": True
         }
         
         print(f"[Telegram] Sending to chat_id: {chat_id}")
-        print(f"[Telegram] URL: {url[:50]}...")
         
         resp = requests.post(
             url,
@@ -66,25 +66,36 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
             return False
             
     except requests.exceptions.Timeout:
-        print("[Telegram] ❌ Timeout - server didn't respond in 30 seconds")
-        return False
-    except requests.exceptions.ConnectionError as e:
-        print(f"[Telegram] ❌ Connection error: {e}")
+        print("[Telegram] ❌ Timeout")
         return False
     except Exception as e:
-        print(f"[Telegram] ❌ Unexpected error: {e}")
+        print(f"[Telegram] ❌ Error: {e}")
         print(traceback.format_exc())
         return False
 
 
+def clean_text_for_telegram(text: str) -> str:
+    """Clean text for Telegram - remove unsupported HTML tags"""
+    # הסר HTML tags לא תקינים
+    text = re.sub(r'<[^>]+>', '', text)
+    
+    # החלף תווים מיוחדים
+    text = text.replace('•', '-')
+    text = text.replace('★', '*')
+    
+    # נקה רווחים מיותרים
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
+
 def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
-    """Clean, actionable format - only high quality candidates"""
+    """Clean, actionable format - without HTML tags"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
     
     print(f"[Formatter] Formatting {len(candidates)} candidates for {date}")
     
     if not candidates:
-        print("[Formatter] No candidates - returning no candidates message")
         return format_no_candidates(date, 0)
     
     # ====== סינון איכות ======
@@ -94,15 +105,12 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         gap = c.get('gap_pct', 0)
         float_shares = c.get('float', 0)
         
-        # סינון נפח - לפחות 10,000
         if vol < 10_000:
             continue
         
-        # סינון gap - 0-3%
         if gap < 0 or gap > 3.0:
             continue
         
-        # סינון Float - אם יש, רק עד 150M
         if float_shares > 0 and float_shares > 150_000_000:
             continue
         
@@ -113,16 +121,13 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
     if not filtered:
         return format_no_candidates(date, len(candidates))
     
-    # מיון לפי נפח (גבוה קודם)
     sorted_candidates = sorted(filtered, key=lambda x: -x.get('pm_volume', x.get('volume', 0)))
-    
-    # קח עד 5 מועמדויות
     top = sorted_candidates[:5]
     
     lines = [
-        f"🎯 <b>DAYS-BOT — מועמדויות לפריצה</b>",
+        "🎯 DAYS-BOT - מועמדויות לפריצה",
         f"📅 {date}  |  🕐 {time_str}",
-        f"━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━",
     ]
     
     for i, r in enumerate(top, 1):
@@ -156,7 +161,7 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         else:
             gap_icon = "🟠"
         
-        # חישוב AI Score פשוט
+        # חישוב AI Score
         ai_score = 50
         if vol > 200_000:
             ai_score += 20
@@ -172,18 +177,14 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         else:
             quality = "👀 WATCH"
         
-        lines.append(
-            f"\n<b>{i}. {ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%"
-        )
-        lines.append(
-            f"   📊 נפח: {vol_str}  |  Float: {float_str}"
-        )
-        lines.append(
-            f"   🎯 <b>{ai_score}/100</b>  {quality}"
-        )
+        lines.append("")
+        lines.append(f"{i}. {ticker}  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%")
+        lines.append(f"   📊 נפח: {vol_str}  |  Float: {float_str}")
+        lines.append(f"   🎯 {ai_score}/100  {quality}")
     
     lines += [
-        "\n━━━━━━━━━━━━━━━━━━",
+        "",
+        "━━━━━━━━━━━━━━━━━━",
         "⚡ כניסה אידיאלית: gap < 1% + נפח > 200K + Float < 30M",
         "🎯 יעד: +20%  |  🛑 סטופ: -5%",
         "🚫 לא המלצת השקעה"
@@ -197,7 +198,7 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
 def format_no_candidates(date: str, universe_size: int = 0) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     return (
-        f"🎯 <b>DAYS-BOT — מועמדויות לפריצה</b>\n"
+        f"🎯 DAYS-BOT - מועמדויות לפריצה\n"
         f"📅 {date}  |  🕐 {time_str}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔍 נסרקו: {universe_size} מניות\n"
@@ -224,7 +225,7 @@ def format_alert(row: dict) -> str:
     gap_icon = "🟢" if gap < 0.5 else "🟡" if gap < 1.0 else "🟠"
     
     return (
-        f"🎯 <b>{ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%\n"
+        f"🎯 {ticker}  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"📊 נפח: {vol_str}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
