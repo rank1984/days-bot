@@ -5,23 +5,16 @@ import sys
 import os
 from pathlib import Path
 
-# הוסף את ספריית הבסיס לנתיב - זה חייב להיות לפני כל import
+# הוסף את ספריית הבסיס וספריית utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
-
-# בדוק אם config.py קיים
-config_path = BASE_DIR / "config.py"
-if not config_path.exists():
-    print(f"❌ config.py not found at {config_path}")
-    sys.exit(1)
-
-print(f"✅ Config found at {config_path}")
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
 from datetime import datetime
 import time
 
-# Now import config
-import config
+# עכשיו import מ-utils
+from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
 from scanner.news import get_catalyst_label
@@ -45,7 +38,7 @@ def run_full_pipeline():
         # No candidates found
         universe = load_universe()
         msg = format_no_candidates(today, len(universe) if universe else 0)
-        send_message(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID, msg)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found")
         return
     
@@ -61,7 +54,7 @@ def run_full_pipeline():
     
     # Send to Telegram
     msg = format_preopen_list(filtered, today)
-    send_message(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID, msg)
+    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     
     # Save to database
     for c in filtered:
