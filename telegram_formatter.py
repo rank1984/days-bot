@@ -23,89 +23,46 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def calculate_ai_score(row: dict) -> dict:
-    """Simple AI score based on key metrics"""
-    gap = row.get("gap_pct", 0)
-    vol = row.get("pm_volume", row.get("volume", 0))
-    float_shares = row.get("float", 0)
-    
-    score = 0
-    
-    # Gap (0-30) - smaller is better for pre-breakout
-    if gap < 0.5:
-        score += 30
-    elif gap < 1.0:
-        score += 25
-    elif gap < 2.0:
-        score += 20
-    elif gap < 3.0:
-        score += 15
-    else:
-        score += 5
-    
-    # Volume (0-35) - needs enough liquidity
-    if vol >= 500_000:
-        score += 35
-    elif vol >= 250_000:
-        score += 28
-    elif vol >= 100_000:
-        score += 20
-    elif vol >= 50_000:
-        score += 12
-    else:
-        score += 5
-    
-    # Float (0-35) - smaller float = bigger moves
-    if 0 < float_shares < 20_000_000:
-        score += 35
-    elif float_shares < 50_000_000:
-        score += 25
-    elif float_shares < 100_000_000:
-        score += 15
-    elif float_shares < 200_000_000:
-        score += 8
-    else:
-        score += 3
-    
-    # Normalize to 100
-    score = min(100, score)
-    
-    # Quality rating
-    if score >= 80:
-        quality = "🚀 HIGH"
-    elif score >= 65:
-        quality = "✅ GOOD"
-    elif score >= 50:
-        quality = "👀 WATCH"
-    else:
-        quality = "⛔ SKIP"
-    
-    return {'ai_score': score, 'quality': quality}
-
-
 def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
-    """Clean, actionable format"""
+    """Clean, actionable format - only high quality candidates"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
     
-    # Filter out low quality candidates (skip volume < 50K)
+    # ====== סינון איכות ======
+    # 1. רק מניות עם נפח מעל 50,000
+    # 2. רק מניות עם gap קטן (0-2%)
+    # 3. רק מניות עם Float קטן (אם יש נתון)
+    
     filtered = []
     for c in candidates:
         vol = c.get('pm_volume', c.get('volume', 0))
+        gap = c.get('gap_pct', 0)
+        float_shares = c.get('float', 0)
+        
+        # סינון נפח - לפחות 50,000 מניות
         if vol < 50_000:
             continue
+        
+        # סינון gap - רק 0-2%
+        if gap < 0 or gap > 2.0:
+            continue
+        
+        # סינון Float - אם יש נתון, רק קטן מ-100M
+        if float_shares > 0 and float_shares > 100_000_000:
+            continue
+        
         filtered.append(c)
     
     if not filtered:
         return format_no_candidates(date, len(candidates))
     
-    # Calculate AI scores and sort
-    for c in filtered:
-        ai = calculate_ai_score(c)
-        c['ai_score'] = ai['ai_score']
-        c['ai_quality'] = ai['quality']
+    # מיון לפי נפח (גבוה קודם) ואז לפי gap
+    sorted_candidates = sorted(filtered, key=lambda x: (
+        -x.get('pm_volume', x.get('volume', 0)),
+        x.get('gap_pct', 999)
+    ))
     
-    sorted_candidates = sorted(filtered, key=lambda x: x.get('ai_score', 0), reverse=True)
-    top_5 = sorted_candidates[:5]
+    # קח עד 5 מועמדויות
+    top = sorted_candidates[:5]
     
     lines = [
         f"🎯 <b>DAYS-BOT — מועמדויות לפריצה</b>",
@@ -113,24 +70,22 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         f"━━━━━━━━━━━━━━━━━━",
     ]
     
-    for i, r in enumerate(top_5, 1):
+    for i, r in enumerate(top, 1):
         ticker = r['ticker']
         price = r['price']
         gap = r.get('gap_pct', 0)
         vol = r.get('pm_volume', r.get('volume', 0))
         float_shares = r.get('float', 0)
-        ai_score = r.get('ai_score', 0)
-        ai_quality = r.get('ai_quality', '❓')
         
-        # Format volume
+        # פורמט נפח
         if vol >= 1_000_000:
-            vol_str = f"${vol/1_000_000:.1f}M"
+            vol_str = f"{vol/1_000_000:.1f}M"
         elif vol >= 1_000:
-            vol_str = f"${vol/1_000:.0f}K"
+            vol_str = f"{vol/1_000:.0f}K"
         else:
-            vol_str = f"${vol:.0f}"
+            vol_str = f"{vol}"
         
-        # Format float
+        # פורמט Float
         if float_shares >= 1_000_000:
             float_str = f"{float_shares/1_000_000:.1f}M"
         elif float_shares >= 1_000:
@@ -138,13 +93,29 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         else:
             float_str = "?"
         
-        # Gap indicator
-        if gap < 1.0:
+        # אייקון לפי gap
+        if gap < 0.5:
             gap_icon = "🟢"
-        elif gap < 2.0:
+        elif gap < 1.0:
             gap_icon = "🟡"
         else:
             gap_icon = "🟠"
+        
+        # חישוב AI Score פשוט
+        ai_score = 50
+        if vol > 200_000:
+            ai_score += 20
+        if gap < 0.5:
+            ai_score += 15
+        if 0 < float_shares < 30_000_000:
+            ai_score += 15
+        
+        if ai_score >= 80:
+            quality = "🚀 EXCELLENT"
+        elif ai_score >= 65:
+            quality = "✅ GOOD"
+        else:
+            quality = "👀 WATCH"
         
         lines.append(
             f"\n<b>{i}. {ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%"
@@ -153,12 +124,12 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
             f"   📊 נפח: {vol_str}  |  Float: {float_str}"
         )
         lines.append(
-            f"   🎯 AI: <b>{ai_score}/100</b>  {ai_quality}"
+            f"   🎯 <b>{ai_score}/100</b>  {quality}"
         )
     
     lines += [
         "\n━━━━━━━━━━━━━━━━━━",
-        "⚡ כניסה: gap < 1% + נפח > 200K + Float < 50M",
+        "⚡ כניסה אידיאלית: gap < 1% + נפח > 200K + Float < 30M",
         "🎯 יעד: +20%  |  🛑 סטופ: -5%",
         "🚫 לא המלצת השקעה"
     ]
@@ -173,7 +144,7 @@ def format_no_candidates(date: str, universe_size: int = 0) -> str:
         f"📅 {date}  |  🕐 {time_str}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"🔍 נסרקו: {universe_size} מניות\n"
-        f"😴 אין מועמדויות היום\n"
+        f"😴 אין מועמדויות איכותיות היום\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⏰ בדיקה חוזרת מחר ב-14:30"
     )
@@ -181,34 +152,26 @@ def format_no_candidates(date: str, universe_size: int = 0) -> str:
 
 def format_alert(row: dict) -> str:
     """Single alert format"""
-    ai = calculate_ai_score(row)
     ticker = row['ticker']
     price = row['price']
     gap = row.get('gap_pct', 0)
     vol = row.get('pm_volume', row.get('volume', 0))
-    float_shares = row.get('float', 0)
     
     if vol >= 1_000_000:
-        vol_str = f"${vol/1_000_000:.1f}M"
+        vol_str = f"{vol/1_000_000:.1f}M"
     elif vol >= 1_000:
-        vol_str = f"${vol/1_000:.0f}K"
+        vol_str = f"{vol/1_000:.0f}K"
     else:
-        vol_str = f"${vol:.0f}"
+        vol_str = f"{vol}"
     
-    if float_shares >= 1_000_000:
-        float_str = f"{float_shares/1_000_000:.1f}M"
-    else:
-        float_str = f"{float_shares/1_000:.0f}K"
-    
-    gap_icon = "🟢" if gap < 1.0 else "🟡" if gap < 2.0 else "🟠"
+    gap_icon = "🟢" if gap < 0.5 else "🟡" if gap < 1.0 else "🟠"
     
     return (
         f"🎯 <b>{ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"📊 נפח: {vol_str}  |  Float: {float_str}\n"
-        f"🎯 AI: <b>{ai['ai_score']}/100</b>  {ai['quality']}\n"
+        f"📊 נפח: {vol_str}\n"
         f"━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ כניסה: {price:.2f}\n"
+        f"⚡ כניסה: ${price:.2f}\n"
         f"🎯 יעד: ${price * 1.20:.2f} (+20%)\n"
         f"🛑 סטופ: ${price * 0.95:.2f} (-5%)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
