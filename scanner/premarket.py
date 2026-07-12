@@ -1,6 +1,10 @@
 """
 Premarket scanner for DAYS-BOT
 """
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -10,7 +14,6 @@ from typing import List, Dict, Any, Optional
 from config import *
 from scanner.universe import load_universe
 from scanner.news import score_news, get_catalyst_label
-from scanner.breakout import detect_breakout
 import alpaca_trade_api as tradeapi
 
 
@@ -91,9 +94,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     # Calculate RVOL
                     volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
                     
-                    # Get news
-                    catalyst = get_catalyst_label([])  # Will be updated later
-                    
                     # Calculate scores
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
                     momentum_score = 50 + (gap_pct * 0.5)
@@ -113,7 +113,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'freshness': freshness,
                         'momentum_score': momentum_score,
                         'combined': combined,
-                        'catalyst': catalyst,
+                        'catalyst': '—',
                         'pm_high': price,
                         'pm_high_dist': gap_pct,
                         'pm_high_age': 0,
