@@ -5,14 +5,14 @@ import sys
 import os
 from pathlib import Path
 
-# זה חייב להיות לפני כל import אחר!
-BASE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE_DIR))
+# הוסף את ספריית הבסיס לנתיב
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from datetime import datetime
 import time
 
-from config import *
+# Import config as module
+import config
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
 from scanner.news import get_catalyst_label
@@ -36,7 +36,7 @@ def run_full_pipeline():
         # No candidates found
         universe = load_universe()
         msg = format_no_candidates(today, len(universe) if universe else 0)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        send_message(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found")
         return
     
@@ -52,7 +52,7 @@ def run_full_pipeline():
     
     # Send to Telegram
     msg = format_preopen_list(filtered, today)
-    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    send_message(config.TELEGRAM_TOKEN, config.TELEGRAM_CHAT_ID, msg)
     
     # Save to database
     for c in filtered:
