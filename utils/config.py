@@ -8,6 +8,14 @@ FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
+# ── BREAKOUT FILTERS ─────────────────────────────────────
+MIN_RSI_14           = 55
+MAX_RSI_14           = 75
+MIN_VOLUME_RATIO     = 1.5
+MIN_GAIN_5D          = 5.0
+MAX_GAIN_5D          = 25.0       # לא לקפוץ על מנייה שכבר זינקה
+MAX_SHORT_INTEREST   = 0.2
+MIN_AVG_VOLUME_20D   = 100_000
 # ── HARD FILTERS ──────────────────────────────────────────
 MIN_PRICE            = 0.5        # הורד - מניות ממש זולות לתנודתיות גבוהה
 MAX_PRICE            = 15.0       # הורד - לא צריך יותר מ-15$ למיקרו-קאפ
