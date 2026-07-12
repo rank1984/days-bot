@@ -23,6 +23,10 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
+def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
+    """Clean, actionable format - only high quality candidates"""
+    time_str = datetime.now(ET).strftime("%H:%M ET")
+    
     # ====== סינון איכות ======
     filtered = []
     for c in candidates:
@@ -43,7 +47,6 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
             continue
         
         filtered.append(c)
-    
     
     if not filtered:
         return format_no_candidates(date, len(candidates))
