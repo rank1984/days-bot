@@ -42,7 +42,16 @@ def load_universe() -> List[Dict[str, Any]]:
         config.ALPACA_SECRET_KEY, 
         base_url='https://paper-api.alpaca.markets'
     )
-    
+            # Get all assets
+        assets = api.list_assets(status='active')
+        stocks = [
+            a for a in assets 
+            if a.tradable 
+            and a.exchange != 'OTC'
+            and '/' not in a.symbol  # דילוג על קריפטו (BTC/USD)
+            and 'USDC' not in a.symbol
+            and 'USDT' not in a.symbol
+        ]
     try:
         # Get all assets
         assets = api.list_assets(status='active')
