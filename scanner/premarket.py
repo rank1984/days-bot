@@ -3,7 +3,11 @@ Premarket scanner for DAYS-BOT
 """
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pathlib import Path
+
+# הוסף את ספריית הבסיס לנתיב
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
 
 import pandas as pd
 import numpy as np
@@ -11,9 +15,10 @@ from datetime import datetime, timedelta
 import time
 from typing import List, Dict, Any, Optional
 
+# עכשיו import יחסי
 from config import *
 from scanner.universe import load_universe
-from scanner.news import score_news, get_catalyst_label
+from scanner.news import get_catalyst_label
 import alpaca_trade_api as tradeapi
 
 
@@ -74,7 +79,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     # Calculate gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     
-                    # Check gap filter
+                    # Check gap filter - now uses MAX_GAP_PCT
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
                         continue
                     
