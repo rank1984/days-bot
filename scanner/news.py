@@ -5,63 +5,15 @@ import sys
 import os
 from pathlib import Path
 
-# הוסף את ספריית הבסיס לנתיב
+# הוסף את ספריית הבסיס ו-utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
 import re
 from typing import List, Dict, Tuple, Optional
 
-from config import *
-
-# ── CATALYSTS ─────────────────────────────────────────────────
-POSITIVE_CATALYSTS = [
-    "fda", "approval", "approved", "contract", "acquisition",
-    "acquires", "merger", "patent", "earnings", "revenue",
-    "partnership", "grant", "award", "breakthrough", "positive",
-    "phase", "trial", "clearance", "designation",
-    "new", "launch", "product", "collaboration", "license",
-    "agreement", "expansion", "order", "backlog", "win",
-]
-
-NEGATIVE_CATALYSTS = [
-    "offering", "direct offering", "shelf", "registration",
-    "dilution", "warrant", "priced offering", "atm",
-    "bankruptcy", "investigation", "lawsuit", "fine",
-    "restatement", "delay", "cancellation", "recall",
-]
-
-# ── CATALYST WEIGHTS ─────────────────────────────────────
-CATALYST_WEIGHTS = {
-    'fda': 10,
-    'approval': 9,
-    'approved': 9,
-    'breakthrough': 8,
-    'acquisition': 8,
-    'acquires': 8,
-    'merger': 8,
-    'contract': 7,
-    'partnership': 7,
-    'earnings': 6,
-    'revenue': 6,
-    'product': 5,
-    'launch': 5,
-    'collaboration': 5,
-    'license': 5,
-    'agreement': 4,
-    'expansion': 4,
-    'order': 4,
-    'backlog': 4,
-    'win': 4,
-    'grant': 3,
-    'award': 3,
-    'positive': 3,
-    'clearance': 3,
-    'trial': 3,
-    'phase': 3,
-    'designation': 3,
-    'patent': 3,
-}
+from utils.config import *
 
 
 def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
@@ -83,7 +35,7 @@ def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
     # Check positive catalysts
     for cat in POSITIVE_CATALYSTS:
         if cat in text:
-            weight = CATALYST_WEIGHTS.get(cat, 1)
+            weight = 1
             if weight > best_weight:
                 best_weight = weight
                 best_catalyst = cat
