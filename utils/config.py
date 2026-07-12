@@ -9,19 +9,20 @@ TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
 # ── BREAKOUT FILTERS ─────────────────────────────────────
-MIN_RSI_14           = 55
-MAX_RSI_14           = 75
-MIN_VOLUME_RATIO     = 1.5
-MIN_GAIN_5D          = 5.0
-MAX_GAIN_5D          = 25.0       # לא לקפוץ על מנייה שכבר זינקה
+MIN_RSI_14           = 50
+MAX_RSI_14           = 70
+MIN_VOLUME_RATIO     = 1.3
+MIN_GAIN_5D          = 3.0
+MAX_GAIN_5D          = 20.0       # לא לקפוץ על מנייה שכבר זינקה
 MAX_SHORT_INTEREST   = 0.2
 MIN_AVG_VOLUME_20D   = 100_000
 # ── HARD FILTERS ──────────────────────────────────────────
 MIN_PRICE            = 0.5        # הורד - מניות ממש זולות לתנודתיות גבוהה
 MAX_PRICE            = 15.0       # הורד - לא צריך יותר מ-15$ למיקרו-קאפ
-MIN_AVG_VOLUME       = 150_000    # הורד - מניות קטנות יותר, נזילות מספיקה
-MAX_FLOAT            = 50_000_000 # הורד - התמקדות במניות ממש קטנות!
+MIN_AVG_VOLUME       = 100_000    # הורד - מניות קטנות יותר, נזילות מספיקה
+MAX_FLOAT            = 30_000_000 # הורד - התמקדות במניות ממש קטנות!
 MIN_GAP_PCT          = 0.0        # בטל - אתה לא רוצה פער, אתה רוצה מומנטום
+MAX_GAP_PCT          = 3.0          # הוסף - מקסימום 3% gap
 MIN_PREMARKET_VOL    = 0          # בטל - לא מעוניין בפרמרקט
 MIN_DOLLAR_VOLUME    = 100_000    # הורד - מניות קטנות יותר
 
