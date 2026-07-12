@@ -23,34 +23,27 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
-    """Clean, actionable format - only high quality candidates"""
-    time_str = datetime.now(ET).strftime("%H:%M ET")
-    
     # ====== סינון איכות ======
-    # 1. רק מניות עם נפח מעל 50,000
-    # 2. רק מניות עם gap קטן (0-2%)
-    # 3. רק מניות עם Float קטן (אם יש נתון)
-    
     filtered = []
     for c in candidates:
         vol = c.get('pm_volume', c.get('volume', 0))
         gap = c.get('gap_pct', 0)
         float_shares = c.get('float', 0)
         
-        # סינון נפח - לפחות 50,000 מניות
-        if vol < 50_000:
+        # סינון נפח - לפחות 10,000
+        if vol < 10_000:
             continue
         
-        # סינון gap - רק 0-2%
-        if gap < 0 or gap > 2.0:
+        # סינון gap - 0-3%
+        if gap < 0 or gap > 3.0:
             continue
         
-        # סינון Float - אם יש נתון, רק קטן מ-100M
-        if float_shares > 0 and float_shares > 100_000_000:
+        # סינון Float - אם יש, רק עד 150M
+        if float_shares > 0 and float_shares > 150_000_000:
             continue
         
         filtered.append(c)
+    
     
     if not filtered:
         return format_no_candidates(date, len(candidates))
