@@ -5,9 +5,10 @@ import sys
 import os
 from pathlib import Path
 
-# הוסף את ספריית הבסיס לנתיב
+# הוסף את ספריית הבסיס ו-utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
 import pandas as pd
 import numpy as np
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta
 import time
 from typing import List, Dict, Any
 
-import config
+from utils.config import *
 import alpaca_trade_api as tradeapi
 
 
@@ -38,11 +39,13 @@ def load_universe() -> List[Dict[str, Any]]:
     # If no cache, fetch from Alpaca
     print("[Universe] Fetching from Alpaca...")
     api = tradeapi.REST(
-        config.ALPACA_API_KEY, 
-        config.ALPACA_SECRET_KEY, 
+        ALPACA_API_KEY, 
+        ALPACA_SECRET_KEY, 
         base_url='https://paper-api.alpaca.markets'
     )
-            # Get all assets
+    
+    try:
+        # Get all assets
         assets = api.list_assets(status='active')
         stocks = [
             a for a in assets 
@@ -52,10 +55,6 @@ def load_universe() -> List[Dict[str, Any]]:
             and 'USDC' not in a.symbol
             and 'USDT' not in a.symbol
         ]
-    try:
-        # Get all assets
-        assets = api.list_assets(status='active')
-        stocks = [a for a in assets if a.tradable and a.exchange != 'OTC']
         
         print(f"[Universe] Found {len(stocks)} active stocks")
         
