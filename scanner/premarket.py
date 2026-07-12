@@ -5,7 +5,7 @@ import sys
 import os
 from pathlib import Path
 
-# הוסף את ספריית הבסיס לנתיב - זה חייב להיות לפני כל import אחר
+# הוסף את ספריית הבסיס לנתיב
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
@@ -14,8 +14,8 @@ from datetime import datetime, timedelta
 import time
 from typing import List, Dict, Any, Optional
 
-# עכשיו ה-imports יעבדו
-from config import *
+# Import config as module
+import config
 from scanner.universe import load_universe
 from scanner.news import get_catalyst_label
 import alpaca_trade_api as tradeapi
@@ -39,7 +39,11 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"[Premarket] Universe size: {len(universe)}")
     
     # Initialize Alpaca
-    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets')
+    api = tradeapi.REST(
+        config.ALPACA_API_KEY, 
+        config.ALPACA_SECRET_KEY, 
+        base_url='https://paper-api.alpaca.markets'
+    )
     
     candidates = []
     
@@ -78,25 +82,25 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     # Calculate gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     
-                    # Check gap filter - now uses MAX_GAP_PCT
-                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                    # Check gap filter
+                    if gap_pct < config.MIN_GAP_PCT or gap_pct > config.MAX_GAP_PCT:
                         continue
                     
                     # Check price filter
-                    if price < MIN_PRICE or price > MAX_PRICE:
+                    if price < config.MIN_PRICE or price > config.MAX_PRICE:
                         continue
                     
                     # Check volume filter
-                    if prev_volume < MIN_AVG_VOLUME:
+                    if prev_volume < config.MIN_AVG_VOLUME:
                         continue
                     
                     # Get float
                     float_shares = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 0
-                    if float_shares > 0 and float_shares > MAX_FLOAT:
+                    if float_shares > 0 and float_shares > config.MAX_FLOAT:
                         continue
                     
                     # Calculate RVOL
-                    volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
+                    volume_ratio = prev_volume / config.MIN_AVG_VOLUME if config.MIN_AVG_VOLUME > 0 else 1.0
                     
                     # Calculate scores
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
@@ -146,7 +150,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     scored = []
     for c in candidates:
         score = calculate_breakout_score(c)
-        if score >= MIN_SCORE:
+        if score >= config.MIN_SCORE:
             c['score'] = score
             scored.append(c)
     
