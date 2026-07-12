@@ -84,17 +84,30 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     # Calculate gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     
-                    # ====== סינון נפח מינימלי ======
-                    # דילוג על מניות עם נפח קטן מ-50,000
-                    if volume < 50_000:
+                                    # ====== סינון ======
+                    # דילוג על מניות קריפטו
+                    if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
                         continue
                     
-                    # דילוג על מניות עם נפח ממוצע נמוך מ-100,000
-                    if prev_volume < 100_000:
+                    # דילוג על מניות עם נפח קטן מדי (10,000)
+                    if volume < 10_000:
                         continue
                     
-                    # דילוג על gap מעל 2%
-                    if gap_pct > 2.0:
+                    # דילוג על מניות עם נפח ממוצע נמוך מדי (25,000)
+                    if prev_volume < 25_000:
+                        continue
+                    
+                    # דילוג על gap מעל 3%
+                    if gap_pct > 3.0:
+                        continue
+                    
+                    # Check price filter
+                    if price < MIN_PRICE or price > MAX_PRICE:
+                        continue
+                    
+                    # Get float - אם אין, לא נפסול
+                    float_shares = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 0
+                    if float_shares > 0 and float_shares > MAX_FLOAT:
                         continue
                     
                     # Check gap filter
