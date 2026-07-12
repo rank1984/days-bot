@@ -46,7 +46,16 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         ALPACA_SECRET_KEY, 
         base_url='https://paper-api.alpaca.markets'
     )
-    
+    # אחרי ש-load_universe, הוסף:
+def get_float_from_api(symbol):
+    """Get float from Alpaca API"""
+    try:
+        asset = api.get_asset(symbol)
+        if hasattr(asset, 'float_shares'):
+            return asset.float_shares
+    except:
+        pass
+    return 0
     candidates = []
     
     # Process in batches
