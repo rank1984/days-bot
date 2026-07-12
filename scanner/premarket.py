@@ -83,7 +83,18 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     # Calculate gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                    
+                    # אחרי השורה:
+# gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+
+# הוסף את זה:
+# ====== סינון נפח מינימלי ======
+# דילוג על מניות עם נפח קטן מ-50,000
+if volume < 50_000:
+    continue
+
+# דילוג על מניות עם נפח ממוצע נמוך מ-100,000
+if prev_volume < 100_000:
+    continue
                     # Check gap filter
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
                         continue
