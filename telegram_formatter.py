@@ -98,20 +98,23 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
     if not candidates:
         return format_no_candidates(date, 0)
     
-    # ====== סינון איכות ======
+        # ====== סינון איכות מחמיר יותר ======
     filtered = []
     for c in candidates:
         vol = c.get('pm_volume', c.get('volume', 0))
         gap = c.get('gap_pct', 0)
         float_shares = c.get('float', 0)
         
-        if vol < 10_000:
+        # סינון נפח - לפחות 50,000
+        if vol < 50_000:
             continue
         
-        if gap < 0 or gap > 3.0:
+        # סינון gap - 0-2.5%
+        if gap < 0 or gap > 2.5:
             continue
         
-        if float_shares > 0 and float_shares > 150_000_000:
+        # סינון Float - אם יש, רק עד 50M
+        if float_shares > 0 and float_shares > 50_000_000:
             continue
         
         filtered.append(c)
