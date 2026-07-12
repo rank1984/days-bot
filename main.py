@@ -5,13 +5,22 @@ import sys
 import os
 from pathlib import Path
 
-# הוסף את ספריית הבסיס לנתיב
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# הוסף את ספריית הבסיס לנתיב - זה חייב להיות לפני כל import
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+
+# בדוק אם config.py קיים
+config_path = BASE_DIR / "config.py"
+if not config_path.exists():
+    print(f"❌ config.py not found at {config_path}")
+    sys.exit(1)
+
+print(f"✅ Config found at {config_path}")
 
 from datetime import datetime
 import time
 
-# Import config as module
+# Now import config
 import config
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
