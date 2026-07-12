@@ -5,27 +5,37 @@ import requests
 from datetime import datetime
 import pytz
 import json
+import traceback
 
 ET = pytz.timezone("America/New_York")
 
 
 def send_message(token: str, chat_id: str, text: str) -> bool:
-    """Send message to Telegram with better error handling"""
-    if not token or not chat_id:
-        print("[Telegram] ❌ Missing token or chat_id")
+    """Send message to Telegram with detailed error handling"""
+    print(f"[Telegram] 📤 Attempting to send message...")
+    
+    if not token:
+        print("[Telegram] ❌ TELEGRAM_TOKEN is missing or empty!")
+        print(f"[Telegram] Token value: '{token}'")
+        return False
+    
+    if not chat_id:
+        print("[Telegram] ❌ TELEGRAM_CHAT_ID is missing or empty!")
+        print(f"[Telegram] Chat ID value: '{chat_id}'")
         return False
     
     if not text or len(text.strip()) == 0:
-        print("[Telegram] ❌ Empty message")
+        print("[Telegram] ❌ Message text is empty!")
         return False
     
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
     # הדפס את ההודעה לקונסול לבדיקה
-    print(f"[Telegram] Sending message ({len(text)} chars):")
+    print(f"[Telegram] Message length: {len(text)} chars")
+    print(f"[Telegram] Message preview (first 300 chars):")
     print("-" * 40)
-    print(text[:500] + "..." if len(text) > 500 else text)
+    print(text[:300] + "..." if len(text) > 300 else text)
     print("-" * 40)
+    
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     
     try:
         payload = {
@@ -35,6 +45,9 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
             "disable_web_page_preview": True
         }
         
+        print(f"[Telegram] Sending to chat_id: {chat_id}")
+        print(f"[Telegram] URL: {url[:50]}...")
+        
         resp = requests.post(
             url,
             json=payload,
@@ -42,18 +55,25 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
             headers={"Content-Type": "application/json"}
         )
         
-        if resp.status_code != 200:
-            print(f"[Telegram] ❌ Error {resp.status_code}: {resp.text}")
+        print(f"[Telegram] Response status: {resp.status_code}")
+        
+        if resp.status_code == 200:
+            print("[Telegram] ✅ Message sent successfully!")
+            return True
+        else:
+            print(f"[Telegram] ❌ Error {resp.status_code}:")
+            print(f"[Telegram] Response: {resp.text}")
             return False
             
-        print("[Telegram] ✅ Message sent successfully")
-        return True
-        
     except requests.exceptions.Timeout:
-        print("[Telegram] ❌ Timeout")
+        print("[Telegram] ❌ Timeout - server didn't respond in 30 seconds")
+        return False
+    except requests.exceptions.ConnectionError as e:
+        print(f"[Telegram] ❌ Connection error: {e}")
         return False
     except Exception as e:
-        print(f"[Telegram] ❌ Error: {e}")
+        print(f"[Telegram] ❌ Unexpected error: {e}")
+        print(traceback.format_exc())
         return False
 
 
@@ -61,7 +81,10 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
     """Clean, actionable format - only high quality candidates"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
     
+    print(f"[Formatter] Formatting {len(candidates)} candidates for {date}")
+    
     if not candidates:
+        print("[Formatter] No candidates - returning no candidates message")
         return format_no_candidates(date, 0)
     
     # ====== סינון איכות ======
@@ -84,6 +107,8 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
             continue
         
         filtered.append(c)
+    
+    print(f"[Formatter] After filtering: {len(filtered)} candidates")
     
     if not filtered:
         return format_no_candidates(date, len(candidates))
@@ -164,7 +189,9 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         "🚫 לא המלצת השקעה"
     ]
     
-    return "\n".join(lines)
+    result = "\n".join(lines)
+    print(f"[Formatter] Final message length: {len(result)} chars")
+    return result
 
 
 def format_no_candidates(date: str, universe_size: int = 0) -> str:
