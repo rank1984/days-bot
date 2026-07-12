@@ -1,8 +1,18 @@
 """
 News scoring module for DAYS-BOT
 """
+import sys
+import os
+from pathlib import Path
+
+# הוסף את ספריית הבסיס לנתיב
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
+
 import re
 from typing import List, Dict, Tuple, Optional
+
+from config import *
 
 # ── CATALYSTS ─────────────────────────────────────────────────
 POSITIVE_CATALYSTS = [
@@ -82,7 +92,7 @@ def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
     # Check negative catalysts
     for neg in NEGATIVE_CATALYSTS:
         if neg in text:
-            negative_score += 1  # Simple count for negative hits
+            negative_score += 1
     
     # Normalize positive score to reasonable range
     positive_score = min(positive_score, 15)
@@ -101,15 +111,12 @@ def get_catalyst_label(headlines: List[str]) -> str:
     _, _, catalyst = score_news(headlines)
     
     if catalyst:
-        # Clean up catalyst for display
         catalyst = catalyst.replace("direct offering", "offering")
         catalyst = catalyst.capitalize()
         return catalyst
     
-    # Try to extract from first headline
     try:
         first = headlines[0]
-        # Take first 50 chars or until first period
         if len(first) > 50:
             first = first[:50] + "..."
         return first
