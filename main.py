@@ -1,4 +1,20 @@
+# main.py - בהתחלה ממש
 import sys
+import os
+from pathlib import Path
+
+# הוסף את ספריית הבסיס לנתיב
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+
+# עכשיו כל ה-imports יעבדו
+from scanner.premarket import scan_premarket
+from scanner.universe import load_universe
+from scanner.news import get_catalyst_label
+from config import *
+from database.db import init_db, save_alert, already_sent_today
+from telegram_formatter import format_preopen_list, format_no_candidates, send_message
+# ... ושאר ה-importsimport sys
 import time
 from datetime import datetime
 import pytz
