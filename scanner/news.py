@@ -1,122 +1,117 @@
 """
-news.py — Finnhub News Catalyst
----------------------------------
-סורק חדשות 24 שעות אחרונות לכל מניה.
-מחזיר ציון + תווית קריאה לאדם.
+News scoring module for DAYS-BOT
 """
+import re
+from typing import List, Dict, Tuple, Optional
 
-import requests
-from datetime import datetime, timedelta
-from utils.config import FINNHUB_API_KEY, POSITIVE_CATALYSTS, NEGATIVE_CATALYSTS
-
-
-def fetch_news(ticker: str, hours: int = 24) -> list:
-    """שולף חדשות מ-Finnhub עבור טווח שעות אחרון."""
-    try:
-        now   = datetime.utcnow()
-        start = (now - timedelta(hours=hours)).strftime("%Y-%m-%d")
-        end   = now.strftime("%Y-%m-%d")
-        url   = "https://finnhub.io/api/v1/company-news"
-        resp  = requests.get(
-            url,
-            params={
-                "symbol": ticker,
-                "from":   start,
-                "to":     end,
-                "token":  FINNHUB_API_KEY,
-            },
-            timeout=5,
-        )
-        if resp.status_code == 200:
-            return resp.json()[:10]
-    except Exception:
-        pass
-    return []
-
-
-def score_news(ticker: str) -> tuple:
-    """
-    מחזיר (score, headline).
-    score > 0  → חדשות חיוביות
-    score < 0  → offering/dilution — לסנן
-    score = 0  → אין חדשות
-    """
-    articles = fetch_news(ticker)
-    if not articles:
-        return 0, "No news"
-
-    best_score    = 0
-    best_headline = "No catalyst"
-
-    for article in articles:
-        headline = article.get("headline", "").lower()
-        summary  = article.get("summary",  "").lower()
-        text     = headline + " " + summary
-        score    = 0
-
-        # ── News ─────────────────────────────────────────────────
+# ── CATALYSTS ─────────────────────────────────────────────────
 POSITIVE_CATALYSTS = [
-    "fda","approval","approved","contract","acquisition",
-    "acquires","merger","patent","earnings","revenue",
-    "partnership","grant","award","breakthrough","positive",
-    "phase","trial","clearance","designation",
-    "new","launch","product","collaboration","license",  # הוסף
-    "agreement","expansion","order","backlog",           # הוסף
+    "fda", "approval", "approved", "contract", "acquisition",
+    "acquires", "merger", "patent", "earnings", "revenue",
+    "partnership", "grant", "award", "breakthrough", "positive",
+    "phase", "trial", "clearance", "designation",
+    "new", "launch", "product", "collaboration", "license",
+    "agreement", "expansion", "order", "backlog", "win",
 ]
 
 NEGATIVE_CATALYSTS = [
-    "offering","direct offering","shelf","registration",
-    "dilution","warrant","priced offering","atm",
-    "bankruptcy","investigation","lawsuit","fine",       # הוסף
-    "restatement","delay","cancellation",                # הוסף
+    "offering", "direct offering", "shelf", "registration",
+    "dilution", "warrant", "priced offering", "atm",
+    "bankruptcy", "investigation", "lawsuit", "fine",
+    "restatement", "delay", "cancellation", "recall",
 ]
 
-# ── NEW: CATALYST SCORING ──────────────────────────────
+# ── CATALYST WEIGHTS ─────────────────────────────────────
 CATALYST_WEIGHTS = {
-    'fda': 10,          # הכי חזק
+    'fda': 10,
     'approval': 9,
-    'contract': 7,
+    'approved': 9,
+    'breakthrough': 8,
     'acquisition': 8,
+    'acquires': 8,
     'merger': 8,
-    'breakthrough': 7,
-    'partnership': 6,
-    'earnings': 5,
+    'contract': 7,
+    'partnership': 7,
+    'earnings': 6,
+    'revenue': 6,
+    'product': 5,
+    'launch': 5,
+    'collaboration': 5,
+    'license': 5,
+    'agreement': 4,
+    'expansion': 4,
+    'order': 4,
+    'backlog': 4,
+    'win': 4,
+    'grant': 3,
+    'award': 3,
+    'positive': 3,
+    'clearance': 3,
+    'trial': 3,
+    'phase': 3,
+    'designation': 3,
+    'patent': 3,
 }
-        # חדשות שליליות
-        for neg in NEGATIVE_CATALYSTS:
-            if neg in text:
-                score -= 40
-                break
-
-        # חדשות חיוביות
-        if score >= 0:
-            if "fda" in text or "approval" in text or "approved" in text:
-                score += 30
-            elif "acquisition" in text or "merger" in text or "acquires" in text:
-                score += 25
-            elif "contract" in text or "award" in text or "grant" in text:
-                score += 20
-            elif "earnings" in text or "revenue" in text or "profit" in text:
-                score += 15
-            elif "patent" in text or "partnership" in text:
-                score += 10
-            elif any(p in text for p in POSITIVE_CATALYSTS):
-                score += 5
-
-        if score > best_score:
-            best_score    = score
-            best_headline = article.get("headline", "")[:80]
-
-    return best_score, best_headline
 
 
-def get_catalyst_label(news_score: int, headline: str) -> str:
-    """ממיר ציון לתווית קריאה קצרה."""
-    if news_score >= 30: return "🔥 FDA/Approval"
-    if news_score >= 25: return "🤝 רכישה/מיזוג"
-    if news_score >= 20: return "📄 חוזה/מענק"
-    if news_score >= 15: return "💰 תוצאות רבעוניות"
-    if news_score >= 10: return "📋 פטנט/שותפות"
-    if news_score >= 5:  return "📰 חדשות חיוביות"
-    if news_score < 0:   return "⚠️ הנפקה/דילול"
-    return "—"
+def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
+    """
+    Scores news headlines for positive and negative sentiment.
+    
+    Returns:
+        Tuple of (positive_score, negative_score, best_catalyst)
+    """
+    if not headlines:
+        return 0, 0, None
+    
+    text = " ".join(headlines).lower()
+    positive_score = 0
+    negative_score = 0
+    best_catalyst = None
+    best_weight = 0
+    
+    # Check positive catalysts
+    for cat in POSITIVE_CATALYSTS:
+        if cat in text:
+            weight = CATALYST_WEIGHTS.get(cat, 1)
+            if weight > best_weight:
+                best_weight = weight
+                best_catalyst = cat
+            positive_score += weight
+    
+    # Check negative catalysts
+    for neg in NEGATIVE_CATALYSTS:
+        if neg in text:
+            negative_score += 1  # Simple count for negative hits
+    
+    # Normalize positive score to reasonable range
+    positive_score = min(positive_score, 15)
+    negative_score = min(negative_score, 5)
+    
+    return positive_score, negative_score, best_catalyst
+
+
+def get_catalyst_label(headlines: List[str]) -> str:
+    """
+    Returns a short catalyst label for display.
+    """
+    if not headlines:
+        return "—"
+    
+    _, _, catalyst = score_news(headlines)
+    
+    if catalyst:
+        # Clean up catalyst for display
+        catalyst = catalyst.replace("direct offering", "offering")
+        catalyst = catalyst.capitalize()
+        return catalyst
+    
+    # Try to extract from first headline
+    try:
+        first = headlines[0]
+        # Take first 50 chars or until first period
+        if len(first) > 50:
+            first = first[:50] + "..."
+        return first
+    except:
+        return "News"
