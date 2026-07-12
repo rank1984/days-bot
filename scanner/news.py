@@ -54,6 +54,34 @@ def score_news(ticker: str) -> tuple:
         text     = headline + " " + summary
         score    = 0
 
+        # ── News ─────────────────────────────────────────────────
+POSITIVE_CATALYSTS = [
+    "fda","approval","approved","contract","acquisition",
+    "acquires","merger","patent","earnings","revenue",
+    "partnership","grant","award","breakthrough","positive",
+    "phase","trial","clearance","designation",
+    "new","launch","product","collaboration","license",  # הוסף
+    "agreement","expansion","order","backlog",           # הוסף
+]
+
+NEGATIVE_CATALYSTS = [
+    "offering","direct offering","shelf","registration",
+    "dilution","warrant","priced offering","atm",
+    "bankruptcy","investigation","lawsuit","fine",       # הוסף
+    "restatement","delay","cancellation",                # הוסף
+]
+
+# ── NEW: CATALYST SCORING ──────────────────────────────
+CATALYST_WEIGHTS = {
+    'fda': 10,          # הכי חזק
+    'approval': 9,
+    'contract': 7,
+    'acquisition': 8,
+    'merger': 8,
+    'breakthrough': 7,
+    'partnership': 6,
+    'earnings': 5,
+}
         # חדשות שליליות
         for neg in NEGATIVE_CATALYSTS:
             if neg in text:
