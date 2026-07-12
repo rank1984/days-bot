@@ -1,6 +1,8 @@
-alpaca-py
+alpaca-trade-api
 pandas
 numpy
 requests
+python-telegram-bot
+polygon-api-client
+finnhub-python
 pytz
-python-dotenv
