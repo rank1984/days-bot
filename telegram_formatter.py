@@ -4,28 +4,65 @@ Telegram formatter for DAYS-BOT - Clean & Actionable
 import requests
 from datetime import datetime
 import pytz
+import json
 
 ET = pytz.timezone("America/New_York")
 
 
 def send_message(token: str, chat_id: str, text: str) -> bool:
+    """Send message to Telegram with better error handling"""
+    if not token or not chat_id:
+        print("[Telegram] ❌ Missing token or chat_id")
+        return False
+    
+    if not text or len(text.strip()) == 0:
+        print("[Telegram] ❌ Empty message")
+        return False
+    
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    
+    # הדפס את ההודעה לקונסול לבדיקה
+    print(f"[Telegram] Sending message ({len(text)} chars):")
+    print("-" * 40)
+    print(text[:500] + "..." if len(text) > 500 else text)
+    print("-" * 40)
+    
     try:
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        
         resp = requests.post(
             url,
-            json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
-            timeout=10,
+            json=payload,
+            timeout=30,
+            headers={"Content-Type": "application/json"}
         )
-        resp.raise_for_status()
+        
+        if resp.status_code != 200:
+            print(f"[Telegram] ❌ Error {resp.status_code}: {resp.text}")
+            return False
+            
+        print("[Telegram] ✅ Message sent successfully")
         return True
+        
+    except requests.exceptions.Timeout:
+        print("[Telegram] ❌ Timeout")
+        return False
     except Exception as e:
-        print(f"[Telegram] Error: {e}")
+        print(f"[Telegram] ❌ Error: {e}")
         return False
 
 
 def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
     """Clean, actionable format - only high quality candidates"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
+    
+    if not candidates:
+        return format_no_candidates(date, 0)
     
     # ====== סינון איכות ======
     filtered = []
@@ -51,11 +88,8 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
     if not filtered:
         return format_no_candidates(date, len(candidates))
     
-    # מיון לפי נפח (גבוה קודם) ואז לפי gap
-    sorted_candidates = sorted(filtered, key=lambda x: (
-        -x.get('pm_volume', x.get('volume', 0)),
-        x.get('gap_pct', 999)
-    ))
+    # מיון לפי נפח (גבוה קודם)
+    sorted_candidates = sorted(filtered, key=lambda x: -x.get('pm_volume', x.get('volume', 0)))
     
     # קח עד 5 מועמדויות
     top = sorted_candidates[:5]
