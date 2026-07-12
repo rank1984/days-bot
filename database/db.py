@@ -12,7 +12,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     try:
-        # Create table if not exists
+        # Create tables
         conn.execute("""
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -26,7 +26,20 @@ def init_db():
             )
         """)
         
-        # Check for missing columns and add them
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS performance (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                score REAL,
+                price REAL,
+                gap_pct REAL,
+                sent_at TEXT,
+                UNIQUE(ticker, date)
+            )
+        """)
+        
+        # Check and fix missing columns in alerts
         cursor = conn.execute("PRAGMA table_info(alerts)")
         columns = [row[1] for row in cursor.fetchall()]
         
@@ -59,16 +72,7 @@ def init_db():
 
 
 def already_sent_today(ticker: str, date_str: str = None) -> bool:
-    """
-    Check if a ticker was already sent today
-    
-    Args:
-        ticker: Stock symbol
-        date_str: Date string in format YYYY-MM-DD (default: today)
-    
-    Returns:
-        True if already sent today
-    """
+    """Check if a ticker was already sent today"""
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
     
@@ -87,16 +91,7 @@ def already_sent_today(ticker: str, date_str: str = None) -> bool:
 
 
 def save_alert(ticker: str, price: float, gap_pct: float, score: float, catalyst: str = ""):
-    """
-    Save an alert to the database
-    
-    Args:
-        ticker: Stock symbol
-        price: Current price
-        gap_pct: Gap percentage
-        score: Score from scanning
-        catalyst: News catalyst
-    """
+    """Save an alert to the database"""
     sent_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -108,6 +103,49 @@ def save_alert(ticker: str, price: float, gap_pct: float, score: float, catalyst
         print(f"[DB] ✅ Saved: {ticker} at {sent_at}")
     except Exception as e:
         print(f"[DB] ❌ Save error: {e}")
+    finally:
+        conn.close()
+
+
+def update_performance(ticker: str, date: str, score: float, price: float, gap_pct: float):
+    """Update daily performance tracking"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """INSERT OR REPLACE INTO performance 
+               (ticker, date, score, price, gap_pct, sent_at) 
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (ticker, date, score, price, gap_pct, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"[DB] ❌ update_performance error: {e}")
+    finally:
+        conn.close()
+
+
+def get_week_performance(date: str) -> list:
+    """Get performance for the week ending on given date"""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        target_date = datetime.strptime(date, "%Y-%m-%d")
+        week_start = target_date - timedelta(days=target_date.weekday())
+        week_end = week_start + timedelta(days=6)
+        
+        start_str = week_start.strftime("%Y-%m-%d")
+        end_str = week_end.strftime("%Y-%m-%d")
+        
+        rows = conn.execute(
+            """SELECT ticker, date, score, price, gap_pct 
+               FROM performance 
+               WHERE date BETWEEN ? AND ?
+               ORDER BY date DESC, score DESC""",
+            (start_str, end_str)
+        ).fetchall()
+        return rows
+    except Exception as e:
+        print(f"[DB] ❌ get_week_performance error: {e}")
+        return []
     finally:
         conn.close()
 
@@ -124,23 +162,6 @@ def get_today_alerts():
         return rows
     except Exception as e:
         print(f"[DB] ❌ get_today_alerts error: {e}")
-        return []
-    finally:
-        conn.close()
-
-
-def get_recent_alerts(days: int = 7):
-    """Get alerts from the last N days"""
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        rows = conn.execute(
-            "SELECT * FROM alerts WHERE sent_at >= ? ORDER BY sent_at DESC",
-            (cutoff,)
-        ).fetchall()
-        return rows
-    except Exception as e:
-        print(f"[DB] ❌ get_recent_alerts error: {e}")
         return []
     finally:
         conn.close()
