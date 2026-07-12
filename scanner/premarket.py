@@ -83,18 +83,20 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     # Calculate gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                    # אחרי השורה:
-# gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-
-# הוסף את זה:
-# ====== סינון נפח מינימלי ======
-# דילוג על מניות עם נפח קטן מ-50,000
-if volume < 50_000:
-    continue
-
-# דילוג על מניות עם נפח ממוצע נמוך מ-100,000
-if prev_volume < 100_000:
-    continue
+                    
+                    # ====== סינון נפח מינימלי ======
+                    # דילוג על מניות עם נפח קטן מ-50,000
+                    if volume < 50_000:
+                        continue
+                    
+                    # דילוג על מניות עם נפח ממוצע נמוך מ-100,000
+                    if prev_volume < 100_000:
+                        continue
+                    
+                    # דילוג על gap מעל 2%
+                    if gap_pct > 2.0:
+                        continue
+                    
                     # Check gap filter
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
                         continue
@@ -183,57 +185,50 @@ def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
     
     # Gap (0-20 points) - smaller gap is better for pre-breakout
     gap = candidate.get('gap_pct', 0)
-    if gap < 1.0:
+    if gap < 0.5:
         score += 20
-    elif gap < 2.0:
+    elif gap < 1.0:
         score += 15
-    elif gap < 3.0:
+    elif gap < 1.5:
         score += 10
-    else:
-        score += 5
-    
-    # Volume ratio (0-25 points)
-    vol_ratio = candidate.get('volume_ratio', 1.0)
-    if vol_ratio >= 2.0:
-        score += 25
-    elif vol_ratio >= 1.5:
-        score += 18
-    elif vol_ratio >= 1.2:
-        score += 10
-    else:
-        score += 5
-    
-    # Float (0-20 points) - smaller is better
-    float_shares = candidate.get('float', 0)
-    if float_shares < 20_000_000:
-        score += 20
-    elif float_shares < 50_000_000:
-        score += 12
-    elif float_shares < 100_000_000:
+    elif gap < 2.0:
         score += 5
     else:
         score += 2
     
-    # Freshness (0-20 points)
-    freshness = candidate.get('freshness', 0)
-    if freshness >= 80:
+    # Volume (0-30 points) - higher is better
+    volume = candidate.get('volume', 0)
+    if volume >= 500_000:
+        score += 30
+    elif volume >= 300_000:
+        score += 25
+    elif volume >= 200_000:
         score += 20
-    elif freshness >= 60:
-        score += 14
-    elif freshness >= 40:
-        score += 8
+    elif volume >= 100_000:
+        score += 15
     else:
-        score += 4
+        score += 5
     
-    # Dollar volume (0-15 points)
+    # Float (0-25 points) - smaller is better
+    float_shares = candidate.get('float', 0)
+    if 0 < float_shares < 20_000_000:
+        score += 25
+    elif float_shares < 50_000_000:
+        score += 18
+    elif float_shares < 100_000_000:
+        score += 10
+    else:
+        score += 3
+    
+    # Dollar volume (0-25 points)
     dvol = candidate.get('dollar_volume', 0)
     if dvol >= 1_000_000:
-        score += 15
+        score += 25
     elif dvol >= 500_000:
-        score += 10
+        score += 18
     elif dvol >= 250_000:
-        score += 5
+        score += 10
     else:
-        score += 2
+        score += 3
     
     return min(100, score)
