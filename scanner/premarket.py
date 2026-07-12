@@ -6,7 +6,8 @@ import os
 from pathlib import Path
 
 # הוסף את ספריית הבסיס לנתיב
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
 
 import pandas as pd
 import numpy as np
@@ -14,7 +15,7 @@ from datetime import datetime, timedelta
 import time
 from typing import List, Dict, Any, Optional
 
-# Import config as module
+# Import config
 import config
 from scanner.universe import load_universe
 from scanner.news import get_catalyst_label
