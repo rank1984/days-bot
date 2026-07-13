@@ -1,5 +1,5 @@
 """
-Premarket scanner for DAYS-BOT - Using Alpaca
+Premarket scanner for DAYS-BOT - With Debug
 """
 import sys
 import os
@@ -33,7 +33,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     print(f"[Premarket] Universe size: {len(universe)}")
     
-    # ====== Alpaca API ======
     api = tradeapi.REST(
         ALPACA_API_KEY, 
         ALPACA_SECRET_KEY, 
@@ -42,7 +41,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     candidates = []
     
-    # ====== סטטיסטיקות ======
     stats = {
         'total': len(universe),
         'no_snapshot': 0,
@@ -54,13 +52,15 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         'final_passed': 0,
     }
     
+    # ====== DEBUG: הצג 20 מניות ראשונות ======
+    debug_samples = []
+    
     batch_size = 100
     for i in range(0, len(universe), batch_size):
         batch = universe[i:i+batch_size]
         symbols = [s['symbol'] for s in batch]
         
         try:
-            # ====== Alpaca Snapshot ======
             snapshots = api.get_snapshots(symbols)
             
             for symbol in symbols:
@@ -76,6 +76,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     
                     price = latest_trade.price
+                    volume = latest_trade.size
                     
                     daily_bar = snapshot.daily_bar
                     if not daily_bar:
@@ -84,6 +85,18 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     prev_close = daily_bar.close
                     prev_volume = daily_bar.volume
+                    
+                    # ====== DEBUG: אסוף 20 דוגמאות ======
+                    if len(debug_samples) < 20:
+                        gap_sample = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                        debug_samples.append({
+                            'symbol': symbol,
+                            'price': price,
+                            'volume': volume,
+                            'prev_volume': prev_volume,
+                            'prev_close': prev_close,
+                            'gap': gap_sample,
+                        })
                     
                     # ====== Filters ======
                     # Price
@@ -97,7 +110,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['gap_passed'] += 1
                     
-                    # Volume
+                    # Volume (נשתמש ב-prev_volume)
                     if prev_volume < MIN_AVG_VOLUME:
                         continue
                     stats['volume_passed'] += 1
@@ -143,20 +156,17 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         except Exception as e:
             print(f"[Premarket] Batch error: {e}")
             continue
-    # ====== DEBUG: הצג את 20 המניות הראשונות ======
-debug_count = 0
-for symbol in symbols[:20]:
-    try:
-        snapshot = snapshots.get(symbol)
-        if snapshot and snapshot.latest_trade and snapshot.daily_bar:
-            price = snapshot.latest_trade.price
-            volume = snapshot.latest_trade.size
-            prev_close = snapshot.daily_bar.close
-            prev_volume = snapshot.daily_bar.volume
-            gap = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-            print(f"[DEBUG] {symbol}: Price=${price:.2f}, Volume={volume:,}, PrevVol={prev_volume:,}, Gap={gap:.2f}%")
-    except:
-        pass
+    
+    # ====== הדפסת DEBUG ======
+    print("\n" + "="*60)
+    print("🔍 DEBUG SAMPLES (first 20 stocks)")
+    print("="*60)
+    print(f"{'Symbol':<10} | {'Price':>8} | {'Volume':>10} | {'PrevVol':>10} | {'Gap%':>8}")
+    print("-"*60)
+    for s in debug_samples:
+        print(f"{s['symbol']:<10} | ${s['price']:>7.2f} | {s['volume']:>10,} | {s['prev_volume']:>10,} | {s['gap']:>8.2f}%")
+    print("="*60 + "\n")
+    
     # ====== סטטיסטיקות ======
     print("\n" + "="*50)
     print("📊 PREMARKET SCAN STATISTICS")
