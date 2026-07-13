@@ -143,7 +143,20 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         except Exception as e:
             print(f"[Premarket] Batch error: {e}")
             continue
-    
+    # ====== DEBUG: הצג את 20 המניות הראשונות ======
+debug_count = 0
+for symbol in symbols[:20]:
+    try:
+        snapshot = snapshots.get(symbol)
+        if snapshot and snapshot.latest_trade and snapshot.daily_bar:
+            price = snapshot.latest_trade.price
+            volume = snapshot.latest_trade.size
+            prev_close = snapshot.daily_bar.close
+            prev_volume = snapshot.daily_bar.volume
+            gap = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+            print(f"[DEBUG] {symbol}: Price=${price:.2f}, Volume={volume:,}, PrevVol={prev_volume:,}, Gap={gap:.2f}%")
+    except:
+        pass
     # ====== סטטיסטיקות ======
     print("\n" + "="*50)
     print("📊 PREMARKET SCAN STATISTICS")
