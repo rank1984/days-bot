@@ -25,7 +25,7 @@ import alpaca_trade_api as tradeapi
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     """
-    Scan premarket for breakout candidates
+    Scan premarket for breakout candidates with detailed statistics
     """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
@@ -46,17 +46,23 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         ALPACA_SECRET_KEY, 
         base_url='https://paper-api.alpaca.markets'
     )
-    # אחרי ש-load_universe, הוסף:
-def get_float_from_api(symbol):
-    """Get float from Alpaca API"""
-    try:
-        asset = api.get_asset(symbol)
-        if hasattr(asset, 'float_shares'):
-            return asset.float_shares
-    except:
-        pass
-    return 0
+    
     candidates = []
+    
+    # ====== סטטיסטיקות סינון ======
+    stats = {
+        'total': len(universe),
+        'price_pass': 0,
+        'volume_pass': 0,
+        'gap_pass': 0,
+        'float_pass': 0,
+        'momentum_pass': 0,
+        'final_pass': 0,
+        'crypto_filtered': 0,
+        'no_snapshot': 0,
+        'no_trade': 0,
+        'no_bar': 0,
+    }
     
     # Process in batches
     batch_size = 100
@@ -65,92 +71,72 @@ def get_float_from_api(symbol):
         symbols = [s['symbol'] for s in batch]
         
         try:
-            # Get latest quotes/snapshot
             snapshots = api.get_snapshots(symbols)
             
             for symbol in symbols:
                 try:
                     snapshot = snapshots.get(symbol)
                     if not snapshot:
+                        stats['no_snapshot'] += 1
                         continue
                     
-                    # Extract data
                     latest_trade = snapshot.latest_trade
                     if not latest_trade:
+                        stats['no_trade'] += 1
                         continue
                     
                     price = latest_trade.price
                     volume = latest_trade.size
                     
-                    # Get daily bar
                     daily_bar = snapshot.daily_bar
                     if not daily_bar:
+                        stats['no_bar'] += 1
                         continue
                     
                     prev_close = daily_bar.close
                     prev_volume = daily_bar.volume
                     
-                    # Calculate gap
-                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                    
-                                          # ====== סינון ======
-                    # דילוג על מניות קריפטו
+                    # ====== סינון ======
+                    # 1. דילוג על קריפטו
                     if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
+                        stats['crypto_filtered'] += 1
                         continue
                     
-                    # ====== סינון נפח מחמיר יותר ======
-                    # דילוג על מניות עם נפח קטן מ-50,000
-                    if volume < 50_000:
-                        continue
-                    
-                    # דילוג על מניות עם נפח ממוצע נמוך מ-100,000
-                    if prev_volume < 100_000:
-                        continue
-                    
-                    # דילוג על gap מעל 2.5%
-                    if gap_pct > 2.5:
-                        continue
-                    
-                    # Check price filter
+                    # 2. סינון Price
                     if price < MIN_PRICE or price > MAX_PRICE:
+                        stats['price_pass'] += 1
                         continue
+                    stats['price_pass'] += 1
                     
-                    # Get float - רק אם יש וקטן
-                    float_shares = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 0
-                    if float_shares > 0 and float_shares > MAX_FLOAT:
-                        continue
-                    
-                    # ====== דרישת נפח מינימלי בדולרים ======
-                    dollar_volume = price * volume
-                    if dollar_volume < 100_000:  # לפחות $100K נפח
-                        continue
-                    
-                    # Check gap filter
+                    # 3. סינון Gap
+                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                        stats['gap_pass'] += 1
                         continue
+                    stats['gap_pass'] += 1
                     
-                    # Check price filter
-                    if price < MIN_PRICE or price > MAX_PRICE:
+                    # 4. סינון נפח
+                    if volume < 50_000 or prev_volume < 100_000:
+                        stats['volume_pass'] += 1
                         continue
+                    stats['volume_pass'] += 1
                     
-                    # Check volume filter
-                    if prev_volume < MIN_AVG_VOLUME:
-                        continue
-                    
-                    # Get float
+                    # 5. סינון Float
                     float_shares = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 0
                     if float_shares > 0 and float_shares > MAX_FLOAT:
+                        stats['float_pass'] += 1
                         continue
+                    stats['float_pass'] += 1
                     
-                    # Calculate RVOL
-                    volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
+                    # ====== עבר את כל הפילטרים ======
+                    stats['final_pass'] += 1
                     
                     # Calculate scores
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
                     momentum_score = 50 + (gap_pct * 0.5)
                     combined = (freshness + momentum_score) / 2
+                    volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
                     
-                    # Build candidate
                     candidate = {
                         'ticker': symbol,
                         'price': price,
@@ -178,7 +164,6 @@ def get_float_from_api(symbol):
                     candidates.append(candidate)
                     
                 except Exception as e:
-                    print(f"[Premarket] Error on {symbol}: {e}")
                     continue
             
             print(f"[Premarket] Processed {min(i+batch_size, len(universe))}/{len(universe)}")
@@ -187,7 +172,23 @@ def get_float_from_api(symbol):
             print(f"[Premarket] Batch error: {e}")
             continue
     
-    print(f"[Premarket] Found {len(candidates)} candidates before scoring")
+    # ====== הדפסת סטטיסטיקות ======
+    print("\n" + "="*50)
+    print("📊 PREMARKET SCAN STATISTICS")
+    print("="*50)
+    print(f"Total Universe:        {stats['total']:,}")
+    print(f"Crypto Filtered:       {stats['crypto_filtered']:,}")
+    print(f"No Snapshot:           {stats['no_snapshot']:,}")
+    print(f"No Trade:              {stats['no_trade']:,}")
+    print(f"No Daily Bar:          {stats['no_bar']:,}")
+    print("-"*50)
+    print(f"✅ Price Pass:          {stats['price_pass']:,}")
+    print(f"✅ Gap Pass:            {stats['gap_pass']:,}")
+    print(f"✅ Volume Pass:         {stats['volume_pass']:,}")
+    print(f"✅ Float Pass:          {stats['float_pass']:,}")
+    print("-"*50)
+    print(f"🎯 FINAL CANDIDATES:    {stats['final_pass']:,}")
+    print("="*50 + "\n")
     
     # Score candidates
     scored = []
@@ -197,66 +198,15 @@ def get_float_from_api(symbol):
             c['score'] = score
             scored.append(c)
     
-    # Sort by score
     scored.sort(key=lambda x: x.get('score', 0), reverse=True)
     
     print(f"[Premarket] ✅ Found {len(scored)} qualified candidates")
     
-    return scored[:10]  # Return top 10
-
-
-def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    """
-    Calculate breakout score for a candidate
-    """
-    score = 0
+    # ====== הדפס את 5 המובילים שנפסלו ======
+    if scored:
+        print("\n🏆 TOP 5 CANDIDATES:")
+        for i, c in enumerate(scored[:5], 1):
+            print(f"  {i}. {c['ticker']}  ${c['price']:.2f}  Gap: {c['gap_pct']:+.1f}%  Score: {c.get('score', 0):.0f}")
+        print()
     
-    # Gap (0-20 points) - smaller gap is better for pre-breakout
-    gap = candidate.get('gap_pct', 0)
-    if gap < 0.5:
-        score += 20
-    elif gap < 1.0:
-        score += 15
-    elif gap < 1.5:
-        score += 10
-    elif gap < 2.0:
-        score += 5
-    else:
-        score += 2
-    
-    # Volume (0-30 points) - higher is better
-    volume = candidate.get('volume', 0)
-    if volume >= 500_000:
-        score += 30
-    elif volume >= 300_000:
-        score += 25
-    elif volume >= 200_000:
-        score += 20
-    elif volume >= 100_000:
-        score += 15
-    else:
-        score += 5
-    
-    # Float (0-25 points) - smaller is better
-    float_shares = candidate.get('float', 0)
-    if 0 < float_shares < 20_000_000:
-        score += 25
-    elif float_shares < 50_000_000:
-        score += 18
-    elif float_shares < 100_000_000:
-        score += 10
-    else:
-        score += 3
-    
-    # Dollar volume (0-25 points)
-    dvol = candidate.get('dollar_volume', 0)
-    if dvol >= 1_000_000:
-        score += 25
-    elif dvol >= 500_000:
-        score += 18
-    elif dvol >= 250_000:
-        score += 10
-    else:
-        score += 3
-    
-    return min(100, score)
+    return scored[:10]
