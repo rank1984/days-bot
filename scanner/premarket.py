@@ -108,7 +108,23 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                             'price': price,
                             'volume': volume
                         })
-                    
+                  # 5. סינון Float
+print(f"[DEBUG] {symbol} - entering float filter")
+float_shares = None
+if hasattr(snapshot, 'float_shares'):
+    float_shares = snapshot.float_shares
+    print(f"[DEBUG] {symbol} - float_shares = {float_shares}")
+else:
+    print(f"[DEBUG] {symbol} - no float_shares attribute")
+
+if float_shares is not None and float_shares > 0:
+    if float_shares > MAX_FLOAT:
+        stats['float_pass'] += 1
+        print(f"[DEBUG] {symbol} - float too high, filtered")
+        continue
+# אם אין Float - אל תפסול
+print(f"[DEBUG] {symbol} - passed float filter")
+stats['float_pass'] += 1  
            # ====== סינון ======
 # 1. דילוג על קריפטו
 if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
