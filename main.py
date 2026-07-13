@@ -92,9 +92,6 @@ def run_full_pipeline():
         print(f"[Main] Saved {len(filtered)} candidates to database")
     else:
         print("[Main] ❌ Failed to send message to Telegram")
-        print("[Main] Candidates found but not sent - check Telegram credentials")
-        print(f"[Main] Token: {TELEGRAM_TOKEN[:10]}...{TELEGRAM_TOKEN[-5:] if TELEGRAM_TOKEN else 'MISSING'}")
-        print(f"[Main] Chat ID: {TELEGRAM_CHAT_ID}")
 
 
 if __name__ == "__main__":
