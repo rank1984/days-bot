@@ -109,47 +109,50 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                             'volume': volume
                         })
                     
-                    # ====== סינון ======
-                    # 1. דילוג על קריפטו
-                    if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
-                        stats['crypto_filtered'] += 1
-                        continue
-                    
-                    # 2. סינון Price
-                    if price < MIN_PRICE or price > MAX_PRICE:
-                        stats['price_pass'] += 1
-                        continue
-                    stats['price_pass'] += 1
-                    
-                    # 3. סינון Gap
-                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-                        stats['gap_pass'] += 1
-                        continue
-                    stats['gap_pass'] += 1
-                    
-                    # 4. סינון נפח
-                    if volume < 50_000 or prev_volume < 100_000:
-                        stats['volume_pass'] += 1
-                        continue
-                    stats['volume_pass'] += 1
-                    
-                    # 5. סינון Float - רק אם יש נתון תקף
-                    float_shares = None
-                    if hasattr(snapshot, 'float_shares'):
-                        float_shares = snapshot.float_shares
-                    
-                    # אם יש Float - תבדוק אותו
-                    if float_shares is not None and float_shares > 0:
-                        if float_shares > MAX_FLOAT:
-                            stats['float_pass'] += 1
-                            continue
-                    # אם אין Float - אל תפסול (תעבור הלאה)
-                    
-                    stats['float_pass'] += 1
-                    
-                    # ====== עבר את כל הפילטרים ======
-                    stats['final_pass'] += 1
+           # ====== סינון ======
+# 1. דילוג על קריפטו
+if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
+    stats['crypto_filtered'] += 1
+    continue
+
+# 2. סינון Price
+if price < MIN_PRICE or price > MAX_PRICE:
+    stats['price_pass'] += 1
+    continue
+stats['price_pass'] += 1
+
+# 3. סינון Gap
+gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+    stats['gap_pass'] += 1
+    continue
+stats['gap_pass'] += 1
+
+# 4. סינון נפח
+if volume < 50_000 or prev_volume < 100_000:
+    stats['volume_pass'] += 1
+    continue
+stats['volume_pass'] += 1
+
+# 5. סינון Float - רק אם יש נתון תקף
+float_shares = None
+if hasattr(snapshot, 'float_shares'):
+    float_shares = snapshot.float_shares
+
+# אם יש Float - תבדוק אותו
+if float_shares is not None and float_shares > 0:
+    if float_shares > MAX_FLOAT:
+        stats['float_pass'] += 1
+        continue
+# אם אין Float - אל תפסול (תעבור הלאה)
+
+stats['float_pass'] += 1   # <--- השורה הזו אמורה להתבצע
+
+# ====== עבר את כל הפילטרים ======
+stats['final_pass'] += 1
+
+# ... build candidate ...
+candidates.append(candidate)
                     
                     # Calculate scores
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
