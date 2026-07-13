@@ -98,7 +98,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     prev_close = daily_bar.close
                     prev_volume = daily_bar.volume
                     
-                    # ====== DEBUG: בדיקת Float ======
+                    # ====== DEBUG: בדיקת Float (רק 20 דוגמאות) ======
                     if len(debug_float_samples) < 20:
                         float_val = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 'NO_ATTR'
                         debug_float_samples.append({
@@ -108,67 +108,47 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                             'price': price,
                             'volume': volume
                         })
-                  # 5. סינון Float
-print(f"[DEBUG] {symbol} - entering float filter")
-float_shares = None
-if hasattr(snapshot, 'float_shares'):
-    float_shares = snapshot.float_shares
-    print(f"[DEBUG] {symbol} - float_shares = {float_shares}")
-else:
-    print(f"[DEBUG] {symbol} - no float_shares attribute")
-
-if float_shares is not None and float_shares > 0:
-    if float_shares > MAX_FLOAT:
-        stats['float_pass'] += 1
-        print(f"[DEBUG] {symbol} - float too high, filtered")
-        continue
-# אם אין Float - אל תפסול
-print(f"[DEBUG] {symbol} - passed float filter")
-stats['float_pass'] += 1  
-           # ====== סינון ======
-# 1. דילוג על קריפטו
-if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
-    stats['crypto_filtered'] += 1
-    continue
-
-# 2. סינון Price
-if price < MIN_PRICE or price > MAX_PRICE:
-    stats['price_pass'] += 1
-    continue
-stats['price_pass'] += 1
-
-# 3. סינון Gap
-gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-    stats['gap_pass'] += 1
-    continue
-stats['gap_pass'] += 1
-
-# 4. סינון נפח
-if volume < 50_000 or prev_volume < 100_000:
-    stats['volume_pass'] += 1
-    continue
-stats['volume_pass'] += 1
-
-# 5. סינון Float - רק אם יש נתון תקף
-float_shares = None
-if hasattr(snapshot, 'float_shares'):
-    float_shares = snapshot.float_shares
-
-# אם יש Float - תבדוק אותו
-if float_shares is not None and float_shares > 0:
-    if float_shares > MAX_FLOAT:
-        stats['float_pass'] += 1
-        continue
-# אם אין Float - אל תפסול (תעבור הלאה)
-
-stats['float_pass'] += 1   # <--- השורה הזו אמורה להתבצע
-
-# ====== עבר את כל הפילטרים ======
-stats['final_pass'] += 1
-
-# ... build candidate ...
-candidates.append(candidate)
+                    
+                    # ====== סינון ======
+                    # 1. דילוג על קריפטו
+                    if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
+                        stats['crypto_filtered'] += 1
+                        continue
+                    
+                    # 2. סינון Price
+                    if price < MIN_PRICE or price > MAX_PRICE:
+                        stats['price_pass'] += 1
+                        continue
+                    stats['price_pass'] += 1
+                    
+                    # 3. סינון Gap
+                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                        stats['gap_pass'] += 1
+                        continue
+                    stats['gap_pass'] += 1
+                    
+                    # 4. סינון נפח
+                    if volume < 50_000 or prev_volume < 100_000:
+                        stats['volume_pass'] += 1
+                        continue
+                    stats['volume_pass'] += 1
+                    
+                    # 5. סינון Float - מושבת זמנית כי אין נתונים
+                    # float_shares = None
+                    # if hasattr(snapshot, 'float_shares'):
+                    #     float_shares = snapshot.float_shares
+                    # if float_shares is not None and float_shares > 0:
+                    #     if float_shares > MAX_FLOAT:
+                    #         stats['float_pass'] += 1
+                    #         continue
+                    # stats['float_pass'] += 1
+                    
+                    # השבתת Float - פשוט תעבור
+                    stats['float_pass'] += 1
+                    
+                    # ====== עבר את כל הפילטרים ======
+                    stats['final_pass'] += 1
                     
                     # Calculate scores
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
@@ -184,7 +164,7 @@ candidates.append(candidate)
                         'volume': volume,
                         'avg_volume': prev_volume,
                         'volume_ratio': volume_ratio,
-                        'float': float_shares if float_shares is not None else 0,
+                        'float': 0,  # אין נתון
                         'dollar_volume': price * volume,
                         'freshness': freshness,
                         'momentum_score': momentum_score,
@@ -288,20 +268,8 @@ def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
     else:
         score += 5
     
-    # Float (0-25 points) - only if we have data
-    float_shares = candidate.get('float', 0)
-    if float_shares > 0:
-        if float_shares < 20_000_000:
-            score += 25
-        elif float_shares < 50_000_000:
-            score += 18
-        elif float_shares < 100_000_000:
-            score += 10
-        else:
-            score += 3
-    else:
-        # No float data - give average score
-        score += 10
+    # Float (0-25 points) - מושבת כי אין נתונים
+    score += 10
     
     # Dollar volume (0-25 points)
     dvol = candidate.get('dollar_volume', 0)
