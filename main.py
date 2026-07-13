@@ -17,8 +17,10 @@ from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
 from database.db import init_db, save_alert, already_sent_today
 from telegram_formatter import format_preopen_list, format_no_candidates, send_message
-from backtester.backtester import Backtester
-from paper_trader.paper_trader import PaperTrader
+
+# backtester ו-paper_trader מושבתים זמנית
+# from backtester.backtester import Backtester
+# from paper_trader.paper_trader import PaperTrader
 
 
 def run_full_pipeline():
@@ -63,55 +65,13 @@ def run_full_pipeline():
 
 
 def run_backtest():
-    """Run backtest"""
-    print("[Main] Running backtest...")
-    bt = Backtester()
-    
-    # Load universe for backtest
-    universe = load_universe()
-    symbols = [s['symbol'] for s in universe[:50]]  # limit for demo
-    
-    from datetime import datetime, timedelta
-    end = datetime.now()
-    start = end - timedelta(days=30)
-    
-    bt.run_backtest(symbols, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    bt.save_results()
+    """Run backtest - מושבת זמנית"""
+    print("[Main] Backtest disabled - need to fix data_fetcher")
 
 
 def run_paper_trade():
-    """Run paper trading"""
-    print("[Main] Running paper trading...")
-    trader = PaperTrader()
-    
-    # Get account info
-    account = trader.get_account()
-    print(f"[PaperTrade] Account: {account.status}")
-    print(f"[PaperTrade] Equity: ${float(account.equity):.2f}")
-    print(f"[PaperTrade] Buying Power: ${float(account.buying_power):.2f}")
-    
-    # Scan for candidates
-    candidates = scan_premarket(datetime.now().strftime("%Y-%m-%d"))
-    
-    if not candidates:
-        print("[PaperTrade] No candidates found")
-        return
-    
-    # Enter first candidate
-    candidate = candidates[0]
-    ticker = candidate['ticker']
-    price = candidate['price']
-    
-    print(f"[PaperTrade] Entering {ticker} @ ${price:.2f}")
-    trader.enter_trade(ticker, price)
-    
-    # Set stop-loss and take-profit
-    stop = price * 0.95
-    target = price * 1.20
-    trader.set_stop_loss(ticker, stop)
-    trader.set_take_profit(ticker, target)
-    
-    print(f"[PaperTrade] Stop-loss: ${stop:.2f}  |  Target: ${target:.2f}")
+    """Run paper trading - מושבת זמנית"""
+    print("[Main] Paper trading disabled - need to fix data_fetcher")
 
 
 if __name__ == "__main__":
