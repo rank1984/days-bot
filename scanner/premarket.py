@@ -5,7 +5,6 @@ import sys
 import os
 from pathlib import Path
 
-# הוסף את ספריית הבסיס ו-utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
@@ -16,7 +15,6 @@ from datetime import datetime, timedelta
 import time
 from typing import List, Dict, Any, Optional
 
-# Import from utils.config
 from utils.config import *
 from scanner.universe import load_universe
 from scanner.news import get_catalyst_label
@@ -24,15 +22,11 @@ import alpaca_trade_api as tradeapi
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
-    """
-    Scan premarket for breakout candidates with detailed statistics
-    """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
     
     print(f"[Premarket] Scanning for {date}...")
     
-    # Load universe
     universe = load_universe()
     if not universe:
         print("[Premarket] ❌ No universe found")
@@ -40,7 +34,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     print(f"[Premarket] Universe size: {len(universe)}")
     
-    # Initialize Alpaca
     api = tradeapi.REST(
         ALPACA_API_KEY, 
         ALPACA_SECRET_KEY, 
@@ -49,24 +42,19 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     candidates = []
     
-    # ====== סטטיסטיקות סינון ======
     stats = {
         'total': len(universe),
-        'price_pass': 0,
-        'gap_pass': 0,
-        'volume_pass': 0,
-        'float_pass': 0,
-        'final_pass': 0,
         'crypto_filtered': 0,
         'no_snapshot': 0,
         'no_trade': 0,
         'no_bar': 0,
+        'price_passed': 0,
+        'gap_passed': 0,
+        'volume_passed': 0,
+        'float_passed': 0,
+        'final_passed': 0,
     }
     
-    # ====== DEBUG: בדיקת Float ======
-    debug_float_samples = []
-    
-    # Process in batches
     batch_size = 100
     for i in range(0, len(universe), batch_size):
         batch = universe[i:i+batch_size]
@@ -88,84 +76,59 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     
                     price = latest_trade.price
-                    volume = latest_trade.size
-                    
+                    # נפח יומי (לא נפח פרה-מרקט)
                     daily_bar = snapshot.daily_bar
                     if not daily_bar:
                         stats['no_bar'] += 1
                         continue
                     
                     prev_close = daily_bar.close
-                    prev_volume = daily_bar.volume
+                    prev_volume = daily_bar.volume  # נפח יומי קודם
                     
-                    # ====== DEBUG: בדיקת Float (רק 20 דוגמאות) ======
-                    if len(debug_float_samples) < 20:
-                        float_val = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 'NO_ATTR'
-                        debug_float_samples.append({
-                            'symbol': symbol,
-                            'float': float_val,
-                            'has_attr': hasattr(snapshot, 'float_shares'),
-                            'price': price,
-                            'volume': volume
-                        })
-                    
-                    # ====== סינון ======
-                    # 1. דילוג על קריפטו
+                    # ====== סינונים ======
+                    # 1. קריפטו
                     if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
                         stats['crypto_filtered'] += 1
                         continue
                     
-                    # 2. סינון Price
+                    # 2. Price
                     if price < MIN_PRICE or price > MAX_PRICE:
-                        stats['price_pass'] += 1
                         continue
-                    stats['price_pass'] += 1
+                    stats['price_passed'] += 1
                     
-                    # 3. סינון Gap
+                    # 3. Gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-                        stats['gap_pass'] += 1
                         continue
-                    stats['gap_pass'] += 1
+                    stats['gap_passed'] += 1
                     
-                    # 4. סינון נפח
-                    if volume < 50_000 or prev_volume < 100_000:
-                        stats['volume_pass'] += 1
+                    # 4. Volume - נשתמש ב-prev_volume כנפח יומי
+                    if prev_volume < MIN_AVG_VOLUME:
                         continue
-                    stats['volume_pass'] += 1
+                    stats['volume_passed'] += 1
                     
-                    # 5. סינון Float - מושבת זמנית כי אין נתונים
-                    # float_shares = None
-                    # if hasattr(snapshot, 'float_shares'):
-                    #     float_shares = snapshot.float_shares
-                    # if float_shares is not None and float_shares > 0:
-                    #     if float_shares > MAX_FLOAT:
-                    #         stats['float_pass'] += 1
-                    #         continue
-                    # stats['float_pass'] += 1
-                    
-                    # השבתת Float - פשוט תעבור
-                    stats['float_pass'] += 1
+                    # 5. Float - מושבת
+                    stats['float_passed'] += 1
                     
                     # ====== עבר את כל הפילטרים ======
-                    stats['final_pass'] += 1
+                    stats['final_passed'] += 1
                     
-                    # Calculate scores
+                    # חישוב ניקוד
+                    volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
                     momentum_score = 50 + (gap_pct * 0.5)
                     combined = (freshness + momentum_score) / 2
-                    volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
                     
                     candidate = {
                         'ticker': symbol,
                         'price': price,
                         'gap_pct': gap_pct,
                         'prev_close': prev_close,
-                        'volume': volume,
+                        'volume': prev_volume,  # נפח יומי
                         'avg_volume': prev_volume,
                         'volume_ratio': volume_ratio,
-                        'float': 0,  # אין נתון
-                        'dollar_volume': price * volume,
+                        'float': 0,
+                        'dollar_volume': price * prev_volume,
                         'freshness': freshness,
                         'momentum_score': momentum_score,
                         'combined': combined,
@@ -173,7 +136,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'pm_high': price,
                         'pm_high_dist': gap_pct,
                         'pm_high_age': 0,
-                        'pm_volume': volume,
+                        'pm_volume': prev_volume,
                         'pm_rvol': volume_ratio,
                         'vwap_dist': 0,
                         'vol_accel': 1.0,
@@ -191,14 +154,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             print(f"[Premarket] Batch error: {e}")
             continue
     
-    # ====== הדפסת בדיקת Float ======
-    print("\n🔍 FLOAT DEBUG SAMPLES (first 20):")
-    print("-" * 60)
-    for s in debug_float_samples[:20]:
-        print(f"  {s['symbol']:10} | Float: {str(s['float']):15} | HasAttr: {s['has_attr']} | Price: ${s['price']:.2f}")
-    print("-" * 60)
-    
-    # ====== הדפסת סטטיסטיקות ======
+    # ====== סטטיסטיקות ======
     print("\n" + "="*50)
     print("📊 PREMARKET SCAN STATISTICS")
     print("="*50)
@@ -208,15 +164,29 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"No Trade:              {stats['no_trade']:,}")
     print(f"No Daily Bar:          {stats['no_bar']:,}")
     print("-"*50)
-    print(f"✅ Price Pass:          {stats['price_pass']:,}")
-    print(f"✅ Gap Pass:            {stats['gap_pass']:,}")
-    print(f"✅ Volume Pass:         {stats['volume_pass']:,}")
-    print(f"✅ Float Pass:          {stats['float_pass']:,}")
+    print(f"✅ Price Passed:        {stats['price_passed']:,}")
+    print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
+    print(f"✅ Volume Passed:       {stats['volume_passed']:,}")
+    print(f"✅ Float Passed:        {stats['float_passed']:,}")
     print("-"*50)
-    print(f"🎯 FINAL CANDIDATES:    {stats['final_pass']:,}")
+    print(f"🎯 FINAL CANDIDATES:    {stats['final_passed']:,}")
     print("="*50 + "\n")
     
-    # Score candidates
+    # ====== בדיקת טווח ציונים ======
+    scores = []
+    for c in candidates:
+        scores.append(calculate_breakout_score(c))
+    
+    if scores:
+        print(f"\n📊 SCORE RANGE:")
+        print(f"  Min: {min(scores):.1f}")
+        print(f"  Max: {max(scores):.1f}")
+        print(f"  Avg: {sum(scores)/len(scores):.1f}")
+        print(f"  Count: {len(scores)}")
+        print(f"  MIN_SCORE: {MIN_SCORE}")
+        print()
+    
+    # ====== סינון לפי MIN_SCORE ======
     scored = []
     for c in candidates:
         score = calculate_breakout_score(c)
@@ -228,7 +198,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     print(f"[Premarket] ✅ Found {len(scored)} qualified candidates")
     
-    # ====== הדפס את 5 המובילים ======
     if scored:
         print("\n🏆 TOP 5 CANDIDATES:")
         for i, c in enumerate(scored[:5], 1):
@@ -239,12 +208,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
 
 
 def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    """
-    Calculate breakout score for a candidate
-    """
     score = 0
     
-    # Gap (0-20 points)
     gap = candidate.get('gap_pct', 0)
     if gap >= 5.0:
         score += 20
@@ -255,7 +220,6 @@ def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
     elif gap >= 1.0:
         score += 5
     
-    # Volume (0-30 points)
     volume = candidate.get('volume', 0)
     if volume >= 1_000_000:
         score += 30
@@ -268,10 +232,9 @@ def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
     else:
         score += 5
     
-    # Float (0-25 points) - מושבת כי אין נתונים
+    # Float - אין נתונים
     score += 10
     
-    # Dollar volume (0-25 points)
     dvol = candidate.get('dollar_volume', 0)
     if dvol >= 5_000_000:
         score += 25
