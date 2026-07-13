@@ -53,16 +53,18 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     stats = {
         'total': len(universe),
         'price_pass': 0,
-        'volume_pass': 0,
         'gap_pass': 0,
+        'volume_pass': 0,
         'float_pass': 0,
-        'momentum_pass': 0,
         'final_pass': 0,
         'crypto_filtered': 0,
         'no_snapshot': 0,
         'no_trade': 0,
         'no_bar': 0,
     }
+    
+    # ====== DEBUG: בדיקת Float ======
+    debug_float_samples = []
     
     # Process in batches
     batch_size = 100
@@ -96,6 +98,17 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     prev_close = daily_bar.close
                     prev_volume = daily_bar.volume
                     
+                    # ====== DEBUG: בדיקת Float ======
+                    if len(debug_float_samples) < 20:
+                        float_val = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 'NO_ATTR'
+                        debug_float_samples.append({
+                            'symbol': symbol,
+                            'float': float_val,
+                            'has_attr': hasattr(snapshot, 'float_shares'),
+                            'price': price,
+                            'volume': volume
+                        })
+                    
                     # ====== סינון ======
                     # 1. דילוג על קריפטו
                     if '/' in symbol or 'USDC' in symbol or 'USDT' in symbol:
@@ -121,11 +134,18 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['volume_pass'] += 1
                     
-                    # 5. סינון Float
-                    float_shares = snapshot.float_shares if hasattr(snapshot, 'float_shares') else 0
-                    if float_shares > 0 and float_shares > MAX_FLOAT:
-                        stats['float_pass'] += 1
-                        continue
+                    # 5. סינון Float - רק אם יש נתון תקף
+                    float_shares = None
+                    if hasattr(snapshot, 'float_shares'):
+                        float_shares = snapshot.float_shares
+                    
+                    # אם יש Float - תבדוק אותו
+                    if float_shares is not None and float_shares > 0:
+                        if float_shares > MAX_FLOAT:
+                            stats['float_pass'] += 1
+                            continue
+                    # אם אין Float - אל תפסול (תעבור הלאה)
+                    
                     stats['float_pass'] += 1
                     
                     # ====== עבר את כל הפילטרים ======
@@ -145,7 +165,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'volume': volume,
                         'avg_volume': prev_volume,
                         'volume_ratio': volume_ratio,
-                        'float': float_shares,
+                        'float': float_shares if float_shares is not None else 0,
                         'dollar_volume': price * volume,
                         'freshness': freshness,
                         'momentum_score': momentum_score,
@@ -171,6 +191,13 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         except Exception as e:
             print(f"[Premarket] Batch error: {e}")
             continue
+    
+    # ====== הדפסת בדיקת Float ======
+    print("\n🔍 FLOAT DEBUG SAMPLES (first 20):")
+    print("-" * 60)
+    for s in debug_float_samples[:20]:
+        print(f"  {s['symbol']:10} | Float: {str(s['float']):15} | HasAttr: {s['has_attr']} | Price: ${s['price']:.2f}")
+    print("-" * 60)
     
     # ====== הדפסת סטטיסטיקות ======
     print("\n" + "="*50)
@@ -202,7 +229,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     print(f"[Premarket] ✅ Found {len(scored)} qualified candidates")
     
-    # ====== הדפס את 5 המובילים שנפסלו ======
+    # ====== הדפס את 5 המובילים ======
     if scored:
         print("\n🏆 TOP 5 CANDIDATES:")
         for i, c in enumerate(scored[:5], 1):
@@ -210,3 +237,62 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         print()
     
     return scored[:10]
+
+
+def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
+    """
+    Calculate breakout score for a candidate
+    """
+    score = 0
+    
+    # Gap (0-20 points)
+    gap = candidate.get('gap_pct', 0)
+    if gap >= 5.0:
+        score += 20
+    elif gap >= 3.0:
+        score += 15
+    elif gap >= 2.0:
+        score += 10
+    elif gap >= 1.0:
+        score += 5
+    
+    # Volume (0-30 points)
+    volume = candidate.get('volume', 0)
+    if volume >= 1_000_000:
+        score += 30
+    elif volume >= 500_000:
+        score += 25
+    elif volume >= 200_000:
+        score += 20
+    elif volume >= 100_000:
+        score += 15
+    else:
+        score += 5
+    
+    # Float (0-25 points) - only if we have data
+    float_shares = candidate.get('float', 0)
+    if float_shares > 0:
+        if float_shares < 20_000_000:
+            score += 25
+        elif float_shares < 50_000_000:
+            score += 18
+        elif float_shares < 100_000_000:
+            score += 10
+        else:
+            score += 3
+    else:
+        # No float data - give average score
+        score += 10
+    
+    # Dollar volume (0-25 points)
+    dvol = candidate.get('dollar_volume', 0)
+    if dvol >= 5_000_000:
+        score += 25
+    elif dvol >= 1_000_000:
+        score += 18
+    elif dvol >= 500_000:
+        score += 10
+    elif dvol >= 250_000:
+        score += 5
+    
+    return min(100, score)
