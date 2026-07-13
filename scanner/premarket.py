@@ -1,21 +1,20 @@
 """
-Premarket scanner for DAYS-BOT - Using yfinance with filtering & caching
+Premarket scanner for DAYS-BOT - Using Alpaca (fast)
 """
 import sys
 import os
 from pathlib import Path
 import time
-import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
 
-import yfinance as yf
 from utils.config import *
 from scanner.universe import load_universe
+import alpaca_trade_api as tradeapi
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
@@ -29,131 +28,105 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         print("[Premarket] ❌ No universe found")
         return []
     
-    # ====== סינון מקדים לפי מחיר (ממוצע) – אם יש לנו מידע ======
-    # נשתמש במטמון של yfinance כדי לא להוריד שוב
-    cache_file = os.path.join(BASE_DIR, "data", "yfinance_cache.json")
-    cache_age = 900  # 15 דקות
+    print(f"[Premarket] Universe size: {len(universe)}")
     
-    # טען מטמון אם קיים ועדכני
-    cached_data = {}
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'r') as f:
-                cache = json.load(f)
-                if (datetime.now() - datetime.fromisoformat(cache.get('timestamp', '2020-01-01'))).seconds < cache_age:
-                    cached_data = cache.get('data', {})
-                    print(f"[Cache] Loaded {len(cached_data)} symbols from cache")
-        except:
-            pass
+    api = tradeapi.REST(
+        ALPACA_API_KEY,
+        ALPACA_SECRET_KEY,
+        base_url='https://paper-api.alpaca.markets'
+    )
     
-    # סימבולים שצריך להביא
-    symbols_to_fetch = []
-    for s in universe:
-        if s['symbol'] not in cached_data:
-            symbols_to_fetch.append(s['symbol'])
-    
-    # אם יש סימבולים חדשים – הבא אותם
-    if symbols_to_fetch:
-        print(f"[yfinance] Fetching {len(symbols_to_fetch)} symbols...")
-        # נחלק לקבוצות קטנות כדי לא להעמיס
-        batch_size = 20
-        new_data = {}
-        for i in range(0, len(symbols_to_fetch), batch_size):
-            batch = symbols_to_fetch[i:i+batch_size]
-            try:
-                # שימוש ב-Tickers לקבוצה
-                tickers = yf.Tickers(" ".join(batch))
-                for symbol in batch:
-                    try:
-                        ticker = tickers.tickers.get(symbol)
-                        if ticker:
-                            info = ticker.info
-                            # נשמור רק מה שנחוץ
-                            new_data[symbol] = {
-                                'price': info.get('preMarketPrice') or info.get('regularMarketPrice'),
-                                'prev_close': info.get('previousClose'),
-                                'volume': info.get('preMarketVolume') or info.get('regularMarketVolume'),
-                            }
-                        else:
-                            new_data[symbol] = None
-                    except:
-                        new_data[symbol] = None
-            except Exception as e:
-                print(f"[yfinance] Batch error: {e}")
-            # המתן בין קבוצות כדי לא להעמיס
-            time.sleep(0.5)
-            print(f"[yfinance] Fetched {min(i+batch_size, len(symbols_to_fetch))}/{len(symbols_to_fetch)}")
-        
-        # עדכן מטמון
-        cached_data.update(new_data)
-        cache = {'timestamp': datetime.now().isoformat(), 'data': cached_data}
-        with open(cache_file, 'w') as f:
-            json.dump(cache, f)
-        print(f"[Cache] Updated with {len(new_data)} symbols")
-    
-    # ====== עכשיו סריקה ======
     candidates = []
     stats = {
         'total': len(universe),
-        'no_data': 0,
+        'no_snapshot': 0,
+        'no_trade': 0,
+        'no_bar': 0,
         'price_passed': 0,
         'gap_passed': 0,
         'volume_passed': 0,
         'final_passed': 0,
     }
     
-    for symbol_data in universe:
-        symbol = symbol_data['symbol']
-        data = cached_data.get(symbol)
-        if not data or not data.get('price'):
-            stats['no_data'] += 1
+    batch_size = 100
+    for i in range(0, len(universe), batch_size):
+        batch = universe[i:i+batch_size]
+        symbols = [s['symbol'] for s in batch]
+        
+        try:
+            snapshots = api.get_snapshots(symbols)
+            
+            for symbol in symbols:
+                try:
+                    snapshot = snapshots.get(symbol)
+                    if not snapshot:
+                        stats['no_snapshot'] += 1
+                        continue
+                    
+                    latest_trade = snapshot.latest_trade
+                    if not latest_trade:
+                        stats['no_trade'] += 1
+                        continue
+                    
+                    price = latest_trade.price
+                    
+                    daily_bar = snapshot.daily_bar
+                    if not daily_bar:
+                        stats['no_bar'] += 1
+                        continue
+                    
+                    prev_close = daily_bar.close
+                    # ====== תיקון: נשתמש ב-daily_bar.volume ======
+                    volume = daily_bar.volume
+                    
+                    # ====== Filters ======
+                    if price < MIN_PRICE or price > MAX_PRICE:
+                        continue
+                    stats['price_passed'] += 1
+                    
+                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
+                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                        continue
+                    stats['gap_passed'] += 1
+                    
+                    if volume < MIN_AVG_VOLUME:
+                        continue
+                    stats['volume_passed'] += 1
+                    
+                    stats['final_passed'] += 1
+                    
+                    volume_ratio = volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
+                    candidate = {
+                        'ticker': symbol,
+                        'price': price,
+                        'gap_pct': gap_pct,
+                        'prev_close': prev_close,
+                        'volume': volume,
+                        'dollar_volume': price * volume,
+                        'volume_ratio': volume_ratio,
+                        'pm_volume': volume,
+                        'pm_rvol': volume_ratio,
+                        'catalyst': '—',
+                    }
+                    candidates.append(candidate)
+                    
+                except Exception as e:
+                    continue
+            
+            print(f"[Premarket] Processed {min(i+batch_size, len(universe))}/{len(universe)}")
+            
+        except Exception as e:
+            print(f"[Premarket] Batch error: {e}")
             continue
-        
-        price = data['price']
-        prev_close = data['prev_close']
-        volume = data['volume'] or 0
-        
-        if price <= 0 or prev_close <= 0:
-            stats['no_data'] += 1
-            continue
-        
-        # ====== Filters ======
-        if price < MIN_PRICE or price > MAX_PRICE:
-            continue
-        stats['price_passed'] += 1
-        
-        gap_pct = ((price - prev_close) / prev_close) * 100
-        if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-            continue
-        stats['gap_passed'] += 1
-        
-        if volume < MIN_AVG_VOLUME:
-            continue
-        stats['volume_passed'] += 1
-        
-        stats['final_passed'] += 1
-        
-        volume_ratio = volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
-        candidate = {
-            'ticker': symbol,
-            'price': price,
-            'gap_pct': gap_pct,
-            'prev_close': prev_close,
-            'volume': volume,
-            'dollar_volume': price * volume,
-            'volume_ratio': volume_ratio,
-            'pm_volume': volume,
-            'pm_rvol': volume_ratio,
-            'catalyst': '—',
-        }
-        candidates.append(candidate)
     
     # ====== סטטיסטיקות ======
     print("\n" + "="*50)
-    print("📊 PREMARKET SCAN STATISTICS")
+    print("📊 PREMARKET SCAN STATISTICS (Alpaca)")
     print("="*50)
     print(f"Total Universe:        {stats['total']:,}")
-    print(f"No Data:               {stats['no_data']:,}")
+    print(f"No Snapshot:           {stats['no_snapshot']:,}")
+    print(f"No Trade:              {stats['no_trade']:,}")
+    print(f"No Daily Bar:          {stats['no_bar']:,}")
     print("-"*50)
     print(f"✅ Price Passed:        {stats['price_passed']:,}")
     print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
