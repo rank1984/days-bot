@@ -1,26 +1,27 @@
 """
-Premarket scanner for DAYS-BOT - With Debug
+Premarket scanner for DAYS-BOT - Using yfinance (free, no API key)
 """
 import sys
 import os
 from pathlib import Path
+import time
+from datetime import datetime
+from typing import List, Dict, Any, Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
 
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import time
-from typing import List, Dict, Any, Optional
-
+import yfinance as yf
 from utils.config import *
 from scanner.universe import load_universe
-import alpaca_trade_api as tradeapi
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
+    """
+    Scan for premarket candidates using yfinance.
+    yfinance provides preMarketPrice, regularMarketPrice, previousClose, volume.
+    """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
     
@@ -33,70 +34,57 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     
     print(f"[Premarket] Universe size: {len(universe)}")
     
-    api = tradeapi.REST(
-        ALPACA_API_KEY, 
-        ALPACA_SECRET_KEY, 
-        base_url='https://paper-api.alpaca.markets'
-    )
-    
     candidates = []
-    
     stats = {
         'total': len(universe),
-        'no_snapshot': 0,
-        'no_trade': 0,
-        'no_bar': 0,
+        'no_data': 0,
         'price_passed': 0,
         'gap_passed': 0,
         'volume_passed': 0,
         'final_passed': 0,
     }
     
-    # ====== DEBUG: הצג 20 מניות ראשונות ======
-    debug_samples = []
+    # ייתכן ש-yfinance יגביל אותנו – נעבור על המניות בסדרות קטנות
+    batch_size = 50  # yfinance יכול לקחת רשימה של סימבולים בבת אחת
+    all_symbols = [s['symbol'] for s in universe]
     
-    batch_size = 100
-    for i in range(0, len(universe), batch_size):
-        batch = universe[i:i+batch_size]
-        symbols = [s['symbol'] for s in batch]
-        
+    for i in range(0, len(all_symbols), batch_size):
+        batch_symbols = all_symbols[i:i+batch_size]
         try:
-            snapshots = api.get_snapshots(symbols)
+            # הורדת מידע עבור כל הקבוצה בבת אחת (יעיל יותר)
+            tickers = yf.Tickers(" ".join(batch_symbols))
             
-            for symbol in symbols:
+            for symbol in batch_symbols:
                 try:
-                    snapshot = snapshots.get(symbol)
-                    if not snapshot:
-                        stats['no_snapshot'] += 1
+                    ticker = tickers.tickers.get(symbol)
+                    if not ticker:
+                        stats['no_data'] += 1
                         continue
                     
-                    latest_trade = snapshot.latest_trade
-                    if not latest_trade:
-                        stats['no_trade'] += 1
+                    info = ticker.info
+                    if not info:
+                        stats['no_data'] += 1
                         continue
                     
-                    price = latest_trade.price
-                    volume = latest_trade.size
-                    
-                    daily_bar = snapshot.daily_bar
-                    if not daily_bar:
-                        stats['no_bar'] += 1
+                    # מחיר נוכחי – מעדיף preMarketPrice אם קיים, אחרת regularMarketPrice
+                    price = info.get('preMarketPrice')
+                    if price is None or price == 0:
+                        price = info.get('regularMarketPrice')
+                    if price is None or price == 0:
+                        stats['no_data'] += 1
                         continue
                     
-                    prev_close = daily_bar.close
-                    prev_volume = daily_bar.volume
+                    prev_close = info.get('previousClose')
+                    if prev_close is None or prev_close == 0:
+                        stats['no_data'] += 1
+                        continue
                     
-                    # ====== DEBUG: אסוף 20 דוגמאות ======
-                    if len(debug_samples) < 20:
-                        gap_sample = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
-                        debug_samples.append({
-                            'symbol': symbol,
-                            'price': price,
-                            'volume': volume,
-                            'prev_volume': prev_volume,
-                            'prev_close': prev_close,
-                            'gap': gap_sample,
-                        })
+                    # נפח – מעדיף preMarketVolume, אחרת regularMarketVolume
+                    volume = info.get('preMarketVolume')
+                    if volume is None or volume == 0:
+                        volume = info.get('regularMarketVolume')
+                    if volume is None:
+                        volume = 0
                     
                     # ====== Filters ======
                     # Price
@@ -105,20 +93,20 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     stats['price_passed'] += 1
                     
                     # Gap
-                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
                         continue
                     stats['gap_passed'] += 1
                     
-                    # Volume (נשתמש ב-prev_volume)
-                    if prev_volume < MIN_AVG_VOLUME:
+                    # Volume (נשתמש ב-volume שהתקבל)
+                    if volume < MIN_AVG_VOLUME:
                         continue
                     stats['volume_passed'] += 1
                     
                     stats['final_passed'] += 1
                     
                     # ====== Candidate ======
-                    volume_ratio = prev_volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
+                    volume_ratio = volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
                     freshness = 100 - (gap_pct * 2) if gap_pct > 0 else 50
                     momentum_score = 50 + (gap_pct * 0.5)
                     combined = (freshness + momentum_score) / 2
@@ -128,10 +116,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'price': price,
                         'gap_pct': gap_pct,
                         'prev_close': prev_close,
-                        'volume': prev_volume,
-                        'avg_volume': prev_volume,
+                        'volume': volume,
+                        'avg_volume': volume,  # אין ממוצע יומי, נשתמש באותו
                         'volume_ratio': volume_ratio,
-                        'dollar_volume': price * prev_volume,
+                        'dollar_volume': price * volume,
                         'freshness': freshness,
                         'momentum_score': momentum_score,
                         'combined': combined,
@@ -139,7 +127,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'pm_high': price,
                         'pm_high_dist': gap_pct,
                         'pm_high_age': 0,
-                        'pm_volume': prev_volume,
+                        'pm_volume': volume,
                         'pm_rvol': volume_ratio,
                         'vwap_dist': 0,
                         'vol_accel': 1.0,
@@ -149,32 +137,21 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     candidates.append(candidate)
                     
                 except Exception as e:
+                    # אם סימבול ספציפי נכשל – נמשיך הלאה
                     continue
             
-            print(f"[Premarket] Processed {min(i+batch_size, len(universe))}/{len(universe)}")
+            print(f"[Premarket] Processed {min(i+batch_size, len(all_symbols))}/{len(all_symbols)}")
             
         except Exception as e:
             print(f"[Premarket] Batch error: {e}")
             continue
     
-    # ====== הדפסת DEBUG ======
-    print("\n" + "="*60)
-    print("🔍 DEBUG SAMPLES (first 20 stocks)")
-    print("="*60)
-    print(f"{'Symbol':<10} | {'Price':>8} | {'Volume':>10} | {'PrevVol':>10} | {'Gap%':>8}")
-    print("-"*60)
-    for s in debug_samples:
-        print(f"{s['symbol']:<10} | ${s['price']:>7.2f} | {s['volume']:>10,} | {s['prev_volume']:>10,} | {s['gap']:>8.2f}%")
-    print("="*60 + "\n")
-    
     # ====== סטטיסטיקות ======
     print("\n" + "="*50)
-    print("📊 PREMARKET SCAN STATISTICS")
+    print("📊 PREMARKET SCAN STATISTICS (yfinance)")
     print("="*50)
     print(f"Total Universe:        {stats['total']:,}")
-    print(f"No Snapshot:           {stats['no_snapshot']:,}")
-    print(f"No Trade:              {stats['no_trade']:,}")
-    print(f"No Daily Bar:          {stats['no_bar']:,}")
+    print(f"No Data (symbol):      {stats['no_data']:,}")
     print("-"*50)
     print(f"✅ Price Passed:        {stats['price_passed']:,}")
     print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
