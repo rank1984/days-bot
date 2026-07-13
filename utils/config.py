@@ -11,13 +11,13 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 # ── HARD FILTERS ──────────────────────────────────────────
 MIN_PRICE            = 0.5        
 MAX_PRICE            = 20.0       
-MIN_AVG_VOLUME       = 100_000     # עלייה - צריך נזילות
-MAX_FLOAT            = 50_000_000  # ירידה - מניות קטנות יותר
+MIN_AVG_VOLUME       = 100_000    
+MAX_FLOAT            = 100_000_000  # עלייה - כי אין נתוני Float טובים
 MIN_GAP_PCT          = 0.0        
-MAX_GAP_PCT          = 2.5         # ירידה - gap קטן
+MAX_GAP_PCT          = 10.0         # עלייה - לתפוס יותר מועמדויות
 
 # ── SCORING ───────────────────────────────────────────────
-MIN_SCORE            = 40          # עלייה - רק איכותיות
+MIN_SCORE            = 40          
 
 # ── Cooldown ─────────────────────────────────────────────
 COOLDOWN_HOURS       = 4
