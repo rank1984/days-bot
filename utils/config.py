@@ -19,7 +19,7 @@ MIN_DOLLAR_VOLUME    = 1_000_000
 MIN_RELATIVE_VOLUME  = 2.0
 MAX_SPREAD_PCT       = 2.0
 MAX_FLOAT            = 50_000_000  # אם יהיו נתונים
-
+MIN_AVG_VOLUME       = 1_000   # זמני - כדי לראות אם יש נתונים
 # ── SCORING WEIGHTS ──────────────────────────────────────
 WEIGHT_GAP           = 25
 WEIGHT_VOLUME        = 25
