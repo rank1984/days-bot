@@ -6,3 +6,4 @@ python-telegram-bot
 polygon-api-client
 finnhub-python
 pytz
+yfinance
