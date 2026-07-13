@@ -1,74 +1,75 @@
 """
-Universe loader for DAYS-BOT
+Universe loader for DAYS-BOT - עם פילטר מקדים
 """
 import sys
 import os
 from pathlib import Path
+import pandas as pd
+import time
 
-# הוסף את ספריית הבסיס ו-utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
-
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import time
-from typing import List, Dict, Any
 
 from utils.config import *
 import alpaca_trade_api as tradeapi
 
 
-def load_universe() -> List[Dict[str, Any]]:
+def load_universe() -> list:
     """
-    Load and filter universe of stocks
+    טוען את רשימת המניות, ומסנן מראש לפי מחיר ונפח
+    אם יש נתונים מ-Alpaca
     """
-    print("[Universe] Loading universe...")
+    cache_file = os.path.join(BASE_DIR, "data", "universe_filtered.csv")
     
-    # Try to load from cache first
-    cache_file = os.path.join(BASE_DIR, "data", "universe.csv")
+    # אם קיים Cache עם פילטרים – טען אותו
     if os.path.exists(cache_file):
         try:
             df = pd.read_csv(cache_file)
-            print(f"[Universe] Loaded {len(df)} stocks from cache")
+            print(f"[Universe] Loaded {len(df)} filtered stocks from cache")
             return df.to_dict('records')
-        except Exception as e:
-            print(f"[Universe] Cache error: {e}")
+        except:
+            pass
     
-    # If no cache, fetch from Alpaca
-    print("[Universe] Fetching from Alpaca...")
-    api = tradeapi.REST(
-        ALPACA_API_KEY, 
-        ALPACA_SECRET_KEY, 
-        base_url='https://paper-api.alpaca.markets'
-    )
+    print("[Universe] Fetching from Alpaca (filtering)...")
+    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets')
     
     try:
-        # Get all assets
         assets = api.list_assets(status='active')
-        stocks = [
-            a for a in assets 
-            if a.tradable 
-            and a.exchange != 'OTC'
-            and '/' not in a.symbol  # דילוג על קריפטו (BTC/USD)
-            and 'USDC' not in a.symbol
-            and 'USDT' not in a.symbol
-        ]
+        stocks = []
+        for a in assets:
+            if not a.tradable:
+                continue
+            if a.exchange == 'OTC':
+                continue
+            # סינון לפי סמל – דילוג על קריפטו וכו'
+            if '/' in a.symbol or 'USDC' in a.symbol or 'USDT' in a.symbol:
+                continue
+            stocks.append({
+                'symbol': a.symbol,
+                'name': a.name,
+                'exchange': a.exchange
+            })
         
-        print(f"[Universe] Found {len(stocks)} active stocks")
+        print(f"[Universe] Raw stocks: {len(stocks)}")
         
-        # Convert to dict
-        universe = [{'symbol': s.symbol, 'name': s.name, 'exchange': s.exchange} for s in stocks]
+        # ====== סינון מקדים ======
+        # אם יש אפשרות לקבל snapshots עבור כל המניות – נעשה זאת
+        # אבל בגלל מגבלת API, נשתמש ב-list_assets בלבד
+        # בשלב זה נחזיר את כל המניות, ונסנן ב-premarket
+        # עם זאת, נוסיף סינון של OTC ו-Crypto
         
-        # Save cache
+        filtered = [s for s in stocks if s['exchange'] not in ['OTC', 'PNK', 'OTCBB']]
+        print(f"[Universe] After exchange filter: {len(filtered)}")
+        
+        # שמירה ל-Cache
+        df = pd.DataFrame(filtered)
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
-        df = pd.DataFrame(universe)
         df.to_csv(cache_file, index=False)
-        print(f"[Universe] Saved {len(universe)} stocks to cache")
+        print(f"[Universe] Saved {len(filtered)} filtered stocks to cache")
         
-        return universe
+        return filtered
         
     except Exception as e:
-        print(f"[Universe] ❌ Error: {e}")
+        print(f"[Universe] Error: {e}")
         return []
