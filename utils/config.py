@@ -14,8 +14,8 @@ MAX_PRICE            = 20.0
 MIN_AVG_VOLUME       = 10_000       # הורד – 100K היה גבוה מדי
 MIN_GAP_PCT          = 1.0          # הורד – 3% צר מדי
 MAX_GAP_PCT          = 25.0
-MIN_DOLLAR_VOLUME    = 200_000      # הורד – $1M גבוה מדי
-MIN_RVOL             = 1.0          # הורד/בטל – 2.0 נוקשה
+MIN_RVOL             = 0.0          # בטל
+MIN_DOLLAR_VOLUME    = 0            # בטל
 
 # ── SCORING ───────────────────────────────────────────────
 MIN_SCORE            = 30           # הורד – 50 נוקשה מדי
