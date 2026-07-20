@@ -11,7 +11,7 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 # ── FILTERS (גמישים ללמידה) ──────────────────────────────
 MIN_PRICE            = 0.5
 MAX_PRICE            = 20.0
-MIN_AVG_VOLUME       = 10_000       # הורד – 100K היה גבוה מדי
+MIN_AVG_VOLUME       = 5_000       # הורד – 100K היה גבוה מדי
 MIN_GAP_PCT          = 1.0          # הורד – 3% צר מדי
 MAX_GAP_PCT          = 25.0
 MIN_RVOL             = 0.0          # בטל
