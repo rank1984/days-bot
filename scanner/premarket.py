@@ -29,33 +29,43 @@ def get_catalyst(symbol: str) -> str:
 
 
 def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    """
-    מערכת דירוג (Scoring) משופרת המבוססת על משקולות מומנטום, נזילות ועניין בשוק.
-    מחזירה ציון מ-0 עד 100.
-    """
     score = 0
     
-    # 1. מומנטום התחלתי (Gap %) - עד 25 נקודות
     gap = candidate.get('gap_pct', 0)
-    if gap >= 5.0: score += 25
-    elif gap >= 3.0: score += 18
-    elif gap >= 1.0: score += 10
-        
-    # 2. עניין בשוק (RVOL) - עד 25 נקודות
-    rvol = candidate.get('rvol', 1.0)
-    if rvol >= 5.0: score += 25
-    elif rvol >= 3.0: score += 18
-    elif rvol >= 2.0: score += 10
-        
-    # 3. נזילות אמיתית (Dollar Volume) - עד 20 נקודות
-    dvol = candidate.get('dollar_volume', 0)
-    if dvol >= 5_000_000: score += 20
-    elif dvol >= 1_000_000: score += 15
-    elif dvol >= 500_000: score += 10
-        
-    # הערה: ניתן להוסיף בעתיד עוד 30 נקודות על Catalyst, Float ומרחק מ-PM High
+    if gap >= 5.0:
+        score += 25
+    elif gap >= 3.0:
+        score += 18
+    elif gap >= 1.0:
+        score += 10
     
-    return min(100.0, float(score))
+    volume = candidate.get('volume', 0)
+    if volume >= 500_000:
+        score += 20
+    elif volume >= 200_000:
+        score += 15
+    elif volume >= 100_000:
+        score += 10
+    elif volume >= 50_000:
+        score += 5
+    
+    rvol = candidate.get('rvol', 0)
+    if rvol >= 3.0:
+        score += 20
+    elif rvol >= 2.0:
+        score += 15
+    elif rvol >= 1.0:
+        score += 10
+    
+    dvol = candidate.get('dollar_volume', 0)
+    if dvol >= 1_000_000:
+        score += 20
+    elif dvol >= 500_000:
+        score += 15
+    elif dvol >= 200_000:
+        score += 10
+    
+    return min(100, score)
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
