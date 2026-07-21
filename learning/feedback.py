@@ -149,34 +149,35 @@ class FeedbackLearner:
                     self.metrics['best_filters'][f_name]['losses'] += 1
     
     def get_insights(self) -> Dict[str, Any]:
-        """הפקת תובנות מנתוני הלמידה"""
-        self.check_results()
-        
-        total = self.metrics['wins'] + self.metrics['losses']
-        win_rate = (self.metrics['wins'] / total * 100) if total > 0 else 0
-        
-        # מציאת הפילטרים הטובים ביותר
-        best_filters = []
-        for f_name, data in self.metrics['best_filters'].items():
-            if data['total'] > 0:
-                rate = (data['wins'] / data['total'] * 100) if data['total'] > 0 else 0
-                best_filters.append({
-                    'filter': f_name,
-                    'win_rate': rate,
-                    'total': data['total'],
-                })
-        best_filters.sort(key=lambda x: -x['win_rate'])
-        
-        insights = {
-            'total_candidates': self.metrics['total_candidates'],
-            'trades_taken': total,
-            'win_rate': win_rate,
-            'total_pnl': self.metrics['total_pnl'],
-            'avg_pnl': self.metrics['total_pnl'] / total if total > 0 else 0,
-            'best_filters': best_filters[:5],
-            'recommendation': self._get_recommendation(win_rate, self.metrics['total_pnl']),
-        }
-        return insights
+    """הפקת תובנות מנתוני הלמידה"""
+    self.check_results()
+    
+    # ---- תיקון: הגדרת total ----
+    total = self.metrics['wins'] + self.metrics['losses']
+    win_rate = (self.metrics['wins'] / total * 100) if total > 0 else 0
+    
+    # מציאת הפילטרים הטובים ביותר
+    best_filters = []
+    for f_name, data in self.metrics['best_filters'].items():
+        if data['total'] > 0:
+            rate = (data['wins'] / data['total'] * 100) if data['total'] > 0 else 0
+            best_filters.append({
+                'filter': f_name,
+                'win_rate': rate,
+                'total': data['total'],
+            })
+    best_filters.sort(key=lambda x: -x['win_rate'])
+    
+    insights = {
+        'total_candidates': self.metrics['total_candidates'],
+        'trades_taken': total,
+        'win_rate': win_rate,
+        'total_pnl': self.metrics['total_pnl'],
+        'avg_pnl': self.metrics['total_pnl'] / total if total > 0 else 0,
+        'best_filters': best_filters[:5],
+        'recommendation': self._get_recommendation(win_rate, self.metrics['total_pnl']),
+    }
+    return insights
     
     def _get_recommendation(self, win_rate: float, total_pnl: float) -> str:
         """המלצה המבוססת על הנתונים"""
