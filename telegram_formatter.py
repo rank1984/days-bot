@@ -1,16 +1,14 @@
 """
-Telegram formatter - HTML mode (no Markdown issues)
+Telegram formatter - HTML mode (safe)
 """
 import requests
 from datetime import datetime
 import pytz
-import re
 
 ET = pytz.timezone("America/New_York")
 
 
 def send_message(token: str, chat_id: str, text: str) -> bool:
-    """Send message using HTML parse mode"""
     if not token or not chat_id:
         return False
     
@@ -35,12 +33,11 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
-    """Format candidates using HTML (safe)"""
+def format_preopen_list(candidates: list, date: str, low_quality: bool = False, universe_size: int = 0) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     
     if not candidates:
-        return format_no_candidates(date, 0)
+        return format_no_candidates(date, universe_size)
     
     lines = [
         "🎯 <b>DAYS-BOT - מועמדויות לפריצה</b>",
@@ -49,12 +46,13 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
     ]
     
     for i, r in enumerate(candidates[:5], 1):
-        ticker = r['ticker']
-        price = r['price']
+        ticker = r.get('ticker', '???')
+        price = r.get('price', 0)
         gap = r.get('gap_pct', 0)
         vol = r.get('volume', 0)
         score = r.get('score', 0)
         catalyst = r.get('catalyst', '—')
+        rvol = r.get('rvol', 0)
         
         # פורמט נפח
         if vol >= 1_000_000:
@@ -86,14 +84,14 @@ def format_preopen_list(candidates: list, date: str, low_quality: bool = False) 
         
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%")
-        lines.append(f"   📊 נפח: {vol_str}  |  🎯 Score: {score:.0f}/100  {grade}")
+        lines.append(f"   📊 נפח: {vol_str}  |  RVOL: {rvol:.1f}x  |  🎯 {score:.0f}/100  {grade}")
         if catalyst and catalyst != '—':
             lines.append(f"   📰 {catalyst[:60]}")
     
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "⚡ כניסה: Gap > 3% + נפח > 100K",
+        "⚡ כניסה: Gap > 1% + נפח > 50K + RVOL > 1.5",
         "🎯 יעד: +20%  |  🛑 סטופ: -5%",
         "🚫 לא המלצת השקעה"
     ]
