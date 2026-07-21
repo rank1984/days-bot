@@ -104,7 +104,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     batch_size = 100
     for i in range(0, len(universe), batch_size):
         batch = universe[i:i+batch_size]
-        symbols = [s['symbol'] for s in batch]
+        symbols = [str(s['symbol']) for s in batch]
         
         try:
             snapshots = api.get_snapshots(symbols)
