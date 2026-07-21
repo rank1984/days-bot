@@ -56,9 +56,9 @@ class FeedbackLearner:
             'volume': candidate.get('volume', 0),
             'score': candidate.get('score', 0),
             'timestamp': datetime.now().isoformat(),
-            'entry_price': candidate['price'],  # נשתמש במחיר המועמדות
+            'entry_price': candidate['price'],
             'checked': False,
-            'result': None,  # 'win', 'loss', 'pending'
+            'result': None,
             'pnl': 0,
             'exit_price': None,
             'exit_time': None,
@@ -84,7 +84,6 @@ class FeedbackLearner:
         entry_time = datetime.fromisoformat(candidate['timestamp'])
         
         try:
-            # הורד נתוני 1 יום אחרי המועמדות
             ticker_obj = yf.Ticker(ticker)
             end_date = entry_time + timedelta(days=1)
             hist = ticker_obj.history(start=entry_time.strftime('%Y-%m-%d'), 
@@ -93,14 +92,10 @@ class FeedbackLearner:
                 candidate['checked'] = True
                 return
             
-            # מצא את המחיר הגבוה ביותר ביום המסחר
             high_price = hist['High'].max() if 'High' in hist else 0
             close_price = hist['Close'].iloc[-1] if 'Close' in hist else 0
             
-            # רווח מקסימלי אפשרי
             max_pnl = ((high_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
-            
-            # רווח בסגירה
             close_pnl = ((close_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
             
             candidate['max_pnl'] = max_pnl
@@ -109,7 +104,6 @@ class FeedbackLearner:
             candidate['close_price'] = close_price
             candidate['checked'] = True
             
-            # הגדר תוצאה לפי סף רווח של 3% (אחרי מס 2.25% נטו)
             if max_pnl >= 10.0:
                 candidate['result'] = 'win'
                 self.metrics['wins'] += 1
@@ -121,7 +115,6 @@ class FeedbackLearner:
             else:
                 candidate['result'] = 'neutral'
             
-            # עדכון המטא-למידה
             self._update_filters_learning(candidate)
             
         except Exception as e:
@@ -149,35 +142,33 @@ class FeedbackLearner:
                     self.metrics['best_filters'][f_name]['losses'] += 1
     
     def get_insights(self) -> Dict[str, Any]:
-    """הפקת תובנות מנתוני הלמידה"""
-    self.check_results()
-    
-    # ---- תיקון: הגדרת total ----
-    total = self.metrics['wins'] + self.metrics['losses']
-    win_rate = (self.metrics['wins'] / total * 100) if total > 0 else 0
-    
-    # מציאת הפילטרים הטובים ביותר
-    best_filters = []
-    for f_name, data in self.metrics['best_filters'].items():
-        if data['total'] > 0:
-            rate = (data['wins'] / data['total'] * 100) if data['total'] > 0 else 0
-            best_filters.append({
-                'filter': f_name,
-                'win_rate': rate,
-                'total': data['total'],
-            })
-    best_filters.sort(key=lambda x: -x['win_rate'])
-    
-    insights = {
-        'total_candidates': self.metrics['total_candidates'],
-        'trades_taken': total,
-        'win_rate': win_rate,
-        'total_pnl': self.metrics['total_pnl'],
-        'avg_pnl': self.metrics['total_pnl'] / total if total > 0 else 0,
-        'best_filters': best_filters[:5],
-        'recommendation': self._get_recommendation(win_rate, self.metrics['total_pnl']),
-    }
-    return insights
+        """הפקת תובנות מנתוני הלמידה"""
+        self.check_results()
+        
+        total = self.metrics['wins'] + self.metrics['losses']
+        win_rate = (self.metrics['wins'] / total * 100) if total > 0 else 0
+        
+        best_filters = []
+        for f_name, data in self.metrics['best_filters'].items():
+            if data['total'] > 0:
+                rate = (data['wins'] / data['total'] * 100) if data['total'] > 0 else 0
+                best_filters.append({
+                    'filter': f_name,
+                    'win_rate': rate,
+                    'total': data['total'],
+                })
+        best_filters.sort(key=lambda x: -x['win_rate'])
+        
+        insights = {
+            'total_candidates': self.metrics['total_candidates'],
+            'trades_taken': total,
+            'win_rate': win_rate,
+            'total_pnl': self.metrics['total_pnl'],
+            'avg_pnl': self.metrics['total_pnl'] / total if total > 0 else 0,
+            'best_filters': best_filters[:5],
+            'recommendation': self._get_recommendation(win_rate, self.metrics['total_pnl']),
+        }
+        return insights
     
     def _get_recommendation(self, win_rate: float, total_pnl: float) -> str:
         """המלצה המבוססת על הנתונים"""
@@ -187,8 +178,6 @@ class FeedbackLearner:
             return "📈 האסטרטגיה סבירה. שקול להדק פילטרים."
         elif win_rate >= 40 and total_pnl > 0:
             return "📊 האסטרטגיה זקוקה לשיפור. בדוק פילטרים נוספים."
-        elif total < 10:
-            return "📚 אסוף עוד נתונים (לפחות 10 מועמדויות) לפני מסקנות."
         else:
             return "⚠️ האסטרטגיה לא עובדת. שנה פילטרים באופן משמעותי."
     
