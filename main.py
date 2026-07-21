@@ -1,6 +1,6 @@
 """
 DAYS-BOT Main Entry Point
-Integrated with automated Premarket Scanning and Trade Management.
+Integrated with automated Premarket Scanning, Trade Management, and Feedback Learning.
 """
 import sys
 import os
@@ -19,11 +19,30 @@ from scanner.universe import load_universe
 from database.db import init_db, save_alert, already_sent_today
 from telegram_formatter import format_preopen_list, format_no_candidates, send_message
 
-# ייבוא מנהל העסקאות החדש שלך
+# ייבוא מנהל העסקאות ומנגנון הלמידה
 from trade_manager import TradeManager
+from learning.feedback import FeedbackLearner
 
 # backtester מושבת זמנית
 # from backtester.backtester import Backtester
+
+
+def process_feedback(learner, candidates_to_add=None):
+    """פונקציית עזר להרצת בדיקת תוצאות עבר ועדכון הדוח בבטחה"""
+    try:
+        print("[Feedback] Checking past candidates performance...")
+        learner.check_results(days_back=7)
+        
+        if candidates_to_add:
+            for c in candidates_to_add:
+                learner.add_candidate(c)
+                
+        report = learner.generate_report()
+        print("\n=== [FEEDBACK LEARNING REPORT] ===")
+        print(report)
+        print("===================================\n")
+    except Exception as e:
+        print(f"[Feedback Warning] Failed to update feedback learner: {e}")
 
 
 def run_full_pipeline():
@@ -34,7 +53,10 @@ def run_full_pipeline():
     
     init_db()
     
-    # הרצת הסורק המשופר (כולל RVOL, DVol וחדשות)
+    # אתחול מנגנון הלמידה ובדיקת תוצאות קודמות
+    learner = FeedbackLearner()
+    
+    # הרצת הסורק המשופר
     universe = load_universe()
     universe_size = len(universe) if universe else 0
     candidates = scan_premarket(today)
@@ -43,18 +65,18 @@ def run_full_pipeline():
         msg = format_no_candidates(today, universe_size)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found")
+        # ניתוח תוצאות העבר גם אם אין מועמדים היום
+        process_feedback(learner)
         return
-    
+
     # סינון מניות שכבר נשלחו היום למניעת כפילויות במובייל
-    filtered = []
-    for c in candidates:
-        if not already_sent_today(c['ticker'], today):
-            filtered.append(c)
+    filtered = [c for c in candidates if not already_sent_today(c['ticker'], today)]
     
     if not filtered:
         print("[Main] All candidates already sent today")
+        process_feedback(learner)
         return
-    
+
     # שליחת רשימת הטופ 5 לטלגרם
     msg = format_preopen_list(filtered, today, universe_size=universe_size)
     success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
@@ -69,6 +91,9 @@ def run_full_pipeline():
                 catalyst=c.get('catalyst', '—')
             )
         print(f"[Main] Sent {len(filtered)} candidates to Telegram")
+        
+        # עדכון הלמידה עם ה-Top 5 מהסינון הנוכחי
+        process_feedback(learner, candidates_to_add=filtered[:5])
 
 
 def run_paper_trade():
@@ -79,21 +104,29 @@ def run_paper_trade():
     print(f"[Main] Mode: paper (Automated Trading)")
     print(f"=== [DAYS-BOT TRADER] {today} {datetime.now().strftime('%H:%M')} ET ===")
     
-    # אתחול בסיס הנתונים ומנהל המסחר (במצב Paper)
     init_db()
+    
+    # אתחול למידה ובדיקת היסטוריה לפני המסחר
+    learner = FeedbackLearner()
+    process_feedback(learner)
+    
     trader = TradeManager(paper=True)
     
-    # הפעלת הסורק האגרסיבי
     candidates = scan_premarket(today)
     if not candidates:
         print("[PaperTrade] 😴 No high quality breakout candidates found today. Aborting trade cycle.")
         return
     
-    # בחירת המועמדת המובילה ביותר (מדורגת במקום ה-1 עם הציון הגבוה ביותר בסורק)
+    # בחירת המועמדת המובילה ביותר
     top_candidate = candidates[0]
     print(f"[PaperTrade] 🚀 Selected top momentum candidate: {top_candidate['ticker']} (Score: {top_candidate['score']:.0f}/100)")
     
-    # ניסיון כניסה לפוזיציה (מציב פקודות/חוקי כניסה ב-TradeManager)
+    # הוספת המועמדת הנבחרת למערכת הלמידה
+    try:
+        learner.add_candidate(top_candidate)
+    except Exception as e:
+        print(f"[PaperTrade Warning] Could not log candidate to learner: {e}")
+    
     trade_entered = trader.enter_trade(top_candidate)
     
     if not trade_entered:
@@ -102,20 +135,16 @@ def run_paper_trade():
         
     print(f"[PaperTrade] 🔥 Active position initialized for {top_candidate['ticker']}. Entering monitoring loop...")
     
-    # לולאת מעקב, ניהול סיכונים ויציאה (Trailing Stop / Target / Stop Loss)
-    # הלולאה תרוץ כל 5 דקות כל עוד יש פוזיציה פתוחה במערכת
     try:
         while True:
-            # מעקב ובדיקת יעדי רווח/הפסד
             active_trades = trader.monitor_and_exit()
             
-            # מנגנון הגנה: אם אין פוזיציות פתוחות יותר, נסיים את ריצת המערכת להיום
             if not active_trades:
                 print("[PaperTrade] 🏁 No active open trades left in portfolio. Closing system cycle.")
                 break
                 
             print(f"[PaperTrade] [Time: {datetime.now().strftime('%H:%M:%S')}] Monitoring positions... Next check in 5 minutes.")
-            time.sleep(300)  # הדמיה/המתנה של 5 דקות בין בדיקה לבדיקה
+            time.sleep(300)
             
     except KeyboardInterrupt:
         print("[PaperTrade] 🛑 Operational loop stopped manually by operator.")
