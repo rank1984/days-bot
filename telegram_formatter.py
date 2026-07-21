@@ -1,21 +1,16 @@
 """
-Telegram formatter - updated with enhanced momentum metrics & stable MarkdownV2 parsing
+Telegram formatter - HTML mode (no Markdown issues)
 """
 import requests
 from datetime import datetime
 import pytz
+import re
 
 ET = pytz.timezone("America/New_York")
 
 
-def escape_markdown_v2(text: str) -> str:
-    """בורח תווים מיוחדים של MarkdownV2 כדי למנוע שגיאות שליחה בטלגרם"""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
-    return ''.join(f'\\{c}' if c in escape_chars else c for c in str(text))
-
-
 def send_message(token: str, chat_id: str, text: str) -> bool:
-    """Send message to Telegram using MarkdownV2"""
+    """Send message using HTML parse mode"""
     if not token or not chat_id:
         return False
     
@@ -26,104 +21,94 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
             json={
                 "chat_id": chat_id,
                 "text": text,
-                "parse_mode": "MarkdownV2",
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True
             },
             timeout=30
         )
-        if resp.status_code != 200:
-            print(f"[Telegram] Failed to send. Status: {resp.status_code}, Response: {resp.text}")
-        return resp.status_code == 200
+        if resp.status_code == 200:
+            return True
+        print(f"[Telegram] Failed. Status: {resp.status_code}, Response: {resp.text}")
+        return False
     except Exception as e:
         print(f"[Telegram] Error: {e}")
         return False
 
 
-def format_preopen_list(candidates: list, date: str, universe_size: int = 0) -> str:
-    """Format candidates for Telegram with exact match to our scanner outputs"""
+def format_preopen_list(candidates: list, date: str, low_quality: bool = False) -> str:
+    """Format candidates using HTML (safe)"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
     
     if not candidates:
-        return format_no_candidates(date, universe_size)
+        return format_no_candidates(date, 0)
     
-    # כותרת ההודעה
     lines = [
-        "🎯 *DAYS\\-BOT \\- מועמדויות לפריצה*",
-        f"📅 {escape_markdown_v2(date)}  \\|  🕐 {escape_markdown_v2(time_str)}",
+        "🎯 <b>DAYS-BOT - מועמדויות לפריצה</b>",
+        f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
     ]
     
-    # הצגת 5 המועמדות המובילות
     for i, r in enumerate(candidates[:5], 1):
-        ticker = escape_markdown_v2(r['ticker'])
+        ticker = r['ticker']
         price = r['price']
-        gap = r.get('gap_pct', 0.0)
-        vol = r.get('pm_volume', 0.0)
-        dvol = r.get('dollar_volume', 0.0)
-        rvol = r.get('rvol', 1.0)  # שימוש במפתח המעודכן מהסורק
-        score = r.get('score', 0.0)
+        gap = r.get('gap_pct', 0)
+        vol = r.get('volume', 0)
+        score = r.get('score', 0)
         catalyst = r.get('catalyst', '—')
         
-        # פורמט נפח מניות (ווליום)
+        # פורמט נפח
         if vol >= 1_000_000:
             vol_str = f"{vol/1_000_000:.1f}M"
-        else:
+        elif vol >= 1_000:
             vol_str = f"{vol/1_000:.0f}K"
-        vol_str = escape_markdown_v2(vol_str)
-            
-        # פורמט שווי דולרי (נזילות)
-        if dvol >= 1_000_000:
-            dvol_str = f"\\${dvol/1_000_000:.1f}M"
         else:
-            dvol_str = f"\\${dvol/1_000:.0f}K"
+            vol_str = f"{vol}"
         
-        # איקון מותאם לפי עוצמת הגאפ
-        if gap < 5.0:
-            gap_icon = "🟢"
-        elif gap < 12.0:
-            gap_icon = "🟡"
+        # אייקון Gap
+        if gap >= 5:
+            gap_icon = "🔥"
+        elif gap >= 3:
+            gap_icon = "⚡"
+        elif gap >= 1:
+            gap_icon = "📈"
         else:
-            gap_icon = "🟠"
-            
-        # חיתוך כותרת החדשות אם היא ארוכה מדי
-        if len(catalyst) > 40:
-            catalyst_summary = catalyst[:40] + "..."
-        else:
-            catalyst_summary = catalyst
-        catalyst_summary = escape_markdown_v2(catalyst_summary)
+            gap_icon = "➡️"
         
-        # סימן פלוס או מינוס לגאפ
-        gap_sign = "\\+" if gap >= 0 else ""
+        # ציון
+        if score >= 70:
+            grade = "🚀 EXCELLENT"
+        elif score >= 50:
+            grade = "✅ GOOD"
+        elif score >= 30:
+            grade = "👀 WATCH"
+        else:
+            grade = "⛔ SKIP"
         
         lines.append("")
-        lines.append(f"{i}\\. *{ticker}*  💰 \\${price:.2f}  {gap_icon} Gap: {gap_sign}{gap:.1f}%")
-        lines.append(f"   📊 RVOL: {rvol:.1f}x  \\|  💵 {dvol_str}  \\|  נפח: {vol_str}")
-        lines.append(f"   📰 קטליזטור: {catalyst_summary}")
-        lines.append(f"   🎯 *Score: {score:.0f}/100*")
+        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%")
+        lines.append(f"   📊 נפח: {vol_str}  |  🎯 Score: {score:.0f}/100  {grade}")
+        if catalyst and catalyst != '—':
+            lines.append(f"   📰 {catalyst[:60]}")
     
-    # חתימת ההודעה עם תנאי הסינון החדשים והאגרסיביים
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "⚡ *סינון קשוח:* Gap 3\\-25% \\| RVOL \\> 2x \\| DVol \\> \\$1M",
-        "🎯 *יעד:* \\+20%  \\|  🛑 *סטופ:* \\-5%",
-        "🚫 _אין באמור המלצה לפעולה בשוק_"
+        "⚡ כניסה: Gap > 3% + נפח > 100K",
+        "🎯 יעד: +20%  |  🛑 סטופ: -5%",
+        "🚫 לא המלצת השקעה"
     ]
     
     return "\n".join(lines)
 
 
 def format_no_candidates(date: str, universe_size: int = 0) -> str:
-    """הודעה ייעודית למצב שבו אף מניה לא עברה את הפילטרים המחמירים"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
-    
-    lines = [
-        "🎯 *DAYS\\-BOT \\- מועמדויות לפריצה*",
-        f"📅 {escape_markdown_v2(date)}  \\|  🕐 {escape_markdown_v2(time_str)}",
-        "━━━━━━━━━━━━━━━━━━",
-        f"🔍 נסרקו: {universe_size} מניות בלוח ה\\-Universe",
-        "😴 *אין מועמדויות איכותיות שעברו את הסינון היום*",
-        "━━━━━━━━━━━━━━━━━━",
-        "⏰ בדיקת מומנטום מחודשת ביום המסחר הבא\\."
-    ]
-    return "\n".join(lines)
+    return (
+        f"🎯 <b>DAYS-BOT - מועמדויות לפריצה</b>\n"
+        f"📅 {date}  |  🕐 {time_str}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 נסרקו: {universe_size} מניות\n"
+        f"😴 אין מועמדויות איכותיות היום\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⏰ בדיקה חוזרת מחר ב-14:30"
+    )
