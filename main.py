@@ -120,6 +120,20 @@ def run_paper_trade():
     # בחירת המועמדת המובילה ביותר
     top_candidate = candidates[0]
     print(f"[PaperTrade] 🚀 Selected top momentum candidate: {top_candidate['ticker']} (Score: {top_candidate['score']:.0f}/100)")
+
+    from backtest.daily_backtest import DailyBacktest
+
+    def run_full_pipeline():
+    # ... קוד קיים ...
+    
+    # הוסף מועמדות ל-Backtest
+    backtest = DailyBacktest()
+    for c in candidates[:10]:
+        backtest.add_candidate(c)
+    
+    # הדפס דוח
+    report = backtest.get_report()
+    print(report)
     
     # הוספת המועמדת הנבחרת למערכת הלמידה
     try:
