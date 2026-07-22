@@ -164,13 +164,18 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     volume = daily_bar.volume
                     prev_volume = daily_bar.volume
                     
+                    # ====== Filters with logs ======
                     # 1. Price
-                    if price < MIN_PRICE or price > MAX_PRICE: continue
+                    if price < MIN_PRICE or price > MAX_PRICE:
+                        # print(f"[DEBUG] {symbol} - Price filter failed: ${price:.2f}")
+                        continue
                     stats['price_passed'] += 1
                     
                     # 2. Gap %
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
-                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT: continue
+                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                        # print(f"[DEBUG] {symbol} - Gap filter failed: {gap_pct:.1f}%")
+                        continue
                     stats['gap_passed'] += 1
                     
                     # Market Strength Filter
@@ -185,7 +190,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                         
                     # 3. Volume
-                    if volume < MIN_AVG_VOLUME: continue
+                    if volume < MIN_AVG_VOLUME:
+                        # print(f"[DEBUG] {symbol} - Volume filter failed: {volume:,}")
+                        continue
                     stats['volume_passed'] += 1
                     
                     # Volume Trend
@@ -254,6 +261,13 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             
         except Exception as e:
             continue
+    
+    # ====== סיכום לוגים ======
+    print(f"\n[DEBUG] Total Universe: {stats['total']}")
+    print(f"[DEBUG] Price Passed:  {stats['price_passed']}")
+    print(f"[DEBUG] Gap Passed:    {stats['gap_passed']}")
+    print(f"[DEBUG] Volume Passed: {stats['volume_passed']}")
+    print(f"[DEBUG] Final Passed:  {stats['final_passed']}")
     
     scored = []
     for c in candidates:
