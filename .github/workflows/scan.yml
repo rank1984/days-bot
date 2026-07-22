@@ -44,6 +44,13 @@ jobs:
           TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
 
+      - name: Upload trade history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trades-history
+          path: data/trades_history.json
+
       - name: Save database
         if: always()
         uses: actions/cache/save@v4
