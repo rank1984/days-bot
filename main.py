@@ -24,6 +24,7 @@ from trade_manager import TradeManager
 from learning.feedback import FeedbackLearner
 from backtest.daily_backtest import DailyBacktest
 
+
 def process_feedback(learner, candidates_to_add=None):
     """פונקציית עזר להרצת בדיקת תוצאות עבר ועדכון הדוח בבטחה"""
     try:
@@ -40,6 +41,7 @@ def process_feedback(learner, candidates_to_add=None):
         print("===================================\n")
     except Exception as e:
         print(f"[Feedback Warning] Failed to update feedback learner: {e}")
+
 
 def market_condition_ok():
     """Kill Switch (מצב שוק חלש)"""
@@ -59,6 +61,7 @@ def market_condition_ok():
     except:
         return True  # אם אין נתונים – נניח שהשוק תקין
 
+
 def run_full_pipeline():
     """Run the full scan and alert pipeline"""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -68,54 +71,42 @@ def run_full_pipeline():
     init_db()
     learner = FeedbackLearner()
     
-    # 4 סריקות בשעות שונות (סימולציה של סריקות מרובות כדי לצבור Count)
-    scan_times = ["08:00", "08:15", "08:30", "08:45"]
-    all_candidates = {}
+    # ====== סריקה אחת ======
+    print("[Main] Scanning...")
+    candidates = scan_premarket(today)
     
-    for t in scan_times:
-        print(f"[Main] Scanning at {t} ET...")
-        candidates = scan_premarket(today)
-        for c in candidates:
-            ticker = c['ticker']
-            if ticker not in all_candidates:
-                all_candidates[ticker] = {'count': 0, 'data': c}
-            all_candidates[ticker]['count'] += 1
-            
-    # סנן רק מניות שהופיעו ב-2+ סריקות
-    filtered = []
-    for ticker, info in all_candidates.items():
-        if info['count'] >= 2:
-            filtered.append(info['data'])
-            
-    if not filtered:
+    if not candidates:
         universe = load_universe()
         msg = format_no_candidates(today, len(universe) if universe else 0)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print("[Main] No consistent candidates")
+        print("[Main] No candidates found")
         process_feedback(learner)
         return
-        
+
     # Kill switch בדיקת תנאי שוק
     if not market_condition_ok():
         print("[Main] Market conditions poor. Kill Switch Activated. No trades.")
         return
 
     # סינון מניות שכבר נשלחו היום למניעת כפילויות במובייל
-    filtered_new = [c for c in filtered if not already_sent_today(c['ticker'], today)]
-    
-    if not filtered_new:
+    filtered = []
+    for c in candidates:
+        if not already_sent_today(c['ticker'], today):
+            filtered.append(c)
+            
+    if not filtered:
         print("[Main] All candidates already sent today")
         process_feedback(learner)
         return
 
-    # שליחת רשימת הטופ 5 הכללית לטלגרם
+    # שליחה לטלגרם
     universe = load_universe()
-    msg = format_preopen_list(filtered_new, today, universe_size=len(universe) if universe else 0)
+    msg = format_preopen_list(filtered, today, universe_size=len(universe) if universe else 0)
     success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     
     if success:
-        # שמירת המועמדים ב-DB
-        for c in filtered_new:
+        # שמירה ל-DB
+        for c in filtered:
             save_alert(
                 ticker=c['ticker'],
                 price=c['price'],
@@ -123,26 +114,25 @@ def run_full_pipeline():
                 score=c.get('score', 0),
                 catalyst=c.get('catalyst', '—')
             )
-        print(f"[Main] Sent {len(filtered_new)} candidates summary to Telegram")
+        print(f"[Main] Sent {len(filtered)} candidates summary to Telegram")
         
         # ====== Trade Manager ======
         try:
             manager = TradeManager()
             plans = []
             
-            for c in filtered_new[:3]:  # 3 המובילים
+            for c in filtered[:3]:  # 3 המובילים
                 if hasattr(manager, 'generate_plan'):
                     plan = manager.generate_plan(c)
                 else:
                     plan = None
                 
-                if plan:  # בודק שהתוכנית תקינה
+                if plan:
                     plans.append(plan)
             
             if not plans:
-                print("[Main] No trades with RR >= 1.5")
+                print("[Main] No trades with RR >= 1.2")
             else:
-                # שליחת תוכניות המסחר לטלגרם ושמירה
                 for plan in plans:
                     if hasattr(manager, 'get_trade_summary'):
                         plan_msg = manager.get_trade_summary(plan)
@@ -151,7 +141,6 @@ def run_full_pipeline():
                         
                     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, plan_msg)
                     
-                    # שמירת כל עסקה ללמידה
                     save_trade(
                         ticker=plan['ticker'],
                         entry=plan['entry'],
@@ -166,22 +155,24 @@ def run_full_pipeline():
                         dvol=plan['raw_data']['dvol'],
                         catalyst=plan['raw_data']['catalyst']
                     )
-                    time.sleep(1)  # השהייה קלה בין שליחות
+                    time.sleep(1)
                 print(f"[Main] Sent and saved {len(plans)} trade plans")
                 
         except Exception as e:
             print(f"[Main Warning] Failed to generate/send trade plans: {e}")
 
-        # עדכון הלמידה עם ה-Top 5 מהסינון הנוכחי
-        process_feedback(learner, candidates_to_add=filtered_new[:5])
+        process_feedback(learner, candidates_to_add=filtered[:5])
+
 
 def run_paper_trade():
     """Paper Trading Mode"""
-    print("[Main] Paper trade mode selected (Placeholder)")
+    print("[Main] Paper trade mode selected")
+
 
 def run_backtest():
     """Run backtest"""
-    print("[Main] Backtest disabled - need to fix data_fetcher")
+    print("[Main] Backtest disabled")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DAYS-BOT Global Execution Engine")
