@@ -83,6 +83,7 @@ def run_full_pipeline():
     success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     
     if success:
+        # שמירת המועמדים ב-DB
         for c in filtered:
             save_alert(
                 ticker=c['ticker'],
@@ -93,37 +94,57 @@ def run_full_pipeline():
             )
         print(f"[Main] Sent {len(filtered)} candidates summary to Telegram")
         
-        # 🚀 שליחת תוכניות מסחר מפורטות ל-3 המובילים
+        # ====== Trade Manager ======
         try:
             manager = TradeManager()
-            for c in filtered[:3]:
-                # בודק אם קיים מנגנון מחולל תוכנית מובנה או מייצר תוכנית ישירות מהמועמד
+            plans = []
+            
+            for c in filtered[:3]:  # 3 המובילים
                 if hasattr(manager, 'generate_plan'):
                     plan = manager.generate_plan(c)
                 else:
+                    # יצירת תוכנית ברירת מחדל אם generate_plan לא קיים
                     entry = c.get('price', 0.0)
-                    plan = {
-                        'ticker': c.get('ticker', '???'),
-                        'confidence': '🚀 High' if c.get('score', 0) >= 70 else '⚡ Medium',
-                        'entry': entry,
-                        'stop': entry * 0.95,
-                        'tp1': entry * 1.10,
-                        'tp2': entry * 1.20,
-                        'runner': True,
-                        'level': c.get('level', 'Breakout'),
-                        'score': c.get('score', 0),
-                        'rvol': c.get('rvol', 0.0)
-                    }
-
-                # פורמט ושליחת הודעת תוכנית המסחר הפרטנית
-                if hasattr(manager, 'get_trade_summary'):
-                    plan_msg = manager.get_trade_summary(plan)
-                else:
-                    plan_msg = format_trade_plan(plan)
-
-                send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, plan_msg)
-                time.sleep(1)  # השהייה קלה למניעת הצפה ב-API של טלגרם
-            print("[Main] Sent detailed trade plans for top 3 candidates")
+                    stop = entry * 0.95
+                    tp1 = entry * 1.10
+                    tp2 = entry * 1.20
+                    risk = entry - stop
+                    reward = tp1 - entry
+                    rr = reward / risk if risk > 0 else 0
+                    
+                    if rr >= 1.5:
+                        plan = {
+                            'ticker': c.get('ticker', '???'),
+                            'confidence': '🚀 High' if c.get('score', 0) >= 70 else '⚡ Medium',
+                            'entry': entry,
+                            'stop': stop,
+                            'tp1': tp1,
+                            'tp2': tp2,
+                            'runner': True,
+                            'level': c.get('level', 'Breakout'),
+                            'score': c.get('score', 0),
+                            'rvol': c.get('rvol', 0.0)
+                        }
+                    else:
+                        plan = None
+                
+                if plan:  # בודק שהתוכנית תקינה (ועומדת ב-RR >= 1.5)
+                    plans.append(plan)
+            
+            if not plans:
+                print("[Main] No trades with RR >= 1.5")
+            else:
+                # שליחת תוכניות המסחר לטלגרם
+                for plan in plans:
+                    if hasattr(manager, 'get_trade_summary'):
+                        plan_msg = manager.get_trade_summary(plan)
+                    else:
+                        plan_msg = format_trade_plan(plan)
+                        
+                    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, plan_msg)
+                    time.sleep(1)  # השהייה קלה בין שליחות
+                print(f"[Main] Sent {len(plans)} trade plans to Telegram")
+                
         except Exception as e:
             print(f"[Main Warning] Failed to generate/send trade plans: {e}")
 
