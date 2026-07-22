@@ -157,14 +157,16 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     # ====== פילטר 4: Relative Volume (RVOL) ======
                     rvol = volume / avg_volume_10d if avg_volume_10d > 0 else 1.0
-                    if rvol < 2.0:  # סינון מניות ללא מומנטום ווליום
-                        continue
+                    min_rvol = globals().get('MIN_RVOL', 2.0)
+                    # if rvol < min_rvol:  # סינון מניות ללא מומנטום ווליום
+                    #     continue
                     stats['rvol_passed'] += 1
                     
                     # ====== פילטר 5: Dollar Volume (נזילות אמיתית) ======
                     dollar_volume = price * volume
-                    if dollar_volume < 1_000_000:  # מינימום 1 מיליון דולר נזילות
-                        continue
+                    min_dollar_volume = globals().get('MIN_DOLLAR_VOLUME', 1_000_000)
+                    # if dollar_volume < min_dollar_volume:  # מינימום נזילות
+                    #     continue
                     stats['dvol_passed'] += 1
                     
                     stats['final_passed'] += 1
