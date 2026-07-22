@@ -35,7 +35,11 @@ class TradeManager:
         stop_pct = max(0.05, (atr / price) * 1.5)
         stop_price = round(price * (1 - stop_pct), 2)
         
-        tp1_pct = max(0.02, (gap_pct / 100) + 0.03)
+        # --- TP1 משופר ---
+        if gap_pct > 2:
+            tp1_pct = (gap_pct / 100) + 0.02
+        else:
+            tp1_pct = 0.04
         tp1_price = round(price * (1 + tp1_pct), 2)
         
         tp2_price = round(tp1_price + atr, 2)
@@ -47,8 +51,9 @@ class TradeManager:
         rr1 = reward1 / risk if risk > 0 else 0
         rr2 = reward2 / risk if risk > 0 else 0
         
-        if rr1 < 1.5:
-            print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.5. Skipping trade.")
+        # סינון: RR1 < 1.2 → לא נכנסים
+        if rr1 < 1.2:
+            print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.2. Skipping trade.")
             return None
         
         confidence_pct = quality_score
@@ -97,7 +102,6 @@ class TradeManager:
         
         price_strength = min(100, c.get('gap_pct', 0) * 10)
         
-        # המרחק מהשיא (מרחק קטן = ניקוד גבוה)
         pm_high_dist = c.get('pm_high_dist', 0)
         pm_high_val = max(0, 100 - (pm_high_dist * 10))
         
@@ -160,8 +164,8 @@ class TradeManager:
     def get_trade_summary(self, plan: Dict[str, Any]) -> str:
         lines = []
         lines.append(f"🎯 <b>{plan['ticker']}</b>  {plan['confidence']}  ({plan['confidence_pct']:.0f}%)")
-        lines.append(f"⚡ Trigger: ${plan['trigger']:.2f} (BREAKOUT)")
         lines.append(f"💰 כניסה: ${plan['entry']:.2f}")
+        lines.append(f"⚡ Trigger: ${plan['trigger']:.2f} (BREAKOUT)")
         lines.append(f"🛑 סטופ:  ${plan['stop']:.2f}  (-{((plan['entry']-plan['stop'])/plan['entry']*100):.1f}%)")
         lines.append(f"━━━━━━━━━━━━━━━━━━")
         lines.append(f"🎯 TP1:   ${plan['tp1']:.2f}  (+{((plan['tp1']/plan['entry'])-1)*100:.1f}%)  |  RR: {plan['rr1']:.2f}")
