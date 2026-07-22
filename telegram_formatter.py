@@ -3,6 +3,7 @@ Telegram formatter - HTML mode (safe)
 """
 import requests
 from datetime import datetime
+from typing import Dict, Any, List
 import pytz
 
 ET = pytz.timezone("America/New_York")
@@ -33,7 +34,37 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def format_preopen_list(candidates: list, date: str, low_quality: bool = False, universe_size: int = 0) -> str:
+def format_trade_plan(plan: Dict[str, Any]) -> str:
+    """עיצוב תוכנית מסחר לטלגרם"""
+    lines = []
+    ticker = plan.get('ticker', '???')
+    confidence = plan.get('confidence', '')
+    entry = plan.get('entry', 0.0)
+    stop = plan.get('stop', 0.0)
+    tp1 = plan.get('tp1', 0.0)
+    tp2 = plan.get('tp2', 0.0)
+    runner = plan.get('runner', False)
+    level = str(plan.get('level', 'N/A')).upper()
+    score = plan.get('score', 0)
+    rvol = plan.get('rvol', 0.0)
+
+    # חישוב אחוזי יעד בבטחה
+    tp1_pct = ((tp1 / entry) - 1) * 100 if entry > 0 else 0
+    tp2_pct = ((tp2 / entry) - 1) * 100 if entry > 0 else 0
+    stop_pct = ((1 - (stop / entry)) * 100) if entry > 0 else 5.0
+
+    lines.append(f"🎯 <b>{ticker}</b>  {confidence}")
+    lines.append(f"💰 כניסה: ${entry:.2f}")
+    lines.append(f"🛑 סטופ:  ${stop:.2f}  (-{stop_pct:.0f}%)")
+    lines.append(f"🎯 TP1:   ${tp1:.2f}  (+{tp1_pct:.0f}%)")
+    lines.append(f"🎯 TP2:   ${tp2:.2f}  (+{tp2_pct:.0f}%)")
+    lines.append(f"🏃 Runner: {'כן' if runner else 'לא'}")
+    lines.append(f"📊 Level: {level}  |  Score: {score:.0f}  |  RVOL: {rvol:.1f}x")
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
+def format_preopen_list(candidates: List[Dict[str, Any]], date: str, low_quality: bool = False, universe_size: int = 0) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     
     if not candidates:
