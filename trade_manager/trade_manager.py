@@ -1,250 +1,100 @@
 """
-Trade Manager – Entry & Exit logic for big moves
+Trade Manager – converts scanner output into a trade plan
 """
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
-import alpaca_trade_api as tradeapi
-from utils.config import *
-
+from typing import Dict, Any
 
 class TradeManager:
-    # ─── EXIT CONSTANTS ──────────────────────────────────────────
-    TAKE_PROFIT_1 = 0.10      # 10% → סגור 30%
-    TAKE_PROFIT_2 = 0.15      # 15% → סגור 40%
-    TAKE_PROFIT_3 = 0.20      # 20% → סגור 30%
-    STOP_LOSS = 0.05          # 5% סטופ ראשוני
-    TRAILING_ACTIVATE = 0.05  # הפעל סטופ נגרר אחרי 5%+
-
-    def __init__(self, paper: bool = True):
-        """אתחול – משתמש ב-Paper API כברירת מחדל"""
-        base_url = 'https://paper-api.alpaca.markets' if paper else 'https://api.alpaca.markets'
-        self.api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url=base_url)
-        self.positions = {}
-        self.trades_log = []
-
-    # ─── ENTRY ────────────────────────────────────────────────
-    def should_enter(self, candidate: Dict[str, Any]) -> bool:
+    def __init__(self):
+        # מטריצת איכות – קובעת יעדים דינמיים לפי ציון ו-RVOL
+        self.score_matrix = {
+            'excellent': {'min_score': 85, 'min_rvol': 4.0, 'tp1': 0.07, 'tp2': 0.15, 'runner': True},
+            'good':      {'min_score': 75, 'min_rvol': 3.0, 'tp1': 0.06, 'tp2': 0.12, 'runner': True},
+            'average':   {'min_score': 65, 'min_rvol': 2.0, 'tp1': 0.05, 'tp2': 0.10, 'runner': True},
+            'watch':     {'min_score': 55, 'min_rvol': 1.5, 'tp1': 0.04, 'tp2': 0.08, 'runner': False},
+        }
+    
+    def generate_plan(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
         """
-        קריטריוני כניסה קפדניים:
-        1. Gap 3%–25% (מומנטום חזק)
-        2. RVOL > 2.0 (עניין חריג)
-        3. Dollar Volume > $1M (נזילות)
-        4. מחיר > $0.50 (לא פני)
-        5. Score > 50 (איכות)
+        מקבל מועמד מהסורק, מחזיר תוכנית מסחר מלאה
+        
+        Args:
+            candidate: dict עם ticker, price, gap_pct, rvol, score
+        
+        Returns:
+            dict: תוכנית מסחר עם entry, stop, tp1, tp2, runner, confidence
         """
-        gap = candidate.get('gap_pct', 0)
-        rvol = candidate.get('rvol', 0)
-        dvol = candidate.get('dollar_volume', 0)
+        score = candidate.get('score', 50)
+        rvol = candidate.get('rvol', 1.0)
         price = candidate.get('price', 0)
-        score = candidate.get('score', 0)
+        ticker = candidate.get('ticker', '???')
+        gap = candidate.get('gap_pct', 0)
         
-        if not (3.0 <= gap <= 25.0):
-            return False
-        if rvol < 2.0:
-            return False
-        if dvol < 1_000_000:
-            return False
-        if price < 0.50:
-            return False
-        if score < 50:
-            return False
+        # מציאת רמת איכות
+        level = self._get_level(score, rvol)
+        matrix = self.score_matrix[level]
         
-        # בדיקת זמן – רק בין 09:30 ל-15:45 ET (למסחר רגיל)
-        now = datetime.now()
-        if now.weekday() >= 5:  # סוף שבוע
-            return False
+        # סטופ – 5% (קבוע, אבל ניתן לשנות)
+        stop_pct = 0.05
+        stop_price = round(price * (1 - stop_pct), 2)
         
-        # נשתמש ב-Alpaca Clock לקביעת שעות מסחר
-        try:
-            clock = self.api.get_clock()
-            if not clock.is_open:
-                return False
-        except Exception as e:
-            print(f"[Trade Warning] Could not verify Alpaca market clock: {e}")
-
-        return True
-
-    def calculate_position_size(self, price: float, risk_per_trade: float = 0.02) -> int:
-        """גודל פוזיציה לפי סיכון 2% מהתיק"""
-        account = self.api.get_account()
-        equity = float(account.equity)
-        risk_amount = equity * risk_per_trade
-        stop_loss_pct = 0.05  # 5% סטופ
-        shares = int(risk_amount / (price * stop_loss_pct))
-        return max(shares, 1)  # לפחות 1 מניה
-
-    def enter_trade(self, candidate: Dict[str, Any]) -> Optional[Dict]:
-        """בצע כניסה – שוק או לימיט"""
-        if not self.should_enter(candidate):
-            return None
+        # יעדי רווח דינמיים לפי המטריצה
+        tp1_pct = matrix['tp1']
+        tp2_pct = matrix['tp2']
+        runner = matrix['runner']
         
-        symbol = candidate['ticker']
-        price = candidate['price']
-        shares = self.calculate_position_size(price)
+        tp1_price = round(price * (1 + tp1_pct), 2)
+        tp2_price = round(price * (1 + tp2_pct), 2)
         
-        try:
-            # כניסה בלימיט (מחיר נוכחי + סובלנות)
-            limit_price = round(price * 1.005, 2)  # 0.5% סובלנות
-            order = self.api.submit_order(
-                symbol=symbol,
-                qty=shares,
-                side='buy',
-                type='limit',
-                limit_price=limit_price,
-                time_in_force='day'
-            )
-            print(f"[Trade] ENTER {symbol} @ {limit_price} x {shares} shares")
-            
-            # שמירת פרטי העסקה
-            trade = {
-                'symbol': symbol,
-                'entry_price': limit_price,
-                'shares': shares,
-                'entry_time': datetime.now().isoformat(),
-                'stop_loss': price * 0.95,       # 5% סטופ
-                'take_profit_1': price * 1.10,  # 10% partial
-                'take_profit_2': price * 1.20,  # 20% target
-                'take_profit_3': price * 1.30,  # 30% target
-            }
-            self.trades_log.append(trade)
-            return trade
-        except Exception as e:
-            print(f"[Trade] ENTRY ERROR {symbol}: {e}")
-            return None
-
-    # ─── EXIT RULES ───────────────────────────────────────────
-    def should_exit(self, position: Dict) -> str:
-        symbol = position['symbol']
-        entry = position['entry_price']
-        current = self.get_current_price(symbol)
-        if not current:
-            return 'hold'
+        # דירוג אמון בכוכבים
+        confidence = self._get_confidence(score, rvol)
         
-        change_pct = (current - entry) / entry * 100
-        
-        # 1. Stop-Loss
-        if change_pct <= -self.STOP_LOSS * 100:
-            return 'stop_loss'
-        
-        # 2. Trailing Stop (אחרי 5%+)
-        if change_pct >= self.TRAILING_ACTIVATE * 100:
-            high = self.get_high_since_entry(symbol, entry)
-            if high:
-                drawdown = (high - current) / high * 100
-                if drawdown >= 3.0:  # ירידה של 3% מהשיא
-                    return 'trailing_stop'
-        
-        # 3. Take-Profit מדורג
-        if change_pct >= self.TAKE_PROFIT_3 * 100:
-            return 'take_profit_3'
-        elif change_pct >= self.TAKE_PROFIT_2 * 100:
-            return 'take_profit_2'
-        elif change_pct >= self.TAKE_PROFIT_1 * 100:
-            # אם הגיע ל-10% תוך 30 דקות – סגור חלק
-            elapsed = (datetime.now() - datetime.fromisoformat(position['entry_time'])).seconds / 60
-            if elapsed < 30:
-                return 'take_profit_1'
-        
-        # 4. Time Stop
-        elapsed = (datetime.now() - datetime.fromisoformat(position['entry_time'])).seconds / 60
-        if elapsed > 60 and change_pct < 3.0:
-            return 'time_stop'
-        
-        return 'hold'
-
-    def execute_exit(self, position: Dict, exit_reason: str):
-        """בצע יציאה לפי הסיבה"""
-        symbol = position['symbol']
-        shares = position['shares']
-        current = self.get_current_price(symbol)
-        if not current:
-            return
-        
-        # מכירה בחלקים לפי הסיבה
-        if exit_reason in ('stop_loss', 'trailing_stop', 'take_profit_3', 'time_stop'):
-            qty = shares
-        elif exit_reason == 'take_profit_2':
-            qty = int(shares * 0.7)  # 70% מהפוזיציה
-        elif exit_reason == 'take_profit_1':
-            qty = int(shares * 0.3)  # 30% מהפוזיציה
+        return {
+            'ticker': ticker,
+            'entry': price,
+            'stop': stop_price,
+            'tp1': tp1_price,
+            'tp2': tp2_price,
+            'runner': runner,
+            'level': level,
+            'confidence': confidence,
+            'score': score,
+            'rvol': rvol,
+            'gap_pct': gap,
+        }
+    
+    def _get_level(self, score: float, rvol: float) -> str:
+        """החזר את רמת האיכות לפי Score ו-RVOL"""
+        if score >= 85 and rvol >= 4.0:
+            return 'excellent'
+        elif score >= 75 and rvol >= 3.0:
+            return 'good'
+        elif score >= 65 and rvol >= 2.0:
+            return 'average'
         else:
-            return
-        
-        if qty <= 0:
-            return
-        
-        try:
-            order = self.api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='sell',
-                type='limit',
-                limit_price=round(current * 0.995, 2),
-                time_in_force='day'
-            )
-            print(f"[Trade] EXIT {symbol} @ {current:.2f} ({exit_reason}) x {qty} shares")
-            
-            # רישום הרווח/הפסד
-            pnl = (current - position['entry_price']) / position['entry_price'] * 100
-            self.trades_log.append({
-                'symbol': symbol,
-                'exit_price': current,
-                'exit_time': datetime.now().isoformat(),
-                'exit_reason': exit_reason,
-                'pnl_pct': pnl,
-                'shares': qty,
-            })
-        except Exception as e:
-            print(f"[Trade] EXIT ERROR {symbol}: {e}")
-
-    # ─── HELPERS ──────────────────────────────────────────────
-    def get_current_price(self, symbol: str) -> Optional[float]:
-        try:
-            trade = self.api.get_last_trade(symbol)
-            return trade.price
-        except Exception:
-            return None
-
-    def get_high_since_entry(self, symbol: str, entry_price: float) -> Optional[float]:
-        # מחזיר את המחיר הגבוה ביותר מאז הכניסה (לפי נתונים היסטוריים)
-        try:
-            bars = self.api.get_bars(symbol, timeframe='1Min', limit=60)
-            if bars:
-                high = max(b.high for b in bars)
-                return high
-        except Exception:
-            pass
-        return None
-
-    def get_open_positions(self) -> List[Dict]:
-        """קבל רשימת פוזיציות פתוחות מהחשבון"""
-        positions = self.api.list_positions()
-        result = []
-        for p in positions:
-            result.append({
-                'symbol': p.symbol,
-                'qty': int(p.qty),
-                'entry_price': float(p.avg_entry_price),
-                'current_price': float(p.current_price),
-                'pnl_pct': float(p.unrealized_plpc),
-            })
-        return result
-
-    def monitor_and_exit(self) -> List[Dict]:
-        """רוץ על כל הפוזיציות הפתוחות ובדוק יציאה"""
-        positions = self.get_open_positions()
-        for pos in positions:
-            trade = self._find_trade(pos['symbol'])
-            if not trade:
-                continue
-            reason = self.should_exit(trade)
-            if reason != 'hold':
-                self.execute_exit(trade, reason)
-        return positions
-
-    def _find_trade(self, symbol: str) -> Optional[Dict]:
-        """מחזיר את העסקה הפתוחה עבור הסימבול מה-Log"""
-        for t in reversed(self.trades_log):
-            if t.get('symbol') == symbol and 'exit_time' not in t:
-                return t
-        return None
+            return 'watch'  # ברירת מחדל
+    
+    def _get_confidence(self, score: float, rvol: float) -> str:
+        """החזר דירוג אמון בכוכבים"""
+        if score >= 85 and rvol >= 4.0:
+            return "⭐⭐⭐⭐⭐"
+        elif score >= 75 and rvol >= 3.0:
+            return "⭐⭐⭐⭐"
+        elif score >= 65 and rvol >= 2.0:
+            return "⭐⭐⭐"
+        elif score >= 55 and rvol >= 1.5:
+            return "⭐⭐"
+        else:
+            return "⭐"
+    
+    def get_trade_summary(self, plan: Dict[str, Any]) -> str:
+        """החזר סיכום קצר של תוכנית המסחר (לדוגמה לשליחה לטלגרם)"""
+        lines = []
+        lines.append(f"🎯 <b>{plan['ticker']}</b>  {plan['confidence']}")
+        lines.append(f"💰 כניסה: ${plan['entry']:.2f}")
+        lines.append(f"🛑 סטופ:  ${plan['stop']:.2f}  (-5%)")
+        lines.append(f"🎯 TP1:   ${plan['tp1']:.2f}  (+{((plan['tp1']/plan['entry'])-1)*100:.0f}%)")
+        lines.append(f"🎯 TP2:   ${plan['tp2']:.2f}  (+{((plan['tp2']/plan['entry'])-1)*100:.0f}%)")
+        lines.append(f"🏃 Runner: {'כן' if plan['runner'] else 'לא'}")
+        lines.append(f"📊 Level: {plan['level'].upper()}  |  Score: {plan['score']:.0f}  |  RVOL: {plan['rvol']:.1f}x")
+        lines.append(f"━━━━━━━━━━━━━━━━━━")
+        return "\n".join(lines)
