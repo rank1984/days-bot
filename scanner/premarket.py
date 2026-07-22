@@ -62,6 +62,17 @@ def get_market_strength():
     except:
         return 0.0
 
+# ====== Alpaca Snapshot Caching ======
+SNAPSHOT_CACHE = {}
+
+def get_snapshots_cached(api, symbols):
+    key = ",".join(sorted(symbols))
+    if key in SNAPSHOT_CACHE:
+        return SNAPSHOT_CACHE[key]
+    data = api.get_snapshots(symbols)
+    SNAPSHOT_CACHE[key] = data
+    return data
+
 def get_catalyst(symbol: str) -> str:
     try:
         from scanner.news_scanner import get_catalyst_news_score
@@ -130,7 +141,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         symbols = [str(s['symbol']) for s in batch]
         
         try:
-            snapshots = api.get_snapshots(symbols)
+            snapshots = get_snapshots_cached(api, symbols)
             for symbol in symbols:
                 try:
                     snapshot = snapshots.get(symbol)
