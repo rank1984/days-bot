@@ -101,39 +101,51 @@ class TradeManager:
             print(f"[Trade] ENTRY ERROR {symbol}: {e}")
             return None
     
-    # ─── EXIT ──────────────────────────────────────────────────
-    def should_exit(self, position: Dict) -> str:
-        """
-        החלטת יציאה – מחזירה:
-        'stop_loss', 'take_profit', 'trailing', 'time_stop', 'hold'
-        """
-        symbol = position['symbol']
-        entry = position['entry_price']
-        current = self.get_current_price(symbol)
-        if not current:
-            return 'hold'
-        
-        change_pct = (current - entry) / entry * 100
-        
-        # 1. Stop-Loss (5%)
-        if change_pct <= -5.0:
-            return 'stop_loss'
-        
-        # 2. Take-Profit מדורג
-        if change_pct >= 30.0:
-            return 'take_profit_3'
-        elif change_pct >= 20.0:
-            # בדיקה: אם קפצנו מעל 20% ויש ירידה של 2% מהשיא – נצא
-            high = self.get_high_since_entry(symbol, entry)
-            if high and (current / high - 1) < -0.02:
-                return 'take_profit_2'
-            return 'hold'
-        elif change_pct >= 10.0:
-            # אם אין התקדמות תוך 30 דקות – נצא חלקית
-            elapsed = (datetime.now() - datetime.fromisoformat(position['entry_time'])).seconds / 60
-            if elapsed > 30 and change_pct < 12.0:
-                return 'take_profit_1'
-            return 'hold'
+    # ─── EXIT RULES (אחרי הניתוח) ─────────────────────────────
+TAKE_PROFIT_1 = 0.10   # 10% → סגור 30%
+TAKE_PROFIT_2 = 0.15   # 15% → סגור 40%
+TAKE_PROFIT_3 = 0.20   # 20% → סגור 30%
+STOP_LOSS = 0.05       # 5% סטופ ראשוני
+TRAILING_ACTIVATE = 0.05  # הפעל סטופ נגרר אחרי 5%+
+
+def should_exit(self, position: Dict) -> str:
+    symbol = position['symbol']
+    entry = position['entry_price']
+    current = self.get_current_price(symbol)
+    if not current:
+        return 'hold'
+    
+    change_pct = (current - entry) / entry * 100
+    
+    # 1. Stop-Loss
+    if change_pct <= -STOP_LOSS * 100:
+        return 'stop_loss'
+    
+    # 2. Trailing Stop (אחרי 5%+)
+    if change_pct >= TRAILING_ACTIVATE * 100:
+        high = self.get_high_since_entry(symbol, entry)
+        if high:
+            drawdown = (high - current) / high * 100
+            if drawdown >= 3.0:  # ירידה של 3% מהשיא
+                return 'trailing_stop'
+    
+    # 3. Take-Profit מדורג
+    if change_pct >= TAKE_PROFIT_3 * 100:
+        return 'take_profit_3'
+    elif change_pct >= TAKE_PROFIT_2 * 100:
+        return 'take_profit_2'
+    elif change_pct >= TAKE_PROFIT_1 * 100:
+        # אם הגיע ל-10% תוך 30 דקות – סגור חלק
+        elapsed = (datetime.now() - datetime.fromisoformat(position['entry_time'])).seconds / 60
+        if elapsed < 30:
+            return 'take_profit_1'
+    
+    # 4. Time Stop
+    elapsed = (datetime.now() - datetime.fromisoformat(position['entry_time'])).seconds / 60
+    if elapsed > 60 and change_pct < 3.0:
+        return 'time_stop'
+    
+    return 'hold'
         
         # 3. Time Stop – אם אחרי 60 דקות אין 5%+ – נצא
         elapsed = (datetime.now() - datetime.fromisoformat(position['entry_time'])).seconds / 60
