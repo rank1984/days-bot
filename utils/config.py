@@ -15,8 +15,7 @@ MIN_AVG_VOLUME       = 5_000       # הורד – 100K היה גבוה מדי
 MIN_GAP_PCT          = 1.0          # הורד – 3% צר מדי
 MAX_GAP_PCT          = 25.0
 MIN_RVOL             = 0.0          # בטל
-MIN_DOLLAR_VOLUME    = 0            # בטל
-
+MIN_DOLLAR_VOLUME    = 0           # בטל את הסינון
 # ── SCORING ───────────────────────────────────────────────
 MIN_SCORE            = 30           # הורד – 50 נוקשה מדי
 
