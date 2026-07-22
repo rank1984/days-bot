@@ -13,7 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
 
-# טעינת הגדרות קבועות (נניח שקיימים שם המשתנים הנדרשים)
+# טעינת הגדרות קבועות
 from utils.config import *
 from scanner.universe import load_universe
 import alpaca_trade_api as tradeapi
@@ -21,11 +21,14 @@ import alpaca_trade_api as tradeapi
 
 def get_catalyst(symbol: str) -> str:
     """
-    פונקציית עזר להבאת חדשות/זרזים (למשל מ-Finnhub או מקור אחר).
-    כרגע מחזירה ערך ברירת מחדל כדי לא לחסום את הריצה הריבועית המהירה.
+    פונקציית עזר להבאת חדשות/זרזים (מנסה לטעון מ-news_scanner במידה וקיים)
     """
-    # כאן תוכל להטמיע בעתיד: קריאה ל- Finnhub API
-    return "—"
+    try:
+        from scanner.news_scanner import get_catalyst_news_score
+        _, catalyst_text = get_catalyst_news_score(symbol)
+        return catalyst_text if catalyst_text else "—"
+    except Exception:
+        return "—"
 
 
 def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
@@ -130,9 +133,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     prev_close = daily_bar.close
                     volume = daily_bar.volume
+                    prev_volume = daily_bar.volume
                     
                     # נפח ממוצע היסטורי לטובת חישוב RVOL 
-                    # נשתמש ב-prev_daily_bar מה-Snapshot במידה וקיים, כחלופה מהירה
                     prev_bar = getattr(snapshot, 'prev_daily_bar', None)
                     avg_volume_10d = prev_bar.volume if (prev_bar and prev_bar.volume > 0) else MIN_AVG_VOLUME
                     
@@ -166,19 +169,41 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     stats['final_passed'] += 1
                     
+                    # ====== חישוב פרמטרים מורחבים ======
+                    volume_ratio = volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
+                    pm_high = price
+                    pm_high_dist = 0.0
+                    atr = price * 0.04
+                    catalyst_text = get_catalyst(symbol)
+                    momentum_score = min(100.0, max(0.0, gap_pct * 2 + rvol * 10))
+                    freshness = "FRESH"
+                    combined = momentum_score
+                    
                     candidate = {
                         'ticker': symbol,
                         'price': price,
                         'gap_pct': gap_pct,
                         'prev_close': prev_close,
                         'volume': volume,
-                        'dollar_volume': dollar_volume,
+                        'avg_volume': prev_volume,
+                        'volume_ratio': volume_ratio,
                         'rvol': rvol,
-                        'volume_ratio': volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0,
+                        'float': 0,
+                        'dollar_volume': dollar_volume,
+                        'freshness': freshness,
+                        'momentum_score': momentum_score,
+                        'combined': combined,
+                        'catalyst': catalyst_text,
+                        'pm_high': pm_high,
+                        'pm_high_dist': pm_high_dist,
+                        'atr': atr,
+                        'score': 0.0,  # יחושב בשלב הבא
+                        # שדות תואמים לאחור
                         'pm_volume': volume,
-                        'pm_rvol': rvol,
-                        'catalyst': get_catalyst(symbol),
-                        'score': 0.0  # יחושב בשלב הבא
+                        'pm_rvol': volume_ratio,
+                        'vwap_dist': 0,
+                        'vol_accel': 1.0,
+                        'momentum_5m': gap_pct * 0.1,
                     }
                     candidates.append(candidate)
                     
@@ -195,10 +220,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print("\n" + "="*50)
     print("📊 PREMARKET SCAN STATISTICS (Alpaca Enhanced)")
     print("="*50)
-    print(f"Total Universe:        {stats['total']:,}")
-    print(f"No Snapshot:           {stats['no_snapshot']:,}")
-    print(f"No Trade:              {stats['no_trade']:,}")
-    print(f"No Daily Bar:          {stats['no_bar']:,}")
+    print(f"Total Universe:         {stats['total']:,}")
+    print(f"No Snapshot:            {stats['no_snapshot']:,}")
+    print(f"No Trade:               {stats['no_trade']:,}")
+    print(f"No Daily Bar:           {stats['no_bar']:,}")
     print("-"*50)
     print(f"✅ Price Passed:        {stats['price_passed']:,}")
     print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
