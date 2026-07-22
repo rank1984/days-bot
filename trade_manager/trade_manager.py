@@ -14,40 +14,32 @@ class TradeManager:
         os.makedirs(data_dir, exist_ok=True)
         self.performance_log = os.path.join(data_dir, "trades_history.json")
         
-        # משקלים לחישוב איכות האות
+        # משקלים לחישוב איכות האות המעודכנים
         self.weights = {
             'score': 0.40,
-            'rvol': 0.25,
-            'gap': 0.15,
+            'price_strength': 0.20,
+            'pm_high': 0.15,
+            'rvol': 0.10,
             'dvol': 0.10,
-            'news': 0.10
+            'news': 0.05
         }
 
     def generate_plan(self, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        יוצר תוכנית מסחר דינמית.
-        מחזיר None אם ה-Risk/Reward לא מספיק טוב (RR < 1.5)
-        """
         price = candidate.get('price', 0)
         ticker = candidate.get('ticker', '???')
         gap_pct = candidate.get('gap_pct', 0)
         
-        # --- 1. חישוב איכות האות (Weighted Score) ---
         quality_score = self._calculate_weighted_score(candidate)
         
-        # --- 2. סטופ דינמי (ATR או 5%) ---
         atr = candidate.get('atr', price * 0.04)
         stop_pct = max(0.05, (atr / price) * 1.5)
         stop_price = round(price * (1 - stop_pct), 2)
         
-        # --- 3. TP1 מבוסס Gap + 3% ---
-        tp1_pct = max(0.02, (gap_pct / 100) + 0.03)  # gap + 3%, מינימום 2%
+        tp1_pct = max(0.02, (gap_pct / 100) + 0.03)
         tp1_price = round(price * (1 + tp1_pct), 2)
         
-        # --- 4. TP2 = TP1 + ATR ---
         tp2_price = round(tp1_price + atr, 2)
         
-        # --- 5. Risk / Reward ---
         risk = price - stop_price
         reward1 = tp1_price - price
         reward2 = tp2_price - price
@@ -55,20 +47,21 @@ class TradeManager:
         rr1 = reward1 / risk if risk > 0 else 0
         rr2 = reward2 / risk if risk > 0 else 0
         
-        # סינון: RR1 < 1.5 → לא נכנסים
         if rr1 < 1.5:
             print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.5. Skipping trade.")
             return None
         
-        # --- 6. Confidence ---
         confidence_pct = quality_score
         stars = self._get_stars(confidence_pct)
-        
-        # --- 7. Runner ---
         runner = quality_score >= 70
+        
+        pm_high = candidate.get('pm_high', price)
+        trigger_price = round(pm_high * 1.005, 2)
         
         plan = {
             'ticker': ticker,
+            'trigger': trigger_price,
+            'entry_type': 'BREAKOUT',
             'entry': price,
             'stop': stop_price,
             'tp1': tp1_price,
@@ -102,8 +95,11 @@ class TradeManager:
         rvol = c.get('rvol', 1.0)
         rvol_val = min(100, (rvol / 5) * 100) if rvol > 0 else 0
         
-        gap = c.get('gap_pct', 0)
-        gap_val = min(100, gap * 10)  # 10% gap = 100 points
+        price_strength = min(100, c.get('gap_pct', 0) * 10)
+        
+        # המרחק מהשיא (מרחק קטן = ניקוד גבוה)
+        pm_high_dist = c.get('pm_high_dist', 0)
+        pm_high_val = max(0, 100 - (pm_high_dist * 10))
         
         dvol = c.get('dollar_volume', 0)
         if dvol >= 10_000_000: dvol_val = 100
@@ -117,8 +113,9 @@ class TradeManager:
         
         weighted = (
             (score_val * self.weights['score']) +
+            (price_strength * self.weights['price_strength']) +
+            (pm_high_val * self.weights['pm_high']) +
             (rvol_val * self.weights['rvol']) +
-            (gap_val * self.weights['gap']) +
             (dvol_val * self.weights['dvol']) +
             (news_val * self.weights['news'])
         )
@@ -159,11 +156,11 @@ class TradeManager:
         history.append(record)
         with open(self.performance_log, 'w') as f:
             json.dump(history, f, indent=2)
-        print(f"[TradeManager] ✅ Saved trade record for {plan['ticker']}")
 
     def get_trade_summary(self, plan: Dict[str, Any]) -> str:
         lines = []
         lines.append(f"🎯 <b>{plan['ticker']}</b>  {plan['confidence']}  ({plan['confidence_pct']:.0f}%)")
+        lines.append(f"⚡ Trigger: ${plan['trigger']:.2f} (BREAKOUT)")
         lines.append(f"💰 כניסה: ${plan['entry']:.2f}")
         lines.append(f"🛑 סטופ:  ${plan['stop']:.2f}  (-{((plan['entry']-plan['stop'])/plan['entry']*100):.1f}%)")
         lines.append(f"━━━━━━━━━━━━━━━━━━")
