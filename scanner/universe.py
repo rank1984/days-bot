@@ -40,10 +40,7 @@ def load_universe() -> list:
         for a in assets:
             if not a.tradable:
                 continue
-            if a.exchange == 'OTC':
-                continue
-            # סינון לפי סמל – דילוג על קריפטו וכו'
-            if '/' in a.symbol or 'USDC' in a.symbol or 'USDT' in a.symbol:
+            if a.exchange in ['OTC', 'PNK', 'OTCBB']:
                 continue
             stocks.append({
                 'symbol': a.symbol,
@@ -53,14 +50,16 @@ def load_universe() -> list:
         
         print(f"[Universe] Raw stocks: {len(stocks)}")
         
-        # ====== סינון מקדים ======
-        # אם יש אפשרות לקבל snapshots עבור כל המניות – נעשה זאת
-        # אבל בגלל מגבלת API, נשתמש ב-list_assets בלבד
-        # בשלב זה נחזיר את כל המניות, ונסנן ב-premarket
-        # עם זאת, נוסיף סינון של OTC ו-Crypto
-        
-        filtered = [s for s in stocks if s['exchange'] not in ['OTC', 'PNK', 'OTCBB']]
-        print(f"[Universe] After exchange filter: {len(filtered)}")
+        # ====== סינון מקדים של סימולים לא רצויים ======
+        filtered = []
+        for s in stocks:
+            symbol = s['symbol']
+            # דילוג על מניות עם סימולים חשודים (ETF ממונפים, warrants, קריפטו)
+            if any(x in symbol for x in ['.WS', '.U', '.RT', 'USDC', 'USDT', '/']):
+                continue
+            filtered.append(s)
+
+        print(f"[Universe] After symbol filter: {len(filtered)}")
         
         # שמירה ל-Cache
         df = pd.DataFrame(filtered)
