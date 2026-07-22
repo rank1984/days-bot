@@ -17,8 +17,7 @@ import alpaca_trade_api as tradeapi
 
 def load_universe() -> list:
     """
-    טוען את רשימת המניות, ומסנן מראש לפי מחיר ונפח
-    אם יש נתונים מ-Alpaca
+    טוען את רשימת המניות ומסנן סמלים לא רצויים
     """
     cache_file = os.path.join(BASE_DIR, "data", "universe_filtered.csv")
     
@@ -50,12 +49,12 @@ def load_universe() -> list:
         
         print(f"[Universe] Raw stocks: {len(stocks)}")
         
-        # ====== סינון מקדים של סימולים לא רצויים ======
+        # ====== סינון סמלים לא רצויים ======
+        bad_patterns = ['.WS', '.U', '.RT', 'USDC', 'USDT', '/', 'ETF', 'LEVERAGE', '2X', '3X']
         filtered = []
         for s in stocks:
             symbol = s['symbol']
-            # דילוג על מניות עם סימולים חשודים (ETF ממונפים, warrants, קריפטו)
-            if any(x in symbol for x in ['.WS', '.U', '.RT', 'USDC', 'USDT', '/']):
+            if any(p in symbol for p in bad_patterns):
                 continue
             filtered.append(s)
 
