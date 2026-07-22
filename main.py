@@ -17,7 +17,7 @@ from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
 from database.db import init_db, save_alert, already_sent_today
-from telegram_formatter import format_preopen_list, format_no_candidates, send_message
+from telegram_formatter import format_preopen_list, format_no_candidates, format_trade_plan, send_message
 
 # ייבוא מנהל העסקאות ומנגנון הלמידה
 from trade_manager import TradeManager
@@ -78,7 +78,7 @@ def run_full_pipeline():
         process_feedback(learner)
         return
 
-    # שליחת רשימת הטופ 5 לטלגרם
+    # שליחת רשימת הטופ 5 הכללית לטלגרם
     msg = format_preopen_list(filtered, today, universe_size=universe_size)
     success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     
@@ -91,8 +91,42 @@ def run_full_pipeline():
                 score=c.get('score', 0),
                 catalyst=c.get('catalyst', '—')
             )
-        print(f"[Main] Sent {len(filtered)} candidates to Telegram")
+        print(f"[Main] Sent {len(filtered)} candidates summary to Telegram")
         
+        # 🚀 שליחת תוכניות מסחר מפורטות ל-3 המובילים
+        try:
+            manager = TradeManager()
+            for c in filtered[:3]:
+                # בודק אם קיים מנגנון מחולל תוכנית מובנה או מייצר תוכנית ישירות מהמועמד
+                if hasattr(manager, 'generate_plan'):
+                    plan = manager.generate_plan(c)
+                else:
+                    entry = c.get('price', 0.0)
+                    plan = {
+                        'ticker': c.get('ticker', '???'),
+                        'confidence': '🚀 High' if c.get('score', 0) >= 70 else '⚡ Medium',
+                        'entry': entry,
+                        'stop': entry * 0.95,
+                        'tp1': entry * 1.10,
+                        'tp2': entry * 1.20,
+                        'runner': True,
+                        'level': c.get('level', 'Breakout'),
+                        'score': c.get('score', 0),
+                        'rvol': c.get('rvol', 0.0)
+                    }
+
+                # פורמט ושליחת הודעת תוכנית המסחר הפרטנית
+                if hasattr(manager, 'get_trade_summary'):
+                    plan_msg = manager.get_trade_summary(plan)
+                else:
+                    plan_msg = format_trade_plan(plan)
+
+                send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, plan_msg)
+                time.sleep(1)  # השהייה קלה למניעת הצפה ב-API של טלגרם
+            print("[Main] Sent detailed trade plans for top 3 candidates")
+        except Exception as e:
+            print(f"[Main Warning] Failed to generate/send trade plans: {e}")
+
         # עדכון הלמידה עם ה-Top 5 מהסינון הנוכחי
         process_feedback(learner, candidates_to_add=filtered[:5])
 
