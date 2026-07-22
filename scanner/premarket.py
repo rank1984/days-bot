@@ -135,40 +135,31 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     volume = daily_bar.volume
                     prev_volume = daily_bar.volume
                     
-                    # נפח ממוצע היסטורי לטובת חישוב RVOL 
-                    prev_bar = getattr(snapshot, 'prev_daily_bar', None)
-                    avg_volume_10d = prev_bar.volume if (prev_bar and prev_bar.volume > 0) else MIN_AVG_VOLUME
-                    
-                    # ====== פילטר 1: מחיר ======
+                    # ====== 1. Price ======
                     if price < MIN_PRICE or price > MAX_PRICE:
                         continue
                     stats['price_passed'] += 1
                     
-                    # ====== פילטר 2: אחוז הגאפ ======
+                    # ====== 2. Gap % ======
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
                         continue
                     stats['gap_passed'] += 1
                     
-                    # ====== פילטר 3: נפח בסיסי וממוצע ======
+                    # ====== 3. Volume ======
                     if volume < MIN_AVG_VOLUME:
                         continue
                     stats['volume_passed'] += 1
                     
-                    # ====== פילטר 4: Relative Volume (RVOL) ======
-                    rvol = volume / avg_volume_10d if avg_volume_10d > 0 else 1.0
-                    min_rvol = globals().get('MIN_RVOL', 2.0)
-                    # if rvol < min_rvol:  # סינון מניות ללא מומנטום ווליום
-                    #     continue
+                    # ====== 4. RVOL – מחושב אך לא מסנן ======
+                    rvol = volume / 100_000  # הערכה גסה
                     stats['rvol_passed'] += 1
                     
-                    # ====== פילטר 5: Dollar Volume (נזילות אמיתית) ======
+                    # ====== 5. Dollar Volume – מחושב אך לא מסנן ======
                     dollar_volume = price * volume
-                    min_dollar_volume = globals().get('MIN_DOLLAR_VOLUME', 1_000_000)
-                    # if dollar_volume < min_dollar_volume:  # מינימום נזילות
-                    #     continue
                     stats['dvol_passed'] += 1
                     
+                    # ====== עבר את כל הפילטרים ======
                     stats['final_passed'] += 1
                     
                     # ====== חישוב פרמטרים מורחבים ======
@@ -230,8 +221,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"✅ Price Passed:        {stats['price_passed']:,}")
     print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
     print(f"✅ Volume Passed:       {stats['volume_passed']:,}")
-    print(f"✅ RVOL Passed:         {stats['rvol_passed']:,}")
-    print(f"✅ Dollar Volume Passed:{stats['dvol_passed']:,}")
+    print(f"✅ RVOL Processed:      {stats['rvol_passed']:,}")
+    print(f"✅ Dollar Volume Calc:  {stats['dvol_passed']:,}")
     print("-"*50)
     print(f"🎯 FINAL CANDIDATES:    {stats['final_passed']:,}")
     print("="*50 + "\n")
