@@ -22,6 +22,7 @@ from telegram_formatter import format_preopen_list, format_no_candidates, send_m
 # ייבוא מנהל העסקאות ומנגנון הלמידה
 from trade_manager import TradeManager
 from learning.feedback import FeedbackLearner
+from backtest.daily_backtest import DailyBacktest
 
 # backtester מושבת זמנית
 # from backtester.backtester import Backtester
@@ -121,17 +122,12 @@ def run_paper_trade():
     top_candidate = candidates[0]
     print(f"[PaperTrade] 🚀 Selected top momentum candidate: {top_candidate['ticker']} (Score: {top_candidate['score']:.0f}/100)")
 
-    from backtest.daily_backtest import DailyBacktest
-
-    def run_full_pipeline():
-    # ... קוד קיים ...
-    
-    # הוסף מועמדות ל-Backtest
+    # הרצת Backtest יומי למועמדים
     backtest = DailyBacktest()
     for c in candidates[:10]:
         backtest.add_candidate(c)
     
-    # הדפס דוח
+    # הדפסת דוח Backtest
     report = backtest.get_report()
     print(report)
     
