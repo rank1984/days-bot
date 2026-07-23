@@ -31,18 +31,11 @@ class TradeManager:
         
         quality_score = self._calculate_weighted_score(candidate)
         
+        # שלב 4: ATR-based TP/SL במקום יעד קבוע
         atr = candidate.get('atr', price * 0.04)
-        stop_pct = max(0.05, (atr / price) * 1.5)
-        stop_price = round(price * (1 - stop_pct), 2)
-        
-        # --- TP1 משופר ---
-        if gap_pct > 2:
-            tp1_pct = (gap_pct / 100) + 0.02
-        else:
-            tp1_pct = 0.04
-        tp1_price = round(price * (1 + tp1_pct), 2)
-        
-        tp2_price = round(tp1_price + atr, 2)
+        stop_price = round(price - atr, 2)     # Entry - 1 ATR
+        tp1_price = round(price + atr, 2)      # Entry + 1 ATR
+        tp2_price = round(price + atr * 2, 2)  # Entry + 2 ATR
         
         risk = price - stop_price
         reward1 = tp1_price - price
@@ -51,15 +44,16 @@ class TradeManager:
         rr1 = reward1 / risk if risk > 0 else 0
         rr2 = reward2 / risk if risk > 0 else 0
         
-        # סינון: RR1 < 1.2 → לא נכנסים
-        if rr1 < 1.2:
-            print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.2. Skipping trade.")
+        # סינון: RR1 < 1.0 (עודכן בגלל ה-ATR) → לא נכנסים
+        if rr1 < 1.0:
+            print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.0. Skipping trade.")
             return None
         
         confidence_pct = quality_score
         stars = self._get_stars(confidence_pct)
         runner = quality_score >= 70
         
+        # שלב 1: Entry Trigger (BREAKOUT)
         pm_high = candidate.get('pm_high', price)
         trigger_price = round(pm_high * 1.005, 2)
         
@@ -87,7 +81,9 @@ class TradeManager:
                 'gap': gap_pct,
                 'dvol': candidate.get('dollar_volume', 0),
                 'atr': atr,
-                'catalyst': candidate.get('catalyst', '—')
+                'catalyst': candidate.get('catalyst', '—'),
+                'pm_high_dist': candidate.get('pm_high_dist', 0),
+                'news_score': candidate.get('news_score', 0)
             }
         }
         
