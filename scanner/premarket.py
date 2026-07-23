@@ -39,11 +39,10 @@ def update_volume_trend(symbol, volume):
     if symbol not in data:
         data[symbol] = []
     data[symbol].append({'time': datetime.now().isoformat(), 'volume': volume})
-    # שמור רק 4 האחרונים
     data[symbol] = data[symbol][-4:]
     save_volume_trend(data)
 
-# ====== Market Strength ======
+# ====== Market Strength (Relative Strength - Step 3) ======
 _market_cache = None
 
 def get_market_strength():
@@ -55,8 +54,8 @@ def get_market_strength():
         qqq = yf.Ticker("QQQ")
         spy_info = spy.info
         qqq_info = qqq.info
-        spy_change = (spy_info['regularMarketPrice'] - spy_info['previousClose']) / spy_info['previousClose'] * 100
-        qqq_change = (qqq_info['regularMarketPrice'] - qqq_info['previousClose']) / qqq_info['previousClose'] * 100
+        spy_change = (spy_info.get('regularMarketPrice', 1) - spy_info.get('previousClose', 1)) / spy_info.get('previousClose', 1) * 100
+        qqq_change = (qqq_info.get('regularMarketPrice', 1) - qqq_info.get('previousClose', 1)) / qqq_info.get('previousClose', 1) * 100
         _market_cache = (spy_change + qqq_change) / 2
         return _market_cache
     except:
@@ -82,7 +81,8 @@ def get_catalyst(symbol: str) -> str:
         return "—"
 
 def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    score = 0
+    # מתחילים מהבונוס של ה-PM High
+    score = candidate.get('score_bonus', 0)
     gap = candidate.get('gap_pct', 0)
     if gap >= 5.0: score += 25
     elif gap >= 3.0: score += 18
@@ -164,34 +164,37 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     volume = daily_bar.volume
                     prev_volume = daily_bar.volume
                     
-                    # ====== Filters with logs ======
                     # 1. Price
                     if price < MIN_PRICE or price > MAX_PRICE:
-                        # print(f"[DEBUG] {symbol} - Price filter failed: ${price:.2f}")
                         continue
                     stats['price_passed'] += 1
                     
                     # 2. Gap %
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-                        # print(f"[DEBUG] {symbol} - Gap filter failed: {gap_pct:.1f}%")
                         continue
                     stats['gap_passed'] += 1
                     
-                    # Market Strength Filter
+                    # שלב 3: Relative Strength Filter
                     market_change = get_market_strength()
-                    if market_change < -0.5 and gap_pct < 3.0:
-                        continue  # שוק חלש, דורשים Gap גבוה יותר
+                    if gap_pct < market_change + 2:
+                        continue  # המניה צריכה להיות חזקה יותר מהשוק ב-2% לפחות
                         
-                    # PM High Distance
-                    pm_high = price  # נשתמש במחיר הנוכחי כשיא
-                    pm_high_dist = 0.0  # המרחק מהשיא (באחוזים)
-                    if pm_high_dist > 10.0:
-                        continue
+                    # שלב 2: PM High Distance
+                    pm_high = price
+                    if snapshot.daily_bar and snapshot.daily_bar.high > price:
+                        pm_high = snapshot.daily_bar.high
                         
+                    pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > price else 0
+                    score_bonus = 0
+                    if pm_high_dist <= 1: score_bonus = 15
+                    elif pm_high_dist <= 2: score_bonus = 10
+                    elif pm_high_dist <= 4: score_bonus = 5
+                    elif pm_high_dist <= 7: score_bonus = 0
+                    else: continue  # פסילה
+
                     # 3. Volume
                     if volume < MIN_AVG_VOLUME:
-                        # print(f"[DEBUG] {symbol} - Volume filter failed: {volume:,}")
                         continue
                     stats['volume_passed'] += 1
                     
@@ -244,6 +247,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'news_score': news_score,
                         'pm_high': pm_high,
                         'pm_high_dist': pm_high_dist,
+                        'score_bonus': score_bonus,  # מועבר לחישוב הניקוד
                         'volume_trend': trend_status,
                         'liquidity_score': liquidity_score,
                         'atr': atr,
@@ -262,7 +266,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         except Exception as e:
             continue
     
-    # ====== סיכום לוגים ======
     print(f"\n[DEBUG] Total Universe: {stats['total']}")
     print(f"[DEBUG] Price Passed:  {stats['price_passed']}")
     print(f"[DEBUG] Gap Passed:    {stats['gap_passed']}")
