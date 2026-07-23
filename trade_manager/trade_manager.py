@@ -9,12 +9,13 @@ import json
 import os
 
 class TradeManager:
-    def __init__(self, data_dir: str = "data"):
+    # ✅ שלב 1: הוספת תמיכה ב-paper=True
+    def __init__(self, data_dir: str = "data", paper: bool = False):
         self.data_dir = data_dir
+        self.paper = paper
         os.makedirs(data_dir, exist_ok=True)
         self.performance_log = os.path.join(data_dir, "trades_history.json")
         
-        # משקלים לחישוב איכות האות המעודכנים
         self.weights = {
             'score': 0.40,
             'price_strength': 0.20,
@@ -31,11 +32,10 @@ class TradeManager:
         
         quality_score = self._calculate_weighted_score(candidate)
         
-        # שלב 4: ATR-based TP/SL במקום יעד קבוע
         atr = candidate.get('atr', price * 0.04)
-        stop_price = round(price - atr, 2)     # Entry - 1 ATR
-        tp1_price = round(price + atr, 2)      # Entry + 1 ATR
-        tp2_price = round(price + atr * 2, 2)  # Entry + 2 ATR
+        stop_price = round(price - atr, 2)
+        tp1_price = round(price + atr, 2)
+        tp2_price = round(price + atr * 2, 2)
         
         risk = price - stop_price
         reward1 = tp1_price - price
@@ -44,7 +44,7 @@ class TradeManager:
         rr1 = reward1 / risk if risk > 0 else 0
         rr2 = reward2 / risk if risk > 0 else 0
         
-        # סינון: RR1 < 1.0 (עודכן בגלל ה-ATR) → לא נכנסים
+        # ✅ שלב 2: סף RR הורד ל-1.0
         if rr1 < 1.0:
             print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.0. Skipping trade.")
             return None
@@ -53,7 +53,6 @@ class TradeManager:
         stars = self._get_stars(confidence_pct)
         runner = quality_score >= 70
         
-        # שלב 1: Entry Trigger (BREAKOUT)
         pm_high = candidate.get('pm_high', price)
         trigger_price = round(pm_high * 1.005, 2)
         
@@ -75,6 +74,7 @@ class TradeManager:
             'rr2': round(rr2, 2),
             'exit_time': "15 min before close",
             'quality_score': round(quality_score, 1),
+            'paper_trade': self.paper, # סימון שהעסקה היא בדמו
             'raw_data': {
                 'score': candidate.get('score', 0),
                 'rvol': candidate.get('rvol', 0),
@@ -145,6 +145,7 @@ class TradeManager:
             'dvol': candidate.get('dollar_volume', 0),
             'catalyst': candidate.get('catalyst', '—'),
             'quality_score': plan['quality_score'],
+            'paper_trade': plan['paper_trade']
         }
         history = []
         if os.path.exists(self.performance_log):
@@ -159,7 +160,8 @@ class TradeManager:
 
     def get_trade_summary(self, plan: Dict[str, Any]) -> str:
         lines = []
-        lines.append(f"🎯 <b>{plan['ticker']}</b>  {plan['confidence']}  ({plan['confidence_pct']:.0f}%)")
+        mode = "🧪 PAPER TRADE" if plan.get('paper_trade') else "💵 REAL TRADE"
+        lines.append(f"🎯 <b>{plan['ticker']}</b>  {plan['confidence']}  ({plan['confidence_pct']:.0f}%) - {mode}")
         lines.append(f"💰 כניסה: ${plan['entry']:.2f}")
         lines.append(f"⚡ Trigger: ${plan['trigger']:.2f} (BREAKOUT)")
         lines.append(f"🛑 סטופ:  ${plan['stop']:.2f}  (-{((plan['entry']-plan['stop'])/plan['entry']*100):.1f}%)")
