@@ -8,6 +8,7 @@ from pathlib import Path
 import time
 from datetime import datetime
 import argparse
+import yfinance as yf
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
@@ -20,10 +21,8 @@ from database.db import init_db, save_alert, already_sent_today, save_trade
 from telegram_formatter import format_preopen_list, format_no_candidates, format_trade_plan, send_message
 
 # ייבוא מנהל העסקאות ומנגנון הלמידה
-from trade_manager import TradeManager
+from trade_manager.trade_manager import TradeManager
 from learning.feedback import FeedbackLearner
-from backtest.daily_backtest import DailyBacktest
-
 
 def process_feedback(learner, candidates_to_add=None):
     """פונקציית עזר להרצת בדיקת תוצאות עבר ועדכון הדוח בבטחה"""
@@ -42,25 +41,35 @@ def process_feedback(learner, candidates_to_add=None):
     except Exception as e:
         print(f"[Feedback Warning] Failed to update feedback learner: {e}")
 
-
-def market_condition_ok():
-    """Kill Switch (מצב שוק חלש)"""
+def get_market_regime():
+    """שלב 7: Market Regime Engine"""
     try:
-        import yfinance as yf
         spy = yf.Ticker("SPY")
         vix = yf.Ticker("^VIX")
-        spy_info = spy.info
-        vix_info = vix.info
         
-        spy_change = (spy_info['regularMarketPrice'] - spy_info['previousClose']) / spy_info['previousClose'] * 100
-        vix_change = (vix_info['regularMarketPrice'] - vix_info['previousClose']) / vix_info['previousClose'] * 100
+        spy_hist = spy.history(period="200d")
+        if spy_hist.empty:
+            return "NEUTRAL"
+            
+        spy_50ma = spy_hist['Close'].tail(50).mean()
+        spy_200ma = spy_hist['Close'].mean()
         
-        if spy_change < -1.0 or vix_change > 5.0:
-            return False
-        return True
-    except:
-        return True  # אם אין נתונים – נניח שהשוק תקין
-
+        spy_current = spy.info.get('regularMarketPrice', spy_hist['Close'].iloc[-1])
+        
+        vix_hist = vix.history(period="1d")
+        vix_current = vix.info.get('regularMarketPrice', vix_hist['Close'].iloc[-1] if not vix_hist.empty else 20)
+        
+        if spy_current > spy_50ma and spy_50ma > spy_200ma and vix_current < 20:
+            return "BULL"
+        elif spy_current > spy_200ma and vix_current < 25:
+            return "RANGE"
+        elif vix_current > 30:
+            return "RISK_OFF"
+        else:
+            return "NEUTRAL"
+    except Exception as e:
+        print(f"[Warning] Failed to determine market regime: {e}")
+        return "NEUTRAL"
 
 def run_full_pipeline():
     """Run the full scan and alert pipeline"""
@@ -71,7 +80,14 @@ def run_full_pipeline():
     init_db()
     learner = FeedbackLearner()
     
-    # ====== סריקה אחת ======
+    # שלב 7: Market Regime במקום Kill Switch בסיסי
+    regime = get_market_regime()
+    print(f"[Main] Current Market Regime: {regime}")
+    if regime == "RISK_OFF":
+        print("[Main] RISK OFF – No trades today.")
+        return
+    
+    # ====== סריקה ======
     print("[Main] Scanning...")
     candidates = scan_premarket(today)
     
@@ -81,11 +97,6 @@ def run_full_pipeline():
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found")
         process_feedback(learner)
-        return
-
-    # Kill switch בדיקת תנאי שוק
-    if not market_condition_ok():
-        print("[Main] Market conditions poor. Kill Switch Activated. No trades.")
         return
 
     # סינון מניות שכבר נשלחו היום למניעת כפילויות במובייל
@@ -131,7 +142,7 @@ def run_full_pipeline():
                     plans.append(plan)
             
             if not plans:
-                print("[Main] No trades with RR >= 1.2")
+                print("[Main] No valid trades found by TradeManager")
             else:
                 for plan in plans:
                     if hasattr(manager, 'get_trade_summary'):
@@ -153,7 +164,10 @@ def run_full_pipeline():
                         rvol=plan['raw_data']['rvol'],
                         gap=plan['raw_data']['gap'],
                         dvol=plan['raw_data']['dvol'],
-                        catalyst=plan['raw_data']['catalyst']
+                        catalyst=plan['raw_data']['catalyst'],
+                        pm_high_dist=plan['raw_data'].get('pm_high_dist', 0),
+                        news_score=plan['raw_data'].get('news_score', 0),
+                        atr=plan['raw_data'].get('atr', 0)
                     )
                     time.sleep(1)
                 print(f"[Main] Sent and saved {len(plans)} trade plans")
@@ -163,16 +177,13 @@ def run_full_pipeline():
 
         process_feedback(learner, candidates_to_add=filtered[:5])
 
-
 def run_paper_trade():
     """Paper Trading Mode"""
     print("[Main] Paper trade mode selected")
 
-
 def run_backtest():
     """Run backtest"""
     print("[Main] Backtest disabled")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DAYS-BOT Global Execution Engine")
