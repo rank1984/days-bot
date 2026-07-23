@@ -20,12 +20,10 @@ from scanner.universe import load_universe
 from database.db import init_db, save_alert, already_sent_today, save_trade
 from telegram_formatter import format_preopen_list, format_no_candidates, format_trade_plan, send_message
 
-# ייבוא מנהל העסקאות ומנגנון הלמידה
 from trade_manager.trade_manager import TradeManager
 from learning.feedback import FeedbackLearner
 
 def process_feedback(learner, candidates_to_add=None):
-    """פונקציית עזר להרצת בדיקת תוצאות עבר ועדכון הדוח בבטחה"""
     try:
         print("[Feedback] Checking past candidates performance...")
         learner.check_results(days_back=7)
@@ -42,7 +40,6 @@ def process_feedback(learner, candidates_to_add=None):
         print(f"[Feedback Warning] Failed to update feedback learner: {e}")
 
 def get_market_regime():
-    """שלב 7: Market Regime Engine"""
     try:
         spy = yf.Ticker("SPY")
         vix = yf.Ticker("^VIX")
@@ -72,7 +69,6 @@ def get_market_regime():
         return "NEUTRAL"
 
 def run_full_pipeline():
-    """Run the full scan and alert pipeline"""
     today = datetime.now().strftime("%Y-%m-%d")
     print(f"[Main] Mode: full (Alert Mode)")
     print(f"=== [DAYS-BOT] {today} {datetime.now().strftime('%H:%M')} ET ===")
@@ -80,14 +76,12 @@ def run_full_pipeline():
     init_db()
     learner = FeedbackLearner()
     
-    # שלב 7: Market Regime במקום Kill Switch בסיסי
     regime = get_market_regime()
     print(f"[Main] Current Market Regime: {regime}")
     if regime == "RISK_OFF":
         print("[Main] RISK OFF – No trades today.")
         return
     
-    # ====== סריקה ======
     print("[Main] Scanning...")
     candidates = scan_premarket(today)
     
@@ -99,7 +93,6 @@ def run_full_pipeline():
         process_feedback(learner)
         return
 
-    # סינון מניות שכבר נשלחו היום למניעת כפילויות במובייל
     filtered = []
     for c in candidates:
         if not already_sent_today(c['ticker'], today):
@@ -110,13 +103,11 @@ def run_full_pipeline():
         process_feedback(learner)
         return
 
-    # שליחה לטלגרם
     universe = load_universe()
     msg = format_preopen_list(filtered, today, universe_size=len(universe) if universe else 0)
     success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     
     if success:
-        # שמירה ל-DB
         for c in filtered:
             save_alert(
                 ticker=c['ticker'],
@@ -129,20 +120,25 @@ def run_full_pipeline():
         
         # ====== Trade Manager ======
         try:
-            manager = TradeManager()
+            # ✅ שלב 1: העברת הבוט ל-Paper Trading
+            manager = TradeManager(paper=True)
             plans = []
             
-            for c in filtered[:3]:  # 3 המובילים
+            # ✅ שלב 3: הוספת הלוגים לפסילות + הגדלת הלולאה ל-5 כדי לראות יותר תוצאות
+            for c in filtered[:5]:
                 if hasattr(manager, 'generate_plan'):
                     plan = manager.generate_plan(c)
                 else:
                     plan = None
                 
                 if plan:
+                    print(f"[Main] ✅ Plan created for {c['ticker']} with RR1={plan['rr1']:.2f}")
                     plans.append(plan)
+                else:
+                    print(f"[Main] ❌ No plan for {c['ticker']} (RR too low or filtered out)")
             
             if not plans:
-                print("[Main] No valid trades found by TradeManager")
+                print("[Main] No valid trades found by TradeManager after filtering.")
             else:
                 for plan in plans:
                     if hasattr(manager, 'get_trade_summary'):
@@ -178,11 +174,9 @@ def run_full_pipeline():
         process_feedback(learner, candidates_to_add=filtered[:5])
 
 def run_paper_trade():
-    """Paper Trading Mode"""
     print("[Main] Paper trade mode selected")
 
 def run_backtest():
-    """Run backtest"""
     print("[Main] Backtest disabled")
 
 if __name__ == "__main__":
