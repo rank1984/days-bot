@@ -28,7 +28,7 @@ def init_db():
         )
     """)
     
-    # טבלת מעקב עסקאות ללמידה
+    # טבלת מעקב עסקאות ללמידה (כולל השדות החדשים - שלב 5)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +44,9 @@ def init_db():
             gap REAL,
             dvol REAL,
             catalyst TEXT,
+            pm_high_dist REAL,
+            news_score REAL,
+            atr REAL,
             entry_time TEXT,
             exit_time TEXT,
             high REAL,
@@ -52,7 +55,8 @@ def init_db():
             tp1_hit INTEGER,
             tp2_hit INTEGER,
             stop_hit INTEGER,
-            pnl REAL
+            pnl REAL,
+            win INTEGER
         )
     """)
     conn.commit()
@@ -93,38 +97,12 @@ def already_sent_today(ticker: str, date_str: str = None) -> bool:
     return count > 0
 
 
-def save_trade(ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst):
-    """שמירת נתוני תוכנית מסחר למנגנון הלמידה"""
+def save_trade(ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst, pm_high_dist=0, news_score=0, atr=0):
+    """שמירת נתוני תוכנית מסחר למנגנון הלמידה כולל השדות המורחבים"""
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT,
-            entry REAL,
-            stop REAL,
-            tp1 REAL,
-            tp2 REAL,
-            rr1 REAL,
-            rr2 REAL,
-            score REAL,
-            rvol REAL,
-            gap REAL,
-            dvol REAL,
-            catalyst TEXT,
-            entry_time TEXT,
-            exit_time TEXT,
-            high REAL,
-            low REAL,
-            close REAL,
-            tp1_hit INTEGER,
-            tp2_hit INTEGER,
-            stop_hit INTEGER,
-            pnl REAL
-        )
-    """)
-    conn.execute("""
-        INSERT INTO trades (ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst, entry_time)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst, datetime.now().isoformat()))
+        INSERT INTO trades (ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst, pm_high_dist, news_score, atr, entry_time)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst, pm_high_dist, news_score, atr, datetime.now().isoformat()))
     conn.commit()
     conn.close()
