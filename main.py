@@ -1,37 +1,23 @@
-# ודא שהנתיבים האלה תואמים למבנה התיקיות שלך
-from paper_trader.paper_trader import PaperTrader
-from database.db import init_db, save_trade
+"""
+DAYS-BOT Main Entry Point
+"""
+import sys
+import os
+from pathlib import Path
+from datetime import datetime
 
-def get_trading_plans():
-    """
-    כאן אמורה להיות הלוגיקה שלך שמייצרת את העסקאות.
-    לצורך הדוגמה, הנה רשימה של plan אחד לדוגמה כדי שהקוד ירוץ בלי שגיאות.
-    """
-    # תחליף את החלק הזה בקוד האמיתי שמייצר את ה-plans
-    mock_plans = [
-        {
-            'ticker': 'BTC/USDT',
-            'entry': 65000.00,
-            'stop': 64000.00,
-            'tp1': 67000.00,
-            'tp2': 69000.00,
-            'runner': True,
-            'rr1': 2.0,
-            'rr2': 4.0,
-            'quality_score': 8.5,
-            'raw_data': {
-                'rvol': 1.5,
-                'gap': 2.1,
-                'dvol': 5000000,
-                'catalyst': 'News breakout'
-            }
-        }
-    ]
-    return mock_plans
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
-    # ... imports קיימים ...
-from paper_trader.paper_trader import PaperTrader
+from utils.config import *
+from scanner.premarket import scan_premarket
+from scanner.universe import load_universe
 from database.db import init_db, save_trade
+from telegram_formatter import format_preopen_list, format_no_candidates, send_message
+from trade_manager.trade_manager import TradeManager
+from paper_trader.paper_trader import PaperTrader
+
 
 def main():
     # 1. אתחול מסד הנתונים
@@ -40,27 +26,27 @@ def main():
     # 2. אתחול PaperTrader
     trader = PaperTrader()
     
-    # 3. קבלת תוכניות המסחר (מהסורק האמיתי)
+    # 3. סריקה
     today = datetime.now().strftime("%Y-%m-%d")
+    print(f"\n[Main] Scanning for {today}")
     candidates = scan_premarket(today)
     
     if not candidates:
-        # שליחת הודעה "אין מועמדויות"
         universe = load_universe()
         msg = format_no_candidates(today, len(universe) if universe else 0)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found")
         return
     
-    # 4. שליחת רשימת המועמדויות לטלגרם (התראה)
+    # 4. שליחת הודעת מועמדויות לטלגרם
     msg = format_preopen_list(candidates, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     print(f"[Main] Sent {len(candidates)} candidates summary to Telegram")
     
-    # 5. יצירת תוכניות מסחר (רק למניות, לא קריפטו)
+    # 5. יצירת תוכניות מסחר
     manager = TradeManager()
     plans = []
-    for c in candidates[:5]:  # 5 הראשונות
+    for c in candidates[:5]:
         # דילוג על קריפטו
         if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
             continue
@@ -68,7 +54,6 @@ def main():
         if plan:
             plans.append(plan)
     
-    # 6. ביצוע עסקאות (Paper Trading)
     trades_taken = len(plans)
     print(f"\n[Main] Trades taken: {trades_taken}")
     print("-" * 30)
@@ -85,7 +70,6 @@ def main():
         if plan.get('runner'):
             trader.set_take_profit(ticker, plan['tp2'])
         
-        # שמירה ל-DB
         save_trade(
             ticker=ticker,
             entry=entry,
@@ -102,6 +86,7 @@ def main():
         )
     
     print(f"[Main] Done. {trades_taken} trades executed.")
+
 
 if __name__ == "__main__":
     main()
