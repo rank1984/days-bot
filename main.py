@@ -34,7 +34,7 @@ def main():
     init_db()
 
     # 2. אתחול בוט המסחר
-    trader = PaperTrader(paper=True)
+    trader = PaperTrader()
 
     # 3. קבלת העסקאות לביצוע (הלוגיקה שלך)
     plans = get_trading_plans()
