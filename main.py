@@ -37,25 +37,47 @@ def main():
     # 1. אתחול מסד הנתונים
     init_db()
     
-    # 2. אתחול PaperTrader – עם paper=True (או False לכסף אמיתי)
-    trader = PaperTrader()   # <-- עכשיו עובד!
+    # 2. אתחול PaperTrader
+    trader = PaperTrader()
     
-    # 3. קבלת תוכניות המסחר (הלוגיקה שלך)
-    # לדוגמה – שליפת תוכניות מה-TradeManager
-    plans = get_trading_plans()  # או כל פונקציה שמחזירה רשימת plans
+    # 3. קבלת תוכניות המסחר (מהסורק האמיתי)
+    today = datetime.now().strftime("%Y-%m-%d")
+    candidates = scan_premarket(today)
     
+    if not candidates:
+        # שליחת הודעה "אין מועמדויות"
+        universe = load_universe()
+        msg = format_no_candidates(today, len(universe) if universe else 0)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        print("[Main] No candidates found")
+        return
+    
+    # 4. שליחת רשימת המועמדויות לטלגרם (התראה)
+    msg = format_preopen_list(candidates, today)
+    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    print(f"[Main] Sent {len(candidates)} candidates summary to Telegram")
+    
+    # 5. יצירת תוכניות מסחר (רק למניות, לא קריפטו)
+    manager = TradeManager()
+    plans = []
+    for c in candidates[:5]:  # 5 הראשונות
+        # דילוג על קריפטו
+        if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
+            continue
+        plan = manager.generate_plan(c)
+        if plan:
+            plans.append(plan)
+    
+    # 6. ביצוע עסקאות (Paper Trading)
     trades_taken = len(plans)
     print(f"\n[Main] Trades taken: {trades_taken}")
     print("-" * 30)
     
-    # 4. ביצוע העסקאות
     for plan in plans:
         ticker = plan['ticker']
         entry = plan['entry']
-        
         print(f"[Main] Entering {ticker} @ ${entry:.2f}")
         
-        # כניסה
         trader.enter_trade(ticker, entry)
         trader.set_stop_loss(ticker, plan['stop'])
         trader.set_take_profit(ticker, plan['tp1'])
@@ -73,10 +95,10 @@ def main():
             rr1=plan.get('rr1', 0.0),
             rr2=plan.get('rr2', 0.0),
             score=plan.get('quality_score', 0.0),
-            rvol=plan.get('raw_data', {}).get('rvol', 0.0),
-            gap=plan.get('raw_data', {}).get('gap', 0.0),
-            dvol=plan.get('raw_data', {}).get('dvol', 0.0),
-            catalyst=plan.get('raw_data', {}).get('catalyst', '')
+            rvol=plan['raw_data'].get('rvol', 0.0),
+            gap=plan['raw_data'].get('gap', 0.0),
+            dvol=plan['raw_data'].get('dvol', 0.0),
+            catalyst=plan['raw_data'].get('catalyst', '')
         )
     
     print(f"[Main] Done. {trades_taken} trades executed.")
