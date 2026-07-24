@@ -38,7 +38,7 @@ def main():
     init_db()
     
     # 2. אתחול PaperTrader – עם paper=True (או False לכסף אמיתי)
-    trader = PaperTrader(paper=True)   # <-- עכשיו עובד!
+    trader = PaperTrader()   # <-- עכשיו עובד!
     
     # 3. קבלת תוכניות המסחר (הלוגיקה שלך)
     # לדוגמה – שליפת תוכניות מה-TradeManager
