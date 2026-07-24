@@ -29,51 +29,57 @@ def get_trading_plans():
     ]
     return mock_plans
 
+    # ... imports קיימים ...
+from paper_trader.paper_trader import PaperTrader
+from database.db import init_db, save_trade
+
 def main():
-    # 1. אתחול מסד הנתונים (יוצר את הטבלה אם לא קיימת)
+    # 1. אתחול מסד הנתונים
     init_db()
-
-    # 2. אתחול בוט המסחר
-    trader = PaperTrader()
-
-    # 3. קבלת העסקאות לביצוע (הלוגיקה שלך)
-    plans = get_trading_plans()
     
-    # ספירת עסקאות - פותר את הבאג ב-FeedbackLearner
+    # 2. אתחול PaperTrader – עם paper=True (או False לכסף אמיתי)
+    trader = PaperTrader(paper=True)   # <-- עכשיו עובד!
+    
+    # 3. קבלת תוכניות המסחר (הלוגיקה שלך)
+    # לדוגמה – שליפת תוכניות מה-TradeManager
+    plans = get_trading_plans()  # או כל פונקציה שמחזירה רשימת plans
+    
     trades_taken = len(plans)
     print(f"\n[Main] Trades taken: {trades_taken}")
     print("-" * 30)
-
-    # 4. מעבר על העסקאות, ביצוע ושמירה
+    
+    # 4. ביצוע העסקאות
     for plan in plans:
         ticker = plan['ticker']
-        entry_price = plan['entry']
+        entry = plan['entry']
         
-        print(f"[Main] Entering {ticker} @ ${entry_price:.2f}")    
+        print(f"[Main] Entering {ticker} @ ${entry:.2f}")
         
-        # --- פקודות Paper Trader ---
-        trader.enter_trade(ticker, entry_price)    
-        trader.set_stop_loss(ticker, plan['stop'])    
-        trader.set_take_profit(ticker, plan['tp1'])    
+        # כניסה
+        trader.enter_trade(ticker, entry)
+        trader.set_stop_loss(ticker, plan['stop'])
+        trader.set_take_profit(ticker, plan['tp1'])
         
-        if plan.get('runner'):        
+        if plan.get('runner'):
             trader.set_take_profit(ticker, plan['tp2'])
-
-        # --- שמירה למסד הנתונים ---
+        
+        # שמירה ל-DB
         save_trade(
             ticker=ticker,
-            entry=entry_price,
+            entry=entry,
             stop=plan['stop'],
             tp1=plan['tp1'],
             tp2=plan['tp2'],
             rr1=plan.get('rr1', 0.0),
             rr2=plan.get('rr2', 0.0),
             score=plan.get('quality_score', 0.0),
-            rvol=plan['raw_data'].get('rvol', 0.0),
-            gap=plan['raw_data'].get('gap', 0.0),
-            dvol=plan['raw_data'].get('dvol', 0.0),
-            catalyst=plan['raw_data'].get('catalyst', '')
+            rvol=plan.get('raw_data', {}).get('rvol', 0.0),
+            gap=plan.get('raw_data', {}).get('gap', 0.0),
+            dvol=plan.get('raw_data', {}).get('dvol', 0.0),
+            catalyst=plan.get('raw_data', {}).get('catalyst', '')
         )
+    
+    print(f"[Main] Done. {trades_taken} trades executed.")
 
 if __name__ == "__main__":
     main()
