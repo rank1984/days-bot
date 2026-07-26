@@ -23,6 +23,7 @@ from scanner.news_scanner import score_news_quality
 # ====== Volume Trend Management ======
 VOLUME_TREND_FILE = "data/volume_trend.json"
 
+print(f"[DEBUG] {symbol} - Volume: {volume}, PrevVolume: {prev_volume}")
 def load_volume_trend():
     if os.path.exists(VOLUME_TREND_FILE):
         with open(VOLUME_TREND_FILE, 'r') as f:
