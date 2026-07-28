@@ -23,34 +23,22 @@ class TradeManager:
 
     def check_entry_trigger(self, candidate: Dict[str, Any]) -> bool:
         """
-        בודק האם תנאי הכניסה מתקיימים:
-        1. מחיר מעל Trigger (PM High + 0.5%)
-        2. נפח עולה (לפחות 2 מדידות)
-        3. Relative Strength חיובי
-        4. מעל VWAP (או מדד חוזק חלופי)
+        [זמני לצורך איסוף נתונים ולמידה]
+        מדפיס לוג מפורט על פרמטרי הכניסה ומחזיר True תמיד.
         """
+        ticker = candidate.get('ticker', '???')
         price = candidate.get('price', 0)
         pm_high = candidate.get('pm_high', price)
-        
-        # 1. Trigger (אם לא הוגדר מראש, מחושב כ-0.5% מעל PM High)
         trigger = candidate.get('trigger_price', round(pm_high * 1.005, 2))
-        if price < trigger:
-            return False
+        rs = candidate.get('relative_strength', 'N/A')
+        vwap = candidate.get('vwap_est', 'N/A')
 
-        # 2. Volume Trend
-        vol_trend = candidate.get('volume_trend', 'rising')
-        if vol_trend == 'declining':
-            return False
+        print(f"[Trigger] {ticker}:")
+        print(f"  Price: {price:.2f}, Trigger: {trigger:.2f}")
+        print(f"  RS: {rs}")
+        print(f"  VWAP: {vwap}")
 
-        # 3. Relative Strength
-        if candidate.get('relative_strength', 0) < 0:
-            return False
-
-        # 4. VWAP (אומדן)
-        vwap = candidate.get('vwap_est', price * 0.99)
-        if price < vwap:
-            return False
-
+        # זמנית – תמיד מחזיר True כדי לאסוף נתונים
         return True
 
     def generate_plan(self, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -91,9 +79,9 @@ class TradeManager:
         rr1 = reward1 / risk if risk > 0 else 0
         rr2 = reward2 / risk if risk > 0 else 0
         
-        # סינון: RR1 < 1.2 → לא נכנסים
-        if rr1 < 1.2:
-            print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.2. Skipping trade.")
+        # סינון: RR1 < 1.0 → לא נכנסים
+        if rr1 < 1.0:
+            print(f"[TradeManager] ⛔ {ticker} - RR1 ({rr1:.2f}) < 1.0. Skipping trade.")
             return None
         
         # --- 6. Confidence ---
