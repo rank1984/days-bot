@@ -1,14 +1,12 @@
 """
-Premarket scanner for DAYS-BOT - Using Alpaca (fast)
-Integrated with RVOL, Dollar Volume, and Enhanced Scoring.
+Premarket scanner for DAYS-BOT - Optimized Execution
 """
 import sys
 import os
 import json
 from pathlib import Path
-import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 import yfinance as yf
 import alpaca_trade_api as tradeapi
 
@@ -18,53 +16,60 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 
 from utils.config import *
 from scanner.universe import load_universe
-from scanner.news_scanner import score_news_quality
+
+try:
+    from scanner.news_scanner import score_news_quality, get_catalyst_news_score
+except ImportError:
+    def score_news_quality(news): return 0.0
+    def get_catalyst_news_score(symbol): return 0.0, "—"
 
 # ====== Volume Trend Management ======
-VOLUME_TREND_FILE = "data/volume_trend.json"
+VOLUME_TREND_FILE = os.path.join(BASE_DIR, "data", "volume_trend.json")
 
-def load_volume_trend():
+def load_volume_trend() -> Dict[str, Any]:
     if os.path.exists(VOLUME_TREND_FILE):
-        with open(VOLUME_TREND_FILE, 'r') as f:
-            return json.load(f)
+        try:
+            with open(VOLUME_TREND_FILE, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return {}
     return {}
 
-def save_volume_trend(data):
-    os.makedirs(os.path.dirname(VOLUME_TREND_FILE), exist_ok=True)
-    with open(VOLUME_TREND_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+def save_volume_trend(data: Dict[str, Any]) -> None:
+    try:
+        os.makedirs(os.path.dirname(VOLUME_TREND_FILE), exist_ok=True)
+        with open(VOLUME_TREND_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[Volume Trend] Error saving data: {e}")
 
-def update_volume_trend(symbol, volume):
-    data = load_volume_trend()
-    if symbol not in data:
-        data[symbol] = []
-    data[symbol].append({'time': datetime.now().isoformat(), 'volume': volume})
-    data[symbol] = data[symbol][-4:]
-    save_volume_trend(data)
-
-# ====== Market Strength (Relative Strength - Step 3) ======
+# ====== Market Strength ======
 _market_cache = None
 
-def get_market_strength():
+def get_market_strength() -> float:
     global _market_cache
     if _market_cache is not None:
         return _market_cache
     try:
-        spy = yf.Ticker("SPY")
-        qqq = yf.Ticker("QQQ")
-        spy_info = spy.info
-        qqq_info = qqq.info
-        spy_change = (spy_info.get('regularMarketPrice', 1) - spy_info.get('previousClose', 1)) / spy_info.get('previousClose', 1) * 100
-        qqq_change = (qqq_info.get('regularMarketPrice', 1) - qqq_info.get('previousClose', 1)) / qqq_info.get('previousClose', 1) * 100
-        _market_cache = (spy_change + qqq_change) / 2
-        return _market_cache
-    except:
-        return 0.0
+        data = yf.download(["SPY", "QQQ"], period="2d", progress=False, timeout=5)
+        if not data.empty and 'Close' in data:
+            spy_close = data['Close']['SPY']
+            qqq_close = data['Close']['QQQ']
+            
+            spy_change = ((spy_close.iloc[-1] - spy_close.iloc[-2]) / spy_close.iloc[-2]) * 100
+            qqq_change = ((qqq_close.iloc[-1] - qqq_close.iloc[-2]) / qqq_close.iloc[-2]) * 100
+            
+            _market_cache = (spy_change + qqq_change) / 2.0
+            return _market_cache
+    except Exception:
+        pass
+    _market_cache = 0.0
+    return _market_cache
 
 # ====== Alpaca Snapshot Caching ======
 SNAPSHOT_CACHE = {}
 
-def get_snapshots_cached(api, symbols):
+def get_snapshots_cached(api, symbols: List[str]):
     key = ",".join(sorted(symbols))
     if key in SNAPSHOT_CACHE:
         return SNAPSHOT_CACHE[key]
@@ -74,15 +79,14 @@ def get_snapshots_cached(api, symbols):
 
 def get_catalyst(symbol: str) -> str:
     try:
-        from scanner.news_scanner import get_catalyst_news_score
         _, catalyst_text = get_catalyst_news_score(symbol)
         return catalyst_text if catalyst_text else "—"
     except Exception:
         return "—"
 
 def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    # מתחילים מהבונוס של ה-PM High ובונוס ה-Float
     score = candidate.get('score_bonus', 0) + candidate.get('float_score', 0)
+    
     gap = candidate.get('gap_pct', 0)
     if gap >= 5.0: score += 25
     elif gap >= 3.0: score += 18
@@ -104,7 +108,7 @@ def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
     elif dvol >= 500_000: score += 15
     elif dvol >= 200_000: score += 10
     
-    return min(100, score)
+    return min(100.0, max(0.0, float(score)))
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
@@ -122,6 +126,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     )
     
     candidates = []
+    volume_trend_data = load_volume_trend()
+    
     stats = {
         'total': len(universe),
         'no_snapshot': 0,
@@ -150,71 +156,68 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     
                     latest_trade = snapshot.latest_trade
-                    if not latest_trade:
+                    if not latest_trade or not getattr(latest_trade, 'price', None):
                         stats['no_trade'] += 1
                         continue
                     
-                    price = latest_trade.price
+                    price = float(latest_trade.price)
                     daily_bar = snapshot.daily_bar
+                    prev_daily_bar = getattr(snapshot, 'prev_daily_bar', None)
+                    
                     if not daily_bar:
                         stats['no_bar'] += 1
                         continue
                     
-                    prev_close = daily_bar.close
+                    prev_close = prev_daily_bar.close if prev_daily_bar else daily_bar.open
                     volume = daily_bar.volume
-                    prev_volume = daily_bar.volume
+                    prev_volume = prev_daily_bar.volume if prev_daily_bar else MIN_AVG_VOLUME
 
-                    # ====== Cooldown Filter ======
-                    try:
-                        hist = yf.Ticker(symbol).history(period="5d")
-                        if not hist.empty and len(hist) >= 4:
-                            recent_gain = (hist['Close'].iloc[-1] / hist['Close'].iloc[-4] - 1) * 100
-                            if recent_gain > 200:
-                                print(f"[Cooldown] {symbol}: +{recent_gain:.0f}% in 3 days. Skipping.")
-                                continue
-                    except Exception:
-                        pass
+                    # 1. Price Filter
+                    if price < MIN_PRICE or price > MAX_PRICE:
+                        continue
+                    stats['price_passed'] += 1
+                    
+                    # 2. Gap % Filter
+                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close and prev_close > 0 else 0
+                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                        continue
+                    stats['gap_passed'] += 1
+
+                    # 3. Volume Filter
+                    if volume < MIN_AVG_VOLUME:
+                        continue
+                    stats['volume_passed'] += 1
 
                     # ====== Spread Filter ======
-                    bid = snapshot.bid_price if hasattr(snapshot, 'bid_price') else None
-                    ask = snapshot.ask_price if hasattr(snapshot, 'ask_price') else None
+                    bid = getattr(snapshot, 'bid_price', None) or getattr(getattr(snapshot, 'latest_quote', None), 'bid_price', None)
+                    ask = getattr(snapshot, 'ask_price', None) or getattr(getattr(snapshot, 'latest_quote', None), 'ask_price', None)
                     if bid and ask and bid > 0 and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
                         if spread_pct > 3.0:
                             print(f"[Spread] {symbol}: spread={spread_pct:.1f}%. Skipping.")
                             continue
-                    
-                    # 1. Price
-                    if price < MIN_PRICE or price > MAX_PRICE:
-                        continue
-                    stats['price_passed'] += 1
-                    
-                    # 2. Gap %
-                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
-                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-                        continue
-                    stats['gap_passed'] += 1
-                    
-                    # שלב 3: Relative Strength Filter
+
+                    # Relative Strength Filter
                     market_change = get_market_strength()
                     rs_val = gap_pct - market_change
                     if gap_pct < market_change + 2:
-                        continue  # המניה צריכה להיות חזקה יותר מהשוק ב-2% לפחות
+                        continue
                         
-                    # שלב 2: PM High Distance
+                    # PM High Distance Calculation
                     pm_high = price
-                    if snapshot.daily_bar and snapshot.daily_bar.high > price:
-                        pm_high = snapshot.daily_bar.high
+                    if daily_bar and getattr(daily_bar, 'high', price) > price:
+                        pm_high = daily_bar.high
                         
                     pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > price else 0
+                    
                     score_bonus = 0
                     if pm_high_dist <= 1: score_bonus = 15
                     elif pm_high_dist <= 2: score_bonus = 10
                     elif pm_high_dist <= 4: score_bonus = 5
                     elif pm_high_dist <= 7: score_bonus = 0
-                    else: continue  # פסילה
+                    else: continue
 
-                    # ====== Float (ניקוד דינמי) ======
+                    # Float Scoring
                     float_shares = 0
                     for item in batch:
                         if item.get('symbol') == symbol:
@@ -228,39 +231,34 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         elif float_shares < 30_000_000:
                             float_score = 5
 
-                    # 3. Volume
-                    if volume < MIN_AVG_VOLUME:
-                        continue
-                    stats['volume_passed'] += 1
+                    # Volume Trend Tracking (נשמר בזיכרון)
+                    if symbol not in volume_trend_data:
+                        volume_trend_data[symbol] = []
+                    volume_trend_data[symbol].append({'time': datetime.now().isoformat(), 'volume': volume})
+                    volume_trend_data[symbol] = volume_trend_data[symbol][-4:]
                     
-                    # Volume Trend
-                    update_volume_trend(symbol, volume)
                     trend_status = 'rising'
-                    trend = load_volume_trend().get(symbol, [])
+                    trend = volume_trend_data.get(symbol, [])
                     if len(trend) >= 3:
                         vols = [t['volume'] for t in trend[-3:]]
                         if vols[0] > vols[1] > vols[2]:
                             trend_status = 'declining'
 
-                    # 4. RVOL
-                    rvol = volume / 100_000 
+                    rvol = volume / prev_volume if prev_volume > 0 else 1.0
                     stats['rvol_passed'] += 1
                     
-                    # 5. Dollar Volume
                     dollar_volume = price * volume
                     stats['dvol_passed'] += 1
-                    
                     stats['final_passed'] += 1
-                    volume_ratio = volume / MIN_AVG_VOLUME if MIN_AVG_VOLUME > 0 else 1.0
+
+                    volume_ratio = volume / prev_volume if prev_volume > 0 else 1.0
                     atr = price * 0.04
                     
                     catalyst_text = get_catalyst(symbol)
                     news_score = score_news_quality([catalyst_text])
-                    
                     momentum_score = min(100.0, max(0.0, gap_pct * 2 + rvol * 10))
                     
-                    # Liquidity Score
-                    spread_estimate = 0.005 * price
+                    spread_estimate = (ask - bid) if (bid and ask) else (0.005 * price)
                     liquidity_score = min(100, (dollar_volume / 1_000_000) * 20 - (spread_estimate / price) * 100)
                     liquidity_score = max(0, liquidity_score)
                     
@@ -300,8 +298,11 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                 except Exception:
                     continue
             
-        except Exception as e:
+        except Exception:
             continue
+            
+    # שמירת נתוני מגמת הנפח בסיום הסריקה במרוכז
+    save_volume_trend(volume_trend_data)
     
     print(f"\n[DEBUG] Total Universe: {stats['total']}")
     print(f"[DEBUG] Price Passed:  {stats['price_passed']}")
