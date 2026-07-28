@@ -2,13 +2,12 @@ name: DAYS-BOT
 
 on:
   schedule:
-    # 14:30 ישראל = 11:30 UTC — שעתיים לפני פתיחת השוק
-    - cron: "30 11 * * 1-5"   # 14:30 ישראל — לפני פתיחה
-    - cron: "0 20 * * 1-5"    # 23:00 ישראל — סריקת לילה לחדשות
+    - cron: "30 12 * * 1-5"   # 08:30 ET / 15:30 ישראל – סריקת pre-market וכניסה לעסקאות
+    - cron: "0 3 * * 1-5"     # 23:00 ET / 06:00 ישראל – עדכון תוצאות בסוף/סגירת יום
   workflow_dispatch:
     inputs:
       mode:
-        description: "universe | alerts | full"
+        description: "universe | alerts | full | update"
         required: false
         default: "full"
 
@@ -16,7 +15,8 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Restore database
         uses: actions/cache@v4
@@ -26,15 +26,31 @@ jobs:
           restore-keys: |
             days-bot-db-
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run DAYS-BOT
+      # הרצת סריקת הבוקר (מופעל בלו"ז הבוקר או בהרצה ידנית)
+      - name: Run Morning Scan
+        if: github.event.schedule == '30 12 * * 1-5' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'update')
         run: python main.py full
+        env:
+          ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          POLYGON_API_KEY:   ${{ secrets.POLYGON_API_KEY }}
+          FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY:       ${{ secrets.FMP_API_KEY }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      # הרצת עדכון תוצאות המסחר (מופעל בלו"ז הערב או בהרצה ידנית של מצב update)
+      - name: Run Evening Update
+        if: github.event.schedule == '0 3 * * 1-5' || (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'update')
+        run: python update_trades.py
         env:
           ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
