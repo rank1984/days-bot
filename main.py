@@ -78,8 +78,10 @@ def main():
     plans = []
     for c in candidates[:5]:
         # דילוג על קריפטו
-        if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
+        ticker = c.get('ticker') or c.get('symbol', '')
+        if '/' in ticker or 'USDC' in ticker or 'USDT' in ticker:
             continue
+            
         plan = manager.generate_plan(c)
         if plan:
             plans.append(plan)
@@ -88,31 +90,42 @@ def main():
     print(f"\n[Main] Trades taken: {trades_taken}")
     print("-" * 30)
     
+    # 6. ביצוע העסקאות ושמירה במסד הנתונים
     for plan in plans:
-        ticker = plan['ticker']
-        entry = plan['entry']
+        ticker = plan.get('ticker') or plan.get('symbol', 'UNKNOWN')
+        entry = plan.get('entry') or plan.get('price', 0.0)
+        stop = plan.get('stop') or plan.get('stop_loss', 0.0)
+        tp1 = plan.get('tp1') or plan.get('take_profit', 0.0)
+        tp2 = plan.get('tp2', tp1)
+        
         print(f"[Main] Entering {ticker} @ ${entry:.2f}")
         
+        # ביצוע ב-PaperTrader
         trader.enter_trade(ticker, entry)
-        trader.set_stop_loss(ticker, plan['stop'])
-        trader.set_take_profit(ticker, plan['tp1'])
+        if stop > 0:
+            trader.set_stop_loss(ticker, stop)
+        if tp1 > 0:
+            trader.set_take_profit(ticker, tp1)
         
-        if plan.get('runner'):
-            trader.set_take_profit(ticker, plan['tp2'])
+        if plan.get('runner') and tp2 > 0:
+            trader.set_take_profit(ticker, tp2)
+        
+        # חילוץ נתונים גולמיים בצורה בטוחה
+        raw_data = plan.get('raw_data') or plan.get('candidate') or {}
         
         save_trade(
             ticker=ticker,
             entry=entry,
-            stop=plan['stop'],
-            tp1=plan['tp1'],
-            tp2=plan['tp2'],
+            stop=stop,
+            tp1=tp1,
+            tp2=tp2,
             rr1=plan.get('rr1', 0.0),
             rr2=plan.get('rr2', 0.0),
-            score=plan.get('quality_score', 0.0),
-            rvol=plan['raw_data'].get('rvol', 0.0),
-            gap=plan['raw_data'].get('gap', 0.0),
-            dvol=plan['raw_data'].get('dvol', 0.0),
-            catalyst=plan['raw_data'].get('catalyst', '')
+            score=plan.get('quality_score') or plan.get('score', 0.0),
+            rvol=raw_data.get('rvol', 0.0),
+            gap=raw_data.get('gap', 0.0),
+            dvol=raw_data.get('dvol', 0.0),
+            catalyst=raw_data.get('catalyst', '')
         )
     
     print(f"[Main] Done. {trades_taken} trades executed.")
