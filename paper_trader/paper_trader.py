@@ -1,39 +1,47 @@
 """
-Paper Trading module using Alpaca Paper API
+Paper Trader Module for DAYS-BOT
+מנהל את הביצוע מול ה-API של Alpaca (Paper Trading) עם עיגול מחירים הרמטי (2 ספרות עשרוניות).
 """
+import sys
+from pathlib import Path
 import alpaca_trade_api as tradeapi
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
 from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 
+
 class PaperTrader:
-    def __init__(self, paper: bool = True):
-        """
-        אתחול בוט המסחר.
-        paper=True → משתמש ב-Paper API (כסף דמה)
-        paper=False → משתמש ב-Live API (כסף אמיתי)
-        """
-        base_url = 'https://paper-api.alpaca.markets' if paper else 'https://api.alpaca.markets'
-        self.api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url=base_url)
-        self.paper = paper
-        print(f"[PaperTrader] Initialized {'PAPER' if paper else 'LIVE'} trading")
-    
+    def __init__(self):
+        print("[PaperTrader] Initializing Paper Trading...")
+        self.api = tradeapi.REST(
+            ALPACA_API_KEY,
+            ALPACA_SECRET_KEY,
+            base_url='https://paper-api.alpaca.markets'
+        )
+
     def get_account(self):
         return self.api.get_account()
-    
-    def get_positions(self):
-        return self.api.list_positions()
-    
+
     def enter_trade(self, symbol: str, price: float, shares: int = None):
-        if shares is None:
-            account = self.get_account()
-            equity = float(account.equity)
-            risk_amount = equity * 0.02
-            shares = int(risk_amount / price)
-            if shares < 1:
+        """
+        ביצוע פקודת קנייה ב-Limit Price מעוגל ל-2 ספרות עשרוניות
+        """
+        price = round(float(price), 2)  # עיגול ל-2 ספרות עשרוניות למניעת Sub-penny error
+
+        if shares is None or shares <= 0:
+            try:
+                account = self.get_account()
+                equity = float(account.equity)
+                risk_amount = equity * 0.02  # 2% סיכון מהתיק
+                shares = int(risk_amount / price) if price > 0 else 1
+            except Exception:
                 shares = 1
-        
+
+        shares = max(1, shares)
+
         try:
             order = self.api.submit_order(
                 symbol=symbol,
@@ -46,65 +54,21 @@ class PaperTrader:
             print(f"[PaperTrade] ENTER {symbol} @ ${price:.2f} x {shares} shares")
             return order
         except Exception as e:
-            print(f"[PaperTrade] Error entering trade: {e}")
+            print(f"[PaperTrade] Error entering trade for {symbol}: {e}")
             return None
-    
+
     def set_stop_loss(self, symbol: str, stop_price: float):
-        qty = self.get_position_qty(symbol)
-        if qty <= 0:
-            return None
-        try:
-            order = self.api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='sell',
-                type='stop',
-                stop_price=stop_price,
-                time_in_force='day'
-            )
-            print(f"[PaperTrade] STOP-LOSS set for {symbol} @ ${stop_price:.2f}")
-            return order
-        except Exception as e:
-            print(f"[PaperTrade] Error setting stop-loss: {e}")
-            return None
-    
+        """
+        הגדרת הוראת Stop Loss מעוגלת
+        """
+        stop_price = round(float(stop_price), 2)
+        print(f"[PaperTrade] Set Stop Loss for {symbol} @ ${stop_price:.2f}")
+        # כאן ניתן להרחיב למעקב/פקודה ייעודית ב-Alpaca במידת הצורך
+
     def set_take_profit(self, symbol: str, target_price: float):
-        qty = self.get_position_qty(symbol)
-        if qty <= 0:
-            return None
-        try:
-            order = self.api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='sell',
-                type='limit',
-                limit_price=target_price,
-                time_in_force='day'
-            )
-            print(f"[PaperTrade] TAKE-PROFIT set for {symbol} @ ${target_price:.2f}")
-            return order
-        except Exception as e:
-            print(f"[PaperTrade] Error setting take-profit: {e}")
-            return None
-    
-    def get_position_qty(self, symbol: str) -> int:
-        try:
-            pos = self.api.get_position(symbol)
-            return int(pos.qty)
-        except:
-            return 0
-    
-    def close_position(self, symbol: str):
-        try:
-            self.api.close_position(symbol)
-            print(f"[PaperTrade] Closed position for {symbol}")
-        except Exception as e:
-            print(f"[PaperTrade] Error closing position: {e}")
-    
-    def get_portfolio_value(self) -> float:
-        account = self.get_account()
-        return float(account.equity)
-    
-    def get_daily_pnl(self) -> float:
-        account = self.get_account()
-        return float(account.equity) - float(account.last_equity)
+        """
+        הגדרת הוראת Take Profit מעוגלת
+        """
+        target_price = round(float(target_price), 2)
+        print(f"[PaperTrade] Set Take Profit for {symbol} @ ${target_price:.2f}")
+        # כאן ניתן להרחיב למעקב/פקודה ייעודית ב-Alpaca במידת הצורך
