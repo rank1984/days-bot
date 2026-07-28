@@ -5,6 +5,7 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime
+import yfinance as yf
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
@@ -13,10 +14,39 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
-from database.db import init_db, save_trade
+from database.db import init_db, save_trade, get_open_trades, update_trade_outcome
 from telegram_formatter import format_preopen_list, format_no_candidates, send_message
 from trade_manager.trade_manager import TradeManager
 from paper_trader.paper_trader import PaperTrader
+
+
+def update_daily_results():
+    """עדכון תוצאות היום – מופעל בסוף היום"""
+    print("\n[Main] Updating daily trade results...")
+    trades = get_open_trades()
+    
+    if not trades:
+        print("[Main] No open trades to update.")
+        return
+
+    for trade in trades:
+        ticker = trade['ticker']
+        try:
+            # שליפת נתונים מ-yfinance עבור היום
+            data = yf.Ticker(ticker).history(period="1d")
+            if not data.empty:
+                high = float(data['High'].max())
+                low = float(data['Low'].min())
+                close = float(data['Close'].iloc[-1])
+                
+                update_trade_outcome(ticker, exit_price=close, high=high, low=low, close=close)
+                print(f"[Main] Updated {ticker}: High=${high:.2f}, Low=${low:.2f}, Close=${close:.2f}")
+            else:
+                print(f"[Main] ⚠️ No yfinance data found for {ticker}")
+        except Exception as e:
+            print(f"[Main] ❌ Error updating results for {ticker}: {e}")
+
+    print("[Main] Daily results updated successfully.")
 
 
 def main():
@@ -86,6 +116,9 @@ def main():
         )
     
     print(f"[Main] Done. {trades_taken} trades executed.")
+
+    # בסוף הריצה (או בשימוש בתזמון נפרד לסוף היום) ניתן לעדכן תוצאות:
+    # update_daily_results()
 
 
 if __name__ == "__main__":
