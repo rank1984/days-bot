@@ -1,5 +1,6 @@
 import os
 
+# ── API KEYS ──────────────────────────────────────────────
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY")
@@ -11,15 +12,17 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 # ── FILTERS (גמישים ללמידה) ──────────────────────────────
 MIN_PRICE            = 0.5
 MAX_PRICE            = 20.0
-MIN_AVG_VOLUME       = 1_000       # הורד – 100K היה גבוה מדי
-MIN_GAP_PCT          = 1.0          # הורד – 3% צר מדי
+MIN_AVG_VOLUME       = 1_000       # נפח מסחר מינימלי
+MIN_GAP_PCT          = 1.0         # אחוז גאפ מינימלי
 MAX_GAP_PCT          = 25.0
-MIN_RVOL             = 0.0          # בטל
-MIN_DOLLAR_VOLUME    = 0           # בטל את הסינון
-# ── SCORING ───────────────────────────────────────────────
-MIN_SCORE            = 20           # הורד – 50 נוקשה מדי
+MIN_RVOL             = 0.0         # בוטל
+MIN_DOLLAR_VOLUME    = 0           # בוטל
 
-# ── COOLDOWN ─────────────────────────────────────────────
+# ── SCORING ───────────────────────────────────────────────
+MIN_SCORE            = 20          # ניקוד מינימלי לסריקה
+
+# ── COOLDOWN & TIMING ─────────────────────────────────────
+ENABLE_COOLDOWN      = True        # הפעלת מנגנון צינון
 COOLDOWN_HOURS       = 4
 WEEKLY_REPORT_DAY    = 4
 
