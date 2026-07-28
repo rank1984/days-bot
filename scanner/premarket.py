@@ -81,8 +81,8 @@ def get_catalyst(symbol: str) -> str:
         return "—"
 
 def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    # מתחילים מהבונוס של ה-PM High
-    score = candidate.get('score_bonus', 0)
+    # מתחילים מהבונוס של ה-PM High ובונוס ה-Float
+    score = candidate.get('score_bonus', 0) + candidate.get('float_score', 0)
     gap = candidate.get('gap_pct', 0)
     if gap >= 5.0: score += 25
     elif gap >= 3.0: score += 18
@@ -163,6 +163,26 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     prev_close = daily_bar.close
                     volume = daily_bar.volume
                     prev_volume = daily_bar.volume
+
+                    # ====== Cooldown Filter ======
+                    try:
+                        hist = yf.Ticker(symbol).history(period="5d")
+                        if not hist.empty and len(hist) >= 4:
+                            recent_gain = (hist['Close'].iloc[-1] / hist['Close'].iloc[-4] - 1) * 100
+                            if recent_gain > 200:
+                                print(f"[Cooldown] {symbol}: +{recent_gain:.0f}% in 3 days. Skipping.")
+                                continue
+                    except Exception:
+                        pass
+
+                    # ====== Spread Filter ======
+                    bid = snapshot.bid_price if hasattr(snapshot, 'bid_price') else None
+                    ask = snapshot.ask_price if hasattr(snapshot, 'ask_price') else None
+                    if bid and ask and bid > 0 and price > 0:
+                        spread_pct = ((ask - bid) / price) * 100
+                        if spread_pct > 3.0:
+                            print(f"[Spread] {symbol}: spread={spread_pct:.1f}%. Skipping.")
+                            continue
                     
                     # 1. Price
                     if price < MIN_PRICE or price > MAX_PRICE:
@@ -177,6 +197,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     # שלב 3: Relative Strength Filter
                     market_change = get_market_strength()
+                    rs_val = gap_pct - market_change
                     if gap_pct < market_change + 2:
                         continue  # המניה צריכה להיות חזקה יותר מהשוק ב-2% לפחות
                         
@@ -192,6 +213,20 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     elif pm_high_dist <= 4: score_bonus = 5
                     elif pm_high_dist <= 7: score_bonus = 0
                     else: continue  # פסילה
+
+                    # ====== Float (ניקוד דינמי) ======
+                    float_shares = 0
+                    for item in batch:
+                        if item.get('symbol') == symbol:
+                            float_shares = item.get('float', 0)
+                            break
+                            
+                    float_score = 0
+                    if float_shares > 0:
+                        if float_shares < 15_000_000:
+                            float_score = 10
+                        elif float_shares < 30_000_000:
+                            float_score = 5
 
                     # 3. Volume
                     if volume < MIN_AVG_VOLUME:
@@ -238,7 +273,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'avg_volume': prev_volume,
                         'volume_ratio': volume_ratio,
                         'rvol': rvol,
-                        'float': 0,
+                        'float': float_shares,
+                        'float_score': float_score,
                         'dollar_volume': dollar_volume,
                         'freshness': "FRESH",
                         'momentum_score': momentum_score,
@@ -247,8 +283,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'news_score': news_score,
                         'pm_high': pm_high,
                         'pm_high_dist': pm_high_dist,
-                        'score_bonus': score_bonus,  # מועבר לחישוב הניקוד
+                        'score_bonus': score_bonus,
                         'volume_trend': trend_status,
+                        'relative_strength': rs_val,
                         'liquidity_score': liquidity_score,
                         'atr': atr,
                         'score': 0.0,
