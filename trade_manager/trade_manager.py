@@ -1,7 +1,8 @@
 """
 Trade Manager for DAYS-BOT
-מנהל המסחר: אחראי על ניהול סיכונים, בדיקת תנאי כניסה, חישוב גודל פוזיציה,
-ביצוע פקודות ב-Alpaca, ניהול Cooldown ושליחת עדכונים לטלגרם.
+מנהל המסחר: אחראי על ניהול סיכונים, יצירת תוכניות מסחר (generate_plan),
+בדיקת תנאי כניסה, חישוב גודל פוזיציה, ביצוע פקודות ב-Alpaca,
+ניהול Cooldown ושליחת עדכונים לטלגרם.
 """
 import sys
 import os
@@ -26,11 +27,11 @@ from utils.config import (
 )
 
 # ── הגדרות ניהול סיכונים וכניסה ──────────────────────────
-FORCE_ENTRY_FOR_DATA = True       # במצב True: מאשר כניסה מיידית לצורך איסוף נתונים ראשוני
-RISK_PER_TRADE_USD = 100.0        # סיכון מקסימלי בעסקה (USD)
-DEFAULT_POSITION_SIZE_USD = 1000.0 # תקציב גג לפוזיציה בודדת (USD)
-STOP_LOSS_PCT = 0.03              # סטופ לוס: 3%
-TAKE_PROFIT_PCT = 0.06            # יעד רווח: 6%
+FORCE_ENTRY_FOR_DATA = True        # במצב True: מאשר כניסה מיידית לצורך איסוף נתונים ראשוני
+RISK_PER_TRADE_USD = 100.0         # סיכון מקסימלי בעסקה (USD)
+DEFAULT_POSITION_SIZE_USD = 1000.0  # תקציב גג לפוזיציה בודדת (USD)
+STOP_LOSS_PCT = 0.03               # סטופ לוס: 3%
+TAKE_PROFIT_PCT = 0.06             # יעד רווח: 6%
 
 COOLDOWN_FILE = os.path.join(BASE_DIR, "data", "cooldown_history.json")
 
@@ -99,39 +100,6 @@ class TradeManager:
         self.cooldown_data[symbol] = datetime.now().isoformat()
         self._save_cooldown()
 
-    # ── בדיקת טריגר כניסה ─────────────────────────────
-    def check_entry_trigger(self, candidate: Dict[str, Any]) -> bool:
-        """
-        בודק האם המועמדת עומדת בתנאי כניסה לפוזיציה
-        """
-        symbol = candidate.get('ticker')
-        price = candidate.get('price', 0.0)
-
-        if not symbol or price <= 0:
-            print(f"[Entry Trigger] {symbol}: Invalid symbol or price (${price}). Rejected.")
-            return False
-
-        # בדיקת Cooldown
-        if self.is_in_cooldown(symbol):
-            return False
-
-        # מצב 1: איסוף נתונים (FORCE ENTRY)
-        if FORCE_ENTRY_FOR_DATA:
-            print(f"[Entry Trigger] {symbol}: FORCE ENTRY active. Trade Approved at ${price:.2f}")
-            return True
-
-        # מצב 2: טריגר דינמי (1% מעל המחיר הנוכחי)
-        trigger_price = candidate.get('trigger_price')
-        if not trigger_price:
-            trigger_price = round(price * 1.01, 2)
-
-        if price >= trigger_price:
-            print(f"[Entry Trigger] {symbol}: Current ${price:.2f} >= Trigger ${trigger_price:.2f}. Approved!")
-            return True
-        else:
-            print(f"[Entry Trigger] {symbol}: Current ${price:.2f} < Trigger ${trigger_price:.2f}. Rejected.")
-            return False
-
     # ── חישוב גודל פוזיציה ───────────────────────────
     def calculate_position_size(self, price: float, stop_loss_price: float) -> int:
         """
@@ -151,6 +119,66 @@ class TradeManager:
         qty = min(qty_by_risk, qty_by_capital) if qty_by_risk > 0 else qty_by_capital
         return max(1, qty)
 
+    # ── יצירת תוכנית מסחר (Trade Plan) ─────────────────
+    def generate_plan(self, candidate: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        יוצר תוכנית מסחר עבור מועמדת שנבחרה בסריקה.
+        נקרא ישירות מ-main.py
+        """
+        symbol = candidate.get('ticker') or candidate.get('symbol', 'UNKNOWN')
+        price = float(candidate.get('price', 0.0))
+
+        stop_loss_price = round(price * (1.0 - STOP_LOSS_PCT), 2)
+        take_profit_price = round(price * (1.0 + TAKE_PROFIT_PCT), 2)
+        qty = self.calculate_position_size(price, stop_loss_price)
+
+        plan = {
+            'ticker': symbol,
+            'symbol': symbol,
+            'price': price,
+            'shares': qty,
+            'qty': qty,
+            'stop_loss': stop_loss_price,
+            'take_profit': take_profit_price,
+            'risk_usd': round(abs(price - stop_loss_price) * qty, 2),
+            'score': candidate.get('score', 0.0),
+            'candidate': candidate
+        }
+        return plan
+
+    # ── בדיקת טריגר כניסה ─────────────────────────────
+    def check_entry_trigger(self, item: Dict[str, Any]) -> bool:
+        """
+        בודק האם המועמדת / תוכנית המסחר עומדת בתנאי כניסה לפוזיציה
+        """
+        symbol = item.get('ticker') or item.get('symbol')
+        price = float(item.get('price', 0.0))
+
+        if not symbol or price <= 0:
+            print(f"[Entry Trigger] {symbol}: Invalid symbol or price (${price}). Rejected.")
+            return False
+
+        # בדיקת Cooldown
+        if self.is_in_cooldown(symbol):
+            return False
+
+        # מצב 1: איסוף נתונים (FORCE ENTRY)
+        if FORCE_ENTRY_FOR_DATA:
+            print(f"[Entry Trigger] {symbol}: FORCE ENTRY active. Approved at ${price:.2f}")
+            return True
+
+        # מצב 2: טריגר דינמי (1% מעל המחיר הנוכחי)
+        trigger_price = item.get('trigger_price')
+        if not trigger_price:
+            trigger_price = round(price * 1.01, 2)
+
+        if price >= trigger_price:
+            print(f"[Entry Trigger] {symbol}: Current ${price:.2f} >= Trigger ${trigger_price:.2f}. Approved!")
+            return True
+        else:
+            print(f"[Entry Trigger] {symbol}: Current ${price:.2f} < Trigger ${trigger_price:.2f}. Rejected.")
+            return False
+
     # ── שליחת התראות לטלגרם ───────────────────────────
     def send_telegram_notification(self, message: str) -> None:
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -167,21 +195,24 @@ class TradeManager:
             print(f"[Telegram Error] Could not send notification: {e}")
 
     # ── ביצוע הוראה ב-ALPACA ───────────────────────────
-    def execute_trade(self, candidate: Dict[str, Any]) -> bool:
+    def execute_trade(self, item: Dict[str, Any]) -> bool:
         """
-        אחראי על בדיקת התנאים ושגור פקודת קנייה + Bracket (Stop Loss & Take Profit)
+        מבצע פקודת קנייה + Bracket (Stop Loss & Take Profit).
+        מקבל אובייקט Plan או Candidate.
         """
-        symbol = candidate.get('ticker')
-        price = candidate.get('price', 0.0)
-
-        if not self.check_entry_trigger(candidate):
+        if not self.check_entry_trigger(item):
             return False
 
-        # חישוב יעדי סטופ ופרופיט
-        stop_loss_price = round(price * (1.0 - STOP_LOSS_PCT), 2)
-        take_profit_price = round(price * (1.0 + TAKE_PROFIT_PCT), 2)
+        # חילוץ נתונים מתוך Plan או Candidate
+        symbol = item.get('ticker') or item.get('symbol')
+        price = float(item.get('price', 0.0))
+        qty = item.get('qty') or item.get('shares')
         
-        qty = self.calculate_position_size(price, stop_loss_price)
+        stop_loss_price = item.get('stop_loss') or round(price * (1.0 - STOP_LOSS_PCT), 2)
+        take_profit_price = item.get('take_profit') or round(price * (1.0 + TAKE_PROFIT_PCT), 2)
+
+        if not qty or qty <= 0:
+            qty = self.calculate_position_size(price, stop_loss_price)
 
         try:
             print(f"[Executing Trade] Buying {qty} shares of {symbol} at ~${price:.2f}")
@@ -210,7 +241,7 @@ class TradeManager:
                 f"📦 *כמות מניות:* {qty}\n"
                 f"🎯 *Take Profit:* ${take_profit_price:.2f} (+{TAKE_PROFIT_PCT*100:.0f}%)\n"
                 f"🛑 *Stop Loss:* ${stop_loss_price:.2f} (-{STOP_LOSS_PCT*100:.0f}%)\n"
-                f"📊 *ניקוד בסריקה:* {candidate.get('score', 0):.1f}"
+                f"📊 *ניקוד בסריקה:* {item.get('score', 0):.1f}"
             )
             self.send_telegram_notification(msg)
 
