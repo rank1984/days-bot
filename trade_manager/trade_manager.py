@@ -21,11 +21,49 @@ class TradeManager:
             'news': 0.10
         }
 
+    def check_entry_trigger(self, candidate: Dict[str, Any]) -> bool:
+        """
+        בודק האם תנאי הכניסה מתקיימים:
+        1. מחיר מעל Trigger (PM High + 0.5%)
+        2. נפח עולה (לפחות 2 מדידות)
+        3. Relative Strength חיובי
+        4. מעל VWAP (או מדד חוזק חלופי)
+        """
+        price = candidate.get('price', 0)
+        pm_high = candidate.get('pm_high', price)
+        
+        # 1. Trigger (אם לא הוגדר מראש, מחושב כ-0.5% מעל PM High)
+        trigger = candidate.get('trigger_price', round(pm_high * 1.005, 2))
+        if price < trigger:
+            return False
+
+        # 2. Volume Trend
+        vol_trend = candidate.get('volume_trend', 'rising')
+        if vol_trend == 'declining':
+            return False
+
+        # 3. Relative Strength
+        if candidate.get('relative_strength', 0) < 0:
+            return False
+
+        # 4. VWAP (אומדן)
+        vwap = candidate.get('vwap_est', price * 0.99)
+        if price < vwap:
+            return False
+
+        return True
+
     def generate_plan(self, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         יוצר תוכנית מסחר דינמית.
-        מחזיר None אם ה-Risk/Reward לא מספיק טוב (RR < 1.2)
+        מחזיר None אם תנאי ה-Trigger או ה-Risk/Reward לא מתקיימים.
         """
+        # --- 0. בדיקת Entry Trigger ---
+        if not self.check_entry_trigger(candidate):
+            ticker = candidate.get('ticker', '???')
+            print(f"[TradeManager] ⛔ {ticker} - Entry trigger conditions not met. Skipping trade.")
+            return None
+
         price = candidate.get('price', 0)
         ticker = candidate.get('ticker', '???')
         gap_pct = candidate.get('gap_pct', 0)
@@ -67,7 +105,7 @@ class TradeManager:
         
         # --- 8. Trigger (BREAKOUT) ---
         pm_high = candidate.get('pm_high', price)
-        trigger_price = round(pm_high * 1.005, 2)  # 0.5% מעל השיא
+        trigger_price = candidate.get('trigger_price', round(pm_high * 1.005, 2))
         
         plan = {
             'ticker': ticker,
