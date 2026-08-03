@@ -2,8 +2,6 @@
 Update trade outcomes at the end of the day
 """
 import yfinance as yf
-import sqlite3
-from datetime import datetime
 import sys
 from pathlib import Path
 
@@ -12,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 # ====== השתמש ב-db.py (שעובד עם alerts.db) ======
-from database.db import DB_PATH, get_open_trades, update_trade_outcome
+from database.db import get_open_trades, update_trade_outcome
 
 def update_daily_results():
     # קבל את כל העסקאות הפתוחות
