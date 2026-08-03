@@ -5,16 +5,20 @@ import yfinance as yf
 import sqlite3
 from datetime import datetime
 
+# ====== השתמש ב-alerts.db (כבר קיים) ======
 DB_PATH = "data/alerts.db"
 
 def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float, close: float):
     conn = sqlite3.connect(DB_PATH)
+    
+    # מצא את העסקה הפתוחה האחרונה
     cursor = conn.execute("""
         SELECT id, entry_price, tp1, tp2, stop_price FROM trades
         WHERE ticker = ? AND exit_time IS NULL
         ORDER BY entry_time DESC LIMIT 1
     """, (ticker,))
     row = cursor.fetchone()
+    
     if not row:
         print(f"[Update] No open trade found for {ticker}")
         conn.close()
@@ -41,17 +45,33 @@ def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float
             stop_hit = ?
         WHERE id = ?
     """, (datetime.now().isoformat(), exit_price, high, low, close, pnl, win, tp1_hit, tp2_hit, stop_hit, trade_id))
+    
     conn.commit()
     conn.close()
     print(f"[Update] ✅ Updated {ticker}: PnL={pnl:.2f}%")
 
 def update_daily_results():
     conn = sqlite3.connect(DB_PATH)
+    
+    # בדוק אם טבלת trades קיימת
+    cursor = conn.execute("""
+        SELECT name FROM sqlite_master WHERE type='table' AND name='trades'
+    """)
+    if not cursor.fetchone():
+        print("[Update] No trades table found. Run main.py first.")
+        conn.close()
+        return
+    
+    # מצא את כל העסקאות הפתוחות
     cursor = conn.execute("""
         SELECT ticker FROM trades WHERE exit_time IS NULL
     """)
     trades = cursor.fetchall()
     conn.close()
+    
+    if not trades:
+        print("[Update] No open trades found.")
+        return
     
     updated = 0
     for (ticker,) in trades:
@@ -65,6 +85,7 @@ def update_daily_results():
                 updated += 1
         except Exception as e:
             print(f"[Update] ❌ {ticker} failed: {e}")
+    
     print(f"[Update] Updated {updated} trades")
 
 if __name__ == "__main__":
