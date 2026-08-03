@@ -4,77 +4,27 @@ Update trade outcomes at the end of the day
 import yfinance as yf
 import sqlite3
 from datetime import datetime
+import sys
+from pathlib import Path
 
-# ====== השתמש ב-alerts.db (כבר קיים) ======
-DB_PATH = "data/alerts.db"
+# הוסף את הנתיב לפרויקט
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
 
-def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float, close: float):
-    conn = sqlite3.connect(DB_PATH)
-    
-    # מצא את העסקה הפתוחה האחרונה
-    cursor = conn.execute("""
-        SELECT id, entry_price, tp1, tp2, stop_price FROM trades
-        WHERE ticker = ? AND exit_time IS NULL
-        ORDER BY entry_time DESC LIMIT 1
-    """, (ticker,))
-    row = cursor.fetchone()
-    
-    if not row:
-        print(f"[Update] No open trade found for {ticker}")
-        conn.close()
-        return
-    
-    trade_id, entry, tp1, tp2, stop = row
-    pnl = ((exit_price - entry) / entry) * 100 if entry else 0
-    win = 1 if pnl > 0 else 0
-    tp1_hit = 1 if high >= tp1 else 0
-    tp2_hit = 1 if high >= tp2 else 0
-    stop_hit = 1 if low <= stop else 0
-    
-    conn.execute("""
-        UPDATE trades SET
-            exit_time = ?,
-            exit_price = ?,
-            high = ?,
-            low = ?,
-            close = ?,
-            pnl = ?,
-            win = ?,
-            tp1_hit = ?,
-            tp2_hit = ?,
-            stop_hit = ?
-        WHERE id = ?
-    """, (datetime.now().isoformat(), exit_price, high, low, close, pnl, win, tp1_hit, tp2_hit, stop_hit, trade_id))
-    
-    conn.commit()
-    conn.close()
-    print(f"[Update] ✅ Updated {ticker}: PnL={pnl:.2f}%")
+# ====== השתמש ב-db.py (שעובד עם alerts.db) ======
+from database.db import DB_PATH, get_open_trades, update_trade_outcome
 
 def update_daily_results():
-    conn = sqlite3.connect(DB_PATH)
-    
-    # בדוק אם טבלת trades קיימת
-    cursor = conn.execute("""
-        SELECT name FROM sqlite_master WHERE type='table' AND name='trades'
-    """)
-    if not cursor.fetchone():
-        print("[Update] No trades table found. Run main.py first.")
-        conn.close()
-        return
-    
-    # מצא את כל העסקאות הפתוחות
-    cursor = conn.execute("""
-        SELECT ticker FROM trades WHERE exit_time IS NULL
-    """)
-    trades = cursor.fetchall()
-    conn.close()
+    # קבל את כל העסקאות הפתוחות
+    trades = get_open_trades()
     
     if not trades:
         print("[Update] No open trades found.")
         return
     
     updated = 0
-    for (ticker,) in trades:
+    for trade in trades:
+        ticker = trade['ticker']
         try:
             data = yf.Ticker(ticker).history(period="1d")
             if not data.empty:
