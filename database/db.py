@@ -7,9 +7,19 @@ from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "alerts.db")
 
+def _ensure_db_dir():
+    """מוודא שתיקיית data קיימת"""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+def _ensure_db():
+    """מוודא שקובץ ה-DB קיים, אם לא – יוצר אותו"""
+    _ensure_db_dir()
+    if not os.path.exists(DB_PATH):
+        init_db()  # יוצר את הטבלאות
+
 def init_db():
     """אתחול מסד הנתונים – יוצר את כל הטבלאות"""
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
     
     # טבלת alerts – היסטוריית שליחות לטלגרם
@@ -62,6 +72,7 @@ def init_db():
 
 def save_alert(ticker, price, gap_pct, score, catalyst):
     """שומר הודעת התראה שנשלחה לטלגרם"""
+    _ensure_db()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT OR IGNORE INTO alerts (ticker, sent_at, price, gap_pct, score, catalyst)
@@ -73,6 +84,7 @@ def save_alert(ticker, price, gap_pct, score, catalyst):
 
 def save_trade(ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst):
     """שומר עסקה חדשה"""
+    _ensure_db()
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT INTO trades (
@@ -90,6 +102,8 @@ def save_trade(ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, 
 
 def get_open_trades():
     """מחזיר רשימת עסקאות פתוחות (עוד לא נסגרו)"""
+    if not os.path.exists(DB_PATH):
+        return []  # אם אין DB, אין עסקאות פתוחות
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.execute("""
@@ -103,6 +117,10 @@ def get_open_trades():
 
 def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float, close: float):
     """מעדכן תוצאות של עסקה בסוף היום"""
+    if not os.path.exists(DB_PATH):
+        print(f"[Database] No DB, cannot update {ticker}")
+        return
+    
     conn = sqlite3.connect(DB_PATH)
     
     # מצא את העסקה הפתוחה האחרונה עבור הטיקר
@@ -163,6 +181,8 @@ def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float
 
 def get_all_trades():
     """מחזיר את כל העסקאות מהמסד"""
+    if not os.path.exists(DB_PATH):
+        return []
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     cursor = conn.execute("SELECT * FROM trades ORDER BY entry_time DESC")
@@ -172,6 +192,8 @@ def get_all_trades():
 
 def already_sent_today(ticker, date_str=None):
     """בודק אם התראה כבר נשלחה היום עבור טיקר"""
+    if not os.path.exists(DB_PATH):
+        return False
     if date_str is None:
         date_str = datetime.now().strftime("%Y-%m-%d")
     conn = sqlite3.connect(DB_PATH)
