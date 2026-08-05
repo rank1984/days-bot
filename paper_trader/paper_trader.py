@@ -16,11 +16,19 @@ from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 class PaperTrader:
     def __init__(self):
         print("[PaperTrader] Initializing Paper Trading...")
+        
+        if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+            raise ValueError(
+                "ValueError: ('Key ID must be given to access Alpaca trade API', ' (env: APCA_API_KEY_ID)')\n"
+                "[PaperTrader] ❌ Missing Alpaca API keys! Please check your environment variables or GitHub Secrets."
+            )
+
         self.api = tradeapi.REST(
             ALPACA_API_KEY,
             ALPACA_SECRET_KEY,
             base_url='https://paper-api.alpaca.markets'
         )
+        print("[PaperTrader] ✅ Connected to Alpaca Paper Trading.")
 
     def get_account(self):
         return self.api.get_account()
@@ -63,7 +71,6 @@ class PaperTrader:
         """
         stop_price = round(float(stop_price), 2)
         print(f"[PaperTrade] Set Stop Loss for {symbol} @ ${stop_price:.2f}")
-        # כאן ניתן להרחיב למעקב/פקודה ייעודית ב-Alpaca במידת הצורך
 
     def set_take_profit(self, symbol: str, target_price: float):
         """
@@ -71,4 +78,3 @@ class PaperTrader:
         """
         target_price = round(float(target_price), 2)
         print(f"[PaperTrade] Set Take Profit for {symbol} @ ${target_price:.2f}")
-        # כאן ניתן להרחיב למעקב/פקודה ייעודית ב-Alpaca במידת הצורך
