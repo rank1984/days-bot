@@ -1,4 +1,14 @@
 import os
+from pathlib import Path
+
+# נסה לטעון את python-dotenv אם הוא קיים (לשימוש מקומי)
+try:
+    from dotenv import load_dotenv
+    # טעינה מקובץ .env שנמצא בתיקיית השורש של הפרויקט
+    env_path = Path(__file__).resolve().parent.parent / '.env'
+    load_dotenv(dotenv_path=env_path)
+except ImportError:
+    pass
 
 # ── API KEYS ──────────────────────────────────────────────
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY")
