@@ -47,7 +47,6 @@ def main():
     manager = TradeManager()
     plans = []
     for c in candidates[:5]:
-        # דילוג על קריפטו
         if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
             continue
         plan = manager.generate_plan(c)
@@ -73,17 +72,20 @@ def main():
         dvol = raw_data.get('dvol', 0.0)
         catalyst = raw_data.get('catalyst', '')
         
-        print(f"[Main] Entering {ticker} @ ${entry:.2f}")
+        # נתוני Trigger/PM High/VWAP
+        trigger_price = plan.get('trigger', None)
+        pm_high = raw_data.get('pm_high', None)
+        vwap = raw_data.get('vwap_est', None)
+        entry_type = plan.get('status', 'MARKET')
         
-        # ביצוע העסקה
+        print(f"[Main] Entering {ticker} @ ${entry:.2f} (Status: {entry_type})")
+        
         trader.enter_trade(ticker, entry)
         trader.set_stop_loss(ticker, stop)
         trader.set_take_profit(ticker, tp1)
-        
         if plan.get('runner'):
             trader.set_take_profit(ticker, tp2)
         
-        # שמירה ל-DB – כולל כל הנתונים
         save_trade(
             ticker=ticker,
             entry=entry,
@@ -96,7 +98,11 @@ def main():
             rvol=rvol,
             gap=gap,
             dvol=dvol,
-            catalyst=catalyst
+            catalyst=catalyst,
+            trigger_price=trigger_price,
+            pm_high=pm_high,
+            vwap=vwap,
+            entry_type=entry_type
         )
     
     print(f"[Main] Done. {trades_taken} trades executed.")
