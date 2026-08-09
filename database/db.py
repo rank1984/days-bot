@@ -36,7 +36,7 @@ def init_db():
         )
     """)
     
-    # טבלת trades – כל העסקאות עם כל הפרמטרים
+    # טבלת trades – כל העסקאות עם כל הפרמטרים + MFE/MAE
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,11 +58,14 @@ def init_db():
             high REAL,
             low REAL,
             close REAL,
+            current_price REAL,
             pnl REAL,
             win INTEGER,
             tp1_hit INTEGER,
             tp2_hit INTEGER,
-            stop_hit INTEGER
+            stop_hit INTEGER,
+            mfe REAL,
+            mae REAL
         )
     """)
     
@@ -178,6 +181,81 @@ def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float
     conn.commit()
     conn.close()
     print(f"[Database] ✅ Updated trade for {ticker}: PnL={pnl:.2f}%")
+
+def update_trade_monitor(ticker: str, current_price: float = None, high: float = None, 
+                         low: float = None, mfe: float = None, mae: float = None,
+                         tp1_hit: bool = None, tp2_hit: bool = None, stop_hit: bool = None,
+                         exit_price: float = None, pnl: float = None, win: int = None):
+    """
+    מעדכן נתוני מעקב לעסקה פתוחה (MFE/MAE, TP/Stop flags, exit)
+    """
+    if not os.path.exists(DB_PATH):
+        return
+    
+    conn = sqlite3.connect(DB_PATH)
+    
+    # מצא את העסקה הפתוחה האחרונה
+    cursor = conn.execute("""
+        SELECT id FROM trades
+        WHERE ticker = ? AND exit_time IS NULL
+        ORDER BY entry_time DESC LIMIT 1
+    """, (ticker,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return
+    
+    trade_id = row[0]
+    
+    # בניית שאילתת UPDATE דינמית
+    updates = []
+    params = []
+    
+    if current_price is not None:
+        updates.append("current_price = ?")
+        params.append(current_price)
+    if high is not None:
+        updates.append("high = ?")
+        params.append(high)
+    if low is not None:
+        updates.append("low = ?")
+        params.append(low)
+    if mfe is not None:
+        updates.append("mfe = ?")
+        params.append(mfe)
+    if mae is not None:
+        updates.append("mae = ?")
+        params.append(mae)
+    if tp1_hit is not None:
+        updates.append("tp1_hit = ?")
+        params.append(1 if tp1_hit else 0)
+    if tp2_hit is not None:
+        updates.append("tp2_hit = ?")
+        params.append(1 if tp2_hit else 0)
+    if stop_hit is not None:
+        updates.append("stop_hit = ?")
+        params.append(1 if stop_hit else 0)
+    if exit_price is not None:
+        updates.append("exit_price = ?")
+        params.append(exit_price)
+        updates.append("exit_time = ?")
+        params.append(datetime.now().isoformat())
+    if pnl is not None:
+        updates.append("pnl = ?")
+        params.append(pnl)
+    if win is not None:
+        updates.append("win = ?")
+        params.append(win)
+    
+    if not updates:
+        conn.close()
+        return
+    
+    params.append(trade_id)
+    query = f"UPDATE trades SET {', '.join(updates)} WHERE id = ?"
+    conn.execute(query, params)
+    conn.commit()
+    conn.close()
 
 def get_all_trades():
     """מחזיר את כל העסקאות מהמסד"""
