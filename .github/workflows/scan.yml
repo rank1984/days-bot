@@ -2,8 +2,8 @@ name: DAYS-BOT
 
 on:
   schedule:
-    - cron: '30 8 * * 1-5'   # 08:30 ET – סריקה וכניסה
-    - cron: '0 23 * * 1-5'   # 23:00 ET – עדכון תוצאות
+    - cron: '30 12 * * 1-5'   # 08:30 ET (12:30 UTC) – סריקה וכניסה
+    - cron: '0 3 * * 1-5'     # 23:00 ET (03:00 UTC) – עדכון תוצאות
   workflow_dispatch:
 
 jobs:
@@ -30,12 +30,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       
+      - name: Create data directory
+        run: mkdir -p data
+      
       - name: Run Morning Scan
-        if: github.event.schedule == '30 8 * * 1-5' || github.event_name == 'workflow_dispatch'
+        if: github.event.schedule == '30 12 * * 1-5' || github.event_name == 'workflow_dispatch'
         run: python main.py full
       
+      - name: Update Trade Monitor (after morning scan)
+        if: github.event.schedule == '30 12 * * 1-5' || github.event_name == 'workflow_dispatch'
+        run: python trade_monitor.py
+      
       - name: Run Evening Update
-        if: github.event.schedule == '0 23 * * 1-5'
+        if: github.event.schedule == '0 3 * * 1-5'
         run: python update_trades.py
       
       - name: Upload Database
