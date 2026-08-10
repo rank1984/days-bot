@@ -36,7 +36,7 @@ jobs:
           key: days-bot-db
           restore-keys: days-bot-db
       
-      - name: Run scan
+      - name: Run scan (watchlist mode)
         run: python main.py scan
       
       - name: Save DB to cache
