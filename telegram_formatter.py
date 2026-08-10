@@ -48,7 +48,6 @@ def format_trade_plan(plan: Dict[str, Any]) -> str:
     score = plan.get('score', 0)
     rvol = plan.get('rvol', 0.0)
 
-    # חישוב אחוזי יעד בבטחה
     tp1_pct = ((tp1 / entry) - 1) * 100 if entry > 0 else 0
     tp2_pct = ((tp2 / entry) - 1) * 100 if entry > 0 else 0
     stop_pct = ((1 - (stop / entry)) * 100) if entry > 0 else 5.0
@@ -85,7 +84,6 @@ def format_preopen_list(candidates: List[Dict[str, Any]], date: str, low_quality
         catalyst = r.get('catalyst', '—')
         rvol = r.get('rvol', 0)
         
-        # פורמט נפח
         if vol >= 1_000_000:
             vol_str = f"{vol/1_000_000:.1f}M"
         elif vol >= 1_000:
@@ -93,7 +91,6 @@ def format_preopen_list(candidates: List[Dict[str, Any]], date: str, low_quality
         else:
             vol_str = f"{vol}"
         
-        # אייקון Gap
         if gap >= 5:
             gap_icon = "🔥"
         elif gap >= 3:
@@ -103,7 +100,6 @@ def format_preopen_list(candidates: List[Dict[str, Any]], date: str, low_quality
         else:
             gap_icon = "➡️"
         
-        # ציון
         if score >= 70:
             grade = "🚀 EXCELLENT"
         elif score >= 50:
@@ -127,6 +123,52 @@ def format_preopen_list(candidates: List[Dict[str, Any]], date: str, low_quality
         "🚫 לא המלצת השקעה"
     ]
     
+    return "\n".join(lines)
+
+
+def format_watchlist(watchlist: list, date: str) -> str:
+    """פורמט Watchlist (רשימת מעקב)"""
+    time_str = datetime.now(ET).strftime("%H:%M ET")
+    
+    if not watchlist:
+        return f"📋 <b>DAYS-BOT WATCHLIST</b>\n📅 {date}  |  🕐 {time_str}\n━━━━━━━━━━━━━━━━━━\n😴 No active candidates."
+    
+    lines = [
+        "📋 <b>DAYS-BOT WATCHLIST</b>",
+        f"📅 {date}  |  🕐 {time_str}",
+        f"📊 {len(watchlist)} candidates | {sum(1 for w in watchlist if w.get('status') == 'READY')} READY",
+        "━━━━━━━━━━━━━━━━━━",
+    ]
+    
+    for i, w in enumerate(watchlist[:10], 1):
+        ticker = w.get('ticker', '???')
+        price = w.get('price', 0)
+        gap = w.get('gap_pct', 0)
+        score = w.get('score', 0)
+        status = w.get('status', 'WATCH')
+        hits = w.get('hits', 1)
+        catalyst = w.get('catalyst', '')
+        
+        if status == 'READY':
+            status_icon = "🟢 READY"
+        elif status == 'PREPARE':
+            status_icon = "🟡 PREPARE"
+        else:
+            status_icon = "🔵 WATCH"
+        
+        lines.append("")
+        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%  Score: {score:.0f}")
+        lines.append(f"   {status_icon}  |  Hits: {hits}")
+        if catalyst:
+            lines.append(f"   📰 {catalyst[:40]}")
+    
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "⚡ READY = Trigger + RVOL confirmed",
+        "🚀 Entry only on breakout with volume",
+        "🚫 לא המלצת השקעה"
+    ]
     return "\n".join(lines)
 
 
