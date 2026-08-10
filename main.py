@@ -1,5 +1,5 @@
 """
-DAYS-BOT Main Entry Point
+DAYS-BOT – WATCH MODE (no auto entry)
 """
 import sys
 import os
@@ -13,18 +13,17 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
-from database.db import init_db, save_trade
-from telegram_formatter import format_preopen_list, format_no_candidates, send_message
-from trade_manager.trade_manager import TradeManager
-from paper_trader.paper_trader import PaperTrader
+from database.db import init_db, save_alert
+from telegram_formatter import format_watchlist, format_no_candidates, send_message
+from watchlist_manager import WatchlistManager
 
 
 def main():
     # 1. אתחול מסד הנתונים
     init_db()
     
-    # 2. אתחול PaperTrader
-    trader = PaperTrader()
+    # 2. אתחול Watchlist Manager
+    wm = WatchlistManager()
     
     # 3. סריקה
     today = datetime.now().strftime("%Y-%m-%d")
@@ -38,75 +37,40 @@ def main():
         print("[Main] No candidates found")
         return
     
-    # 4. שליחת הודעת מועמדויות לטלגרם
-    msg = format_preopen_list(candidates, today)
-    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-    print(f"[Main] Sent {len(candidates)} candidates summary to Telegram")
-    
-    # 5. יצירת תוכניות מסחר
-    manager = TradeManager()
-    plans = []
-    for c in candidates[:5]:
+    # 4. הוספת מועמדויות ל-Watchlist (ולא כניסה)
+    added = 0
+    for c in candidates[:10]:
+        # דילוג על קריפטו
         if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
             continue
-        plan = manager.generate_plan(c)
-        if plan:
-            plans.append(plan)
+        
+        # הוסף ל-Watchlist (שומר ב-DB)
+        wm.add_to_watchlist(c)
+        added += 1
     
-    trades_taken = len(plans)
-    print(f"\n[Main] Trades taken: {trades_taken}")
-    print("-" * 30)
+    print(f"[Main] Added {added} candidates to Watchlist")
     
-    for plan in plans:
-        ticker = plan['ticker']
-        entry = plan['entry']
-        stop = plan['stop']
-        tp1 = plan['tp1']
-        tp2 = plan['tp2']
-        rr1 = plan.get('rr1', 0.0)
-        rr2 = plan.get('rr2', 0.0)
-        score = plan.get('quality_score', 0.0)
-        raw_data = plan.get('raw_data', {})
-        rvol = raw_data.get('rvol', 0.0)
-        gap = raw_data.get('gap', 0.0)
-        dvol = raw_data.get('dvol', 0.0)
-        catalyst = raw_data.get('catalyst', '')
-        
-        # נתוני Trigger/PM High/VWAP
-        trigger_price = plan.get('trigger', None)
-        pm_high = raw_data.get('pm_high', None)
-        vwap = raw_data.get('vwap_est', None)
-        entry_type = plan.get('status', 'MARKET')
-        
-        print(f"[Main] Entering {ticker} @ ${entry:.2f} (Status: {entry_type})")
-        
-        trader.enter_trade(ticker, entry)
-        trader.set_stop_loss(ticker, stop)
-        trader.set_take_profit(ticker, tp1)
-        if plan.get('runner'):
-            trader.set_take_profit(ticker, tp2)
-        
-        save_trade(
-            ticker=ticker,
-            entry=entry,
-            stop=stop,
-            tp1=tp1,
-            tp2=tp2,
-            rr1=rr1,
-            rr2=rr2,
-            score=score,
-            rvol=rvol,
-            gap=gap,
-            dvol=dvol,
-            catalyst=catalyst,
-            trigger_price=trigger_price,
-            pm_high=pm_high,
-            vwap=vwap,
-            entry_type=entry_type
+    # 5. שליחת הודעת Watchlist לטלגרם
+    watchlist = wm.get_active_watchlist()
+    msg = format_watchlist(watchlist, today)
+    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    
+    # 6. שמירת התראות (alerts)
+    for c in candidates[:10]:
+        save_alert(
+            ticker=c['ticker'],
+            price=c['price'],
+            gap_pct=c['gap_pct'],
+            score=c.get('score', 0),
+            catalyst=c.get('catalyst', '')
         )
     
-    print(f"[Main] Done. {trades_taken} trades executed.")
+    print(f"[Main] Done. {added} candidates added to Watchlist.")
 
 
 if __name__ == "__main__":
-    main()
+    # קביעת מצב הרצה
+    if len(sys.argv) > 1 and sys.argv[1] == "scan":
+        main()
+    else:
+        print("Usage: python main.py scan")
