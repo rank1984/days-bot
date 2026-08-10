@@ -2,39 +2,45 @@ name: DAYS-BOT
 
 on:
   schedule:
-    - cron: '30 12 * * 1-5'   # 08:30 ET
-    - cron: '0 3 * * 1-5'     # 23:00 ET
+    - cron: '0 12 * * 1-5'   # 08:00 ET
+    - cron: '15 12 * * 1-5'  # 08:15 ET
+    - cron: '30 12 * * 1-5'  # 08:30 ET
+    - cron: '45 12 * * 1-5'  # 08:45 ET
   workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+
     env:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
+      
       - name: Install dependencies
         run: pip install -r requirements.txt
-      - name: Create data directory
-        run: mkdir -p data
-      - name: Run Morning Scan
-        if: github.event.schedule == '30 12 * * 1-5' || github.event_name == 'workflow_dispatch'
-        run: python main.py full
-      - name: Run Trade Monitor (after entry)
-        if: github.event.schedule == '30 12 * * 1-5' || github.event_name == 'workflow_dispatch'
-        run: python trade_monitor.py
-      - name: Run Evening Update
-        if: github.event.schedule == '0 3 * * 1-5'
-        run: python update_trades.py
-      - name: Upload Database
-        uses: actions/upload-artifact@v4
+      
+      - name: Restore DB from cache
+        uses: actions/cache/restore@v4
         with:
-          name: trades-db
-          path: data/*.db
+          path: data/
+          key: days-bot-db
+          restore-keys: days-bot-db
+      
+      - name: Run scan
+        run: python main.py scan
+      
+      - name: Save DB to cache
+        uses: actions/cache/save@v4
+        with:
+          path: data/
+          key: days-bot-db
