@@ -38,7 +38,7 @@ def monitor_trigger():
         
         if check_breakout(ticker, pm_high, trigger):
             print(f"[Trigger] ✅ {ticker} breakout confirmed!")
-            # עדכן סטטוס ל-READY (או EXECUTED)
+            # עדכן סטטוס ל-READY
             conn = sqlite3.connect(DB_PATH)
             conn.execute("""
                 UPDATE watchlist SET status = 'READY'
