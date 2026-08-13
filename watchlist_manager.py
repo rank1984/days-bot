@@ -1,5 +1,5 @@
 """
-Watchlist Manager – stores candidates across runs, tracks triggers
+Watchlist Manager – stores candidates across runs, tracks triggers and breakout prices
 """
 import sqlite3
 import os
@@ -28,7 +28,9 @@ class WatchlistManager:
                 added_time TEXT,
                 status TEXT DEFAULT 'WATCH',
                 hits INTEGER DEFAULT 1,
-                last_seen TEXT
+                last_seen TEXT,
+                ready_price REAL,
+                ready_time TEXT
             )
         """)
         conn.commit()
@@ -38,10 +40,7 @@ class WatchlistManager:
         price = candidate['price']
         pm_high = candidate.get('pm_high', price * 1.02)
         rvol = candidate.get('rvol', 1.0)
-        
-        # ====== תיקון: Trigger = PM High + 0.5% ======
         trigger_price = round(pm_high * 1.005, 2)
-        
         if price >= trigger_price and rvol >= 1.5:
             return 'READY'
         elif price >= pm_high * 0.97 and rvol >= 1.2:
@@ -52,17 +51,14 @@ class WatchlistManager:
     def add_to_watchlist(self, candidate: Dict[str, Any]):
         ticker = candidate['ticker']
         pm_high = candidate.get('pm_high', candidate['price'] * 1.02)
-        trigger_price = round(pm_high * 1.005, 2)  # ====== תיקון ======
-        
+        trigger_price = round(pm_high * 1.005, 2)
         conn = sqlite3.connect(DB_PATH)
-        
         cursor = conn.execute("""
             SELECT id, hits, status FROM watchlist
             WHERE ticker = ? AND status != 'EXECUTED'
             ORDER BY added_time DESC LIMIT 1
         """, (ticker,))
         row = cursor.fetchone()
-        
         if row:
             conn.execute("""
                 UPDATE watchlist SET
@@ -110,7 +106,6 @@ class WatchlistManager:
                 self._determine_status(candidate),
                 1
             ))
-        
         conn.commit()
         conn.close()
         print(f"[Watchlist] ✅ {ticker} added/updated (Trigger: ${trigger_price:.2f})")
@@ -128,3 +123,18 @@ class WatchlistManager:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
+    
+    def mark_ready(self, ticker: str, breakout_price: float):
+        """Update status to READY and record breakout price and time"""
+        conn = sqlite3.connect(DB_PATH)
+        from zoneinfo import ZoneInfo
+        et = ZoneInfo("America/New_York")
+        conn.execute("""
+            UPDATE watchlist
+            SET status = 'READY',
+                ready_price = ?,
+                ready_time = ?
+            WHERE ticker = ? AND status != 'EXECUTED'
+        """, (breakout_price, datetime.now(et).isoformat(), ticker))
+        conn.commit()
+        conn.close()
