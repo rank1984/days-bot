@@ -1,5 +1,6 @@
+#!/usr/bin/env python3
 """
-Edge Report – analyzes completed trades
+Edge Report – calculates performance metrics from completed trades
 """
 from database.db import get_all_trades
 import pandas as pd
@@ -13,16 +14,16 @@ def generate_edge_report():
     df_completed = df[df['exit_time'].notna()]
     if df_completed.empty:
         return "📊 No completed trades yet."
-    
+
     total = len(df_completed)
     wins = len(df_completed[df_completed['win'] == 1])
-    win_rate = (wins / total) * 100
-    
+    win_rate = (wins / total) * 100 if total > 0 else 0
+
     avg_win = df_completed[df_completed['win'] == 1]['pnl'].mean() if wins > 0 else 0
     avg_loss = df_completed[df_completed['win'] == 0]['pnl'].mean() if (total - wins) > 0 else 0
     profit_factor = abs(df_completed[df_completed['win'] == 1]['pnl'].sum() / df_completed[df_completed['win'] == 0]['pnl'].sum()) if (total - wins) > 0 else 0
     expectancy = (win_rate/100 * avg_win) - ((100-win_rate)/100 * abs(avg_loss))
-    
+
     report = f"""
 ═══ EDGE REPORT ═══
 Total Trades:     {total}
