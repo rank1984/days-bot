@@ -34,8 +34,26 @@ class WatchlistManager:
         conn.commit()
         conn.close()
     
+    def _determine_status(self, candidate: Dict) -> str:
+        price = candidate['price']
+        pm_high = candidate.get('pm_high', price * 1.02)
+        rvol = candidate.get('rvol', 1.0)
+        
+        # ====== תיקון: Trigger = PM High + 0.5% ======
+        trigger_price = round(pm_high * 1.005, 2)
+        
+        if price >= trigger_price and rvol >= 1.5:
+            return 'READY'
+        elif price >= pm_high * 0.97 and rvol >= 1.2:
+            return 'PREPARE'
+        else:
+            return 'WATCH'
+    
     def add_to_watchlist(self, candidate: Dict[str, Any]):
         ticker = candidate['ticker']
+        pm_high = candidate.get('pm_high', candidate['price'] * 1.02)
+        trigger_price = round(pm_high * 1.005, 2)  # ====== תיקון ======
+        
         conn = sqlite3.connect(DB_PATH)
         
         cursor = conn.execute("""
@@ -64,8 +82,8 @@ class WatchlistManager:
                 candidate['gap_pct'],
                 candidate.get('score', 0),
                 candidate.get('rvol', 0),
-                candidate.get('pm_high', candidate['price'] * 1.02),
-                candidate.get('trigger_price', candidate['price'] * 1.01),
+                pm_high,
+                trigger_price,
                 candidate.get('catalyst', ''),
                 datetime.now().isoformat(),
                 self._determine_status(candidate),
@@ -84,8 +102,8 @@ class WatchlistManager:
                 candidate['gap_pct'],
                 candidate.get('score', 0),
                 candidate.get('rvol', 0),
-                candidate.get('pm_high', candidate['price'] * 1.02),
-                candidate.get('trigger_price', candidate['price'] * 1.01),
+                pm_high,
+                trigger_price,
                 candidate.get('catalyst', ''),
                 datetime.now().isoformat(),
                 datetime.now().isoformat(),
@@ -95,19 +113,7 @@ class WatchlistManager:
         
         conn.commit()
         conn.close()
-    
-    def _determine_status(self, candidate: Dict) -> str:
-        price = candidate['price']
-        trigger = candidate.get('trigger_price', price * 1.01)
-        pm_high = candidate.get('pm_high', price * 1.02)
-        rvol = candidate.get('rvol', 1.0)
-        
-        if price >= trigger and rvol >= 1.5:
-            return 'READY'
-        elif price >= pm_high * 0.97 and rvol >= 1.2:
-            return 'PREPARE'
-        else:
-            return 'WATCH'
+        print(f"[Watchlist] ✅ {ticker} added/updated (Trigger: ${trigger_price:.2f})")
     
     def get_active_watchlist(self) -> List[Dict]:
         conn = sqlite3.connect(DB_PATH)
