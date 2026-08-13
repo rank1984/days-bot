@@ -21,6 +21,10 @@ from watchlist_manager import WatchlistManager
 from trade_manager.trade_manager import TradeManager
 from paper_trader.paper_trader import PaperTrader
 
+# Trade Constraints
+MAX_ACTIVE_TRADES = 2
+MAX_TRADES_PER_DAY = 3
+
 
 def scan_mode():
     """סריקה והוספה ל-Watchlist (ללא כניסה)"""
@@ -66,30 +70,42 @@ def scan_mode():
 
 
 def entry_mode():
-    """ביצוע PaperTrades על מועמדים ב-READY"""
+    """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלת הפוזיציות"""
+    from database.db import get_open_trades, save_trade
+
     init_db()
     wm = WatchlistManager()
     trader = PaperTrader()
-    
+
+    # בדיקת כמות עסקים פתוחות
+    open_trades = get_open_trades()
+    if len(open_trades) >= MAX_ACTIVE_TRADES:
+        print(f"[Entry] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
+        return
+
+    slots = MAX_ACTIVE_TRADES - len(open_trades)
+
     # קבל מועמדים ב-READY
-    ready = [w for w in wm.get_active_watchlist() if w.get('status') == 'READY']
+    ready = [w for w in wm.get_active_watchlist() if w.get("status") == "READY"]
     if not ready:
         print("[Entry] No READY candidates.")
         return
-    
+
     # מיון לפי Score
-    ready.sort(key=lambda x: x.get('score', 0), reverse=True)
+    ready.sort(key=lambda x: x.get("score", 0), reverse=True)
+
     executed = 0
-    
-    for candidate in ready[:3]:
-        ticker = candidate['ticker']
-        price = candidate['price']
-        print(f"[Entry] Executing PaperTrade for {ticker} @ ${price:.2f}")
-        
+    for candidate in ready[:slots]:
+        ticker = candidate["ticker"]
+        # שימוש במחיר ה-Breakout במידה וקיים, אחרת fallback למחיר המקורי
+        entry_price = candidate.get("ready_price") or candidate["price"]
+
+        print(f"[Entry] 🚀 ENTER {ticker} @ ${entry_price:.2f}")
+
         # כניסה לעסקה
-        trader.enter_trade(ticker, price)
-        
-        # סמן כ-EXECUTED
+        trader.enter_trade(ticker, entry_price)
+
+        # עדכון סטטוס ל-EXECUTED ב-Watchlist
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
             UPDATE watchlist SET status = 'EXECUTED'
@@ -98,7 +114,7 @@ def entry_mode():
         conn.commit()
         conn.close()
         executed += 1
-    
+
     print(f"[Entry] Executed {executed} trades.")
 
 
