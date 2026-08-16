@@ -1,12 +1,15 @@
 """
-Watchlist Manager – stores candidates across runs, tracks triggers and breakout prices
+Watchlist Manager – stores candidates, tracks triggers and breakout prices
 """
 import sqlite3
 import os
 from datetime import datetime
 from typing import Dict, List, Any
+from zoneinfo import ZoneInfo
 
 from database.db import DB_PATH
+
+ET = ZoneInfo("America/New_York")
 
 class WatchlistManager:
     def __init__(self):
@@ -30,7 +33,14 @@ class WatchlistManager:
                 hits INTEGER DEFAULT 1,
                 last_seen TEXT,
                 ready_price REAL,
-                ready_time TEXT
+                ready_time TEXT,
+                stop_price REAL,
+                tp1 REAL,
+                tp2 REAL,
+                rr1 REAL,
+                rr2 REAL,
+                dvol REAL,
+                vwap REAL
             )
         """)
         conn.commit()
@@ -52,6 +62,15 @@ class WatchlistManager:
         ticker = candidate['ticker']
         pm_high = candidate.get('pm_high', candidate['price'] * 1.02)
         trigger_price = round(pm_high * 1.005, 2)
+        # Default stop/tp values (can be overridden later)
+        stop_price = round(candidate['price'] * 0.95, 2)
+        tp1 = round(candidate['price'] * 1.06, 2)
+        tp2 = round(candidate['price'] * 1.12, 2)
+        rr1 = round((tp1 - candidate['price']) / (candidate['price'] - stop_price), 2) if (candidate['price'] - stop_price) > 0 else 0
+        rr2 = round((tp2 - candidate['price']) / (candidate['price'] - stop_price), 2) if (candidate['price'] - stop_price) > 0 else 0
+        dvol = candidate.get('dollar_volume', 0)
+        vwap = candidate.get('vwap_est', 0)
+
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.execute("""
             SELECT id, hits, status FROM watchlist
@@ -62,27 +81,17 @@ class WatchlistManager:
         if row:
             conn.execute("""
                 UPDATE watchlist SET
-                    price = ?,
-                    gap_pct = ?,
-                    score = ?,
-                    rvol = ?,
-                    pm_high = ?,
-                    trigger_price = ?,
-                    catalyst = ?,
-                    hits = hits + 1,
-                    last_seen = ?,
-                    status = ?
+                    price = ?, gap_pct = ?, score = ?, rvol = ?,
+                    pm_high = ?, trigger_price = ?, catalyst = ?,
+                    hits = hits + 1, last_seen = ?, status = ?,
+                    stop_price = ?, tp1 = ?, tp2 = ?, rr1 = ?, rr2 = ?,
+                    dvol = ?, vwap = ?
                 WHERE id = ?
             """, (
-                candidate['price'],
-                candidate['gap_pct'],
-                candidate.get('score', 0),
-                candidate.get('rvol', 0),
-                pm_high,
-                trigger_price,
-                candidate.get('catalyst', ''),
-                datetime.now().isoformat(),
-                self._determine_status(candidate),
+                candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', 0),
+                pm_high, trigger_price, candidate.get('catalyst', ''),
+                datetime.now().isoformat(), self._determine_status(candidate),
+                stop_price, tp1, tp2, rr1, rr2, dvol, vwap,
                 row[0]
             ))
         else:
@@ -90,21 +99,15 @@ class WatchlistManager:
                 INSERT INTO watchlist (
                     ticker, price, gap_pct, score, rvol,
                     pm_high, trigger_price, catalyst,
-                    added_time, last_seen, status, hits
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    added_time, last_seen, status, hits,
+                    stop_price, tp1, tp2, rr1, rr2, dvol, vwap
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                ticker,
-                candidate['price'],
-                candidate['gap_pct'],
-                candidate.get('score', 0),
-                candidate.get('rvol', 0),
-                pm_high,
-                trigger_price,
-                candidate.get('catalyst', ''),
-                datetime.now().isoformat(),
-                datetime.now().isoformat(),
-                self._determine_status(candidate),
-                1
+                ticker, candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', 0),
+                pm_high, trigger_price, candidate.get('catalyst', ''),
+                datetime.now().isoformat(), datetime.now().isoformat(),
+                self._determine_status(candidate), 1,
+                stop_price, tp1, tp2, rr1, rr2, dvol, vwap
             ))
         conn.commit()
         conn.close()
@@ -125,16 +128,13 @@ class WatchlistManager:
         return [dict(row) for row in rows]
     
     def mark_ready(self, ticker: str, breakout_price: float):
-        """Update status to READY and record breakout price and time"""
         conn = sqlite3.connect(DB_PATH)
-        from zoneinfo import ZoneInfo
-        et = ZoneInfo("America/New_York")
         conn.execute("""
             UPDATE watchlist
             SET status = 'READY',
                 ready_price = ?,
                 ready_time = ?
             WHERE ticker = ? AND status != 'EXECUTED'
-        """, (breakout_price, datetime.now(et).isoformat(), ticker))
+        """, (breakout_price, datetime.now(ET).isoformat(), ticker))
         conn.commit()
         conn.close()
