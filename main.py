@@ -1,6 +1,6 @@
 """
 DAYS-BOT – Main Entry Point
-Modes: scan (watchlist) | entry (execute trades) | full (legacy)
+Modes: scan (watchlist) | entry (execute trades) | ai (ai-powered analysis) | full (legacy)
 """
 import sys
 import os
@@ -20,6 +20,9 @@ from telegram_formatter import format_watchlist, format_no_candidates, send_mess
 from watchlist_manager import WatchlistManager
 from trade_manager.trade_manager import TradeManager
 from paper_trader.paper_trader import PaperTrader
+from ai_quant.parser import parse_and_validate
+from ai_quant.engine import AIQuantEngine
+from ai_quant.formatter import format_report
 
 # Trade Constraints
 MAX_ACTIVE_TRADES = 2
@@ -126,8 +129,59 @@ def entry_mode():
             conn.close()
             print(f"[Entry] ✅ {ticker} FILLED @ ${result['filled_price']:.2f}")
         else:
-            # השאר כ-READY כדי שניתן יהיה לנסות שוב
             print(f"[Entry] ⏳ {ticker} NOT FILLED")
+
+
+def ai_mode():
+    # 1. Parse
+    candidates = parse_and_validate()
+
+    if not candidates:
+        print(
+            "[AI] ❌ No valid candidates parsed."
+        )
+        return
+
+    for candidate in candidates:
+        print(
+            f"[AI] Candidate: "
+            f"{candidate['ticker']} "
+            f"${candidate['price']:.2f} "
+            f"Gap={candidate['gap_pct']:.2f}% "
+            f"DAYS={candidate['days_score']}"
+        )
+
+    # 2. Quant Engine
+    engine = AIQuantEngine()
+
+    result = engine.analyze(
+        candidates
+    )
+
+    # 3. Format
+    report = format_report(
+        result
+    )
+
+    print("\n")
+    print(report)
+
+    # 4. Telegram
+    try:
+        send_message(
+            TELEGRAM_TOKEN,
+            TELEGRAM_CHAT_ID,
+            report
+        )
+
+        print(
+            "[AI] ✅ Report sent to Telegram."
+        )
+
+    except Exception as e:
+        print(
+            f"[AI] ⚠️ Telegram error: {e}"
+        )
 
 
 def full_mode():
@@ -168,15 +222,27 @@ def full_mode():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py [scan|entry|full]")
+        print(
+            "Usage: python main.py [scan|entry|ai|full]"
+        )
         sys.exit(1)
     
     mode = sys.argv[1].lower()
+
     if mode == "scan":
         scan_mode()
+
     elif mode == "entry":
         entry_mode()
+
+    elif mode == "ai":
+        ai_mode()
+
     elif mode == "full":
         full_mode()
+
     else:
-        print(f"Unknown mode: {mode}. Use scan, entry, or full.")
+        print(
+            f"Unknown mode: {mode}. "
+            "Use scan, entry, ai, or full."
+        )
