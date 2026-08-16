@@ -24,6 +24,9 @@ from ai_quant.parser import parse_and_validate
 from ai_quant.engine import AIQuantEngine
 from ai_quant.formatter import format_report
 
+from quant_agent.quant_engine import analyze_watchlist
+from quant_agent.telegram_quant import format_quant_report
+
 # Trade Constraints
 MAX_ACTIVE_TRADES = 2
 MAX_TRADES_PER_DAY = 3
@@ -58,6 +61,38 @@ def scan_mode():
     watchlist = wm.get_active_watchlist()
     msg = format_watchlist(watchlist, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+
+    # ========================================================
+    # AI QUANT AGENT V1
+    # Layer 2 above DAYS-BOT
+    # ========================================================
+
+    try:
+
+        print("[QuantAgent] Starting Layer 2 analysis...")
+
+        quant_results = analyze_watchlist(
+            candidates[:10]
+        )
+
+        quant_msg = format_quant_report(
+            quant_results,
+            source_count=len(candidates[:10])
+        )
+
+        send_message(
+            TELEGRAM_TOKEN,
+            TELEGRAM_CHAT_ID,
+            quant_msg
+        )
+
+        print("[QuantAgent] ✅ Quant report sent.")
+
+    except Exception as e:
+
+        print(
+            f"[QuantAgent] ❌ Error: {e}"
+        )
     
     # שמירת התראות
     for c in candidates[:10]:
