@@ -262,6 +262,11 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     liquidity_score = min(100, (dollar_volume / 1_000_000) * 20 - (spread_estimate / price) * 100)
                     liquidity_score = max(0, liquidity_score)
                     
+                    if bid and ask and price > 0:
+                        spread_pct = ((ask - bid) / price) * 100
+                    else:
+                        spread_pct = 0.5
+                    
                     candidate = {
                         'ticker': symbol,
                         'price': price,
@@ -292,6 +297,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'vwap_dist': 0,
                         'vol_accel': 1.0,
                         'momentum_5m': gap_pct * 0.1,
+                        'bid': bid if bid else 0,
+                        'ask': ask if ask else 0,
+                        'spread_pct': spread_pct,
+                        'spread_estimate': spread_estimate,
                     }
                     candidates.append(candidate)
                     
