@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT Trade Monitor – updates open trades with MFE/MAE, closes on TP/Stop/Time
+DAYS-BOT Trade Monitor – updates open trades, closes on TP/Stop/Time
 """
 import yfinance as yf
 from datetime import datetime
@@ -39,8 +39,6 @@ def update_trades():
             data = yf.Ticker(ticker).history(period="1d", interval="1m")
             if data.empty:
                 continue
-
-            # Filter data after entry time
             data.index = data.index.tz_convert(None)
             entry_time_naive = entry_time.replace(tzinfo=None)
             data_after_entry = data[data.index >= entry_time_naive]
@@ -50,7 +48,6 @@ def update_trades():
             last_price = data_after_entry['Close'].iloc[-1]
             high = data_after_entry['High'].max()
             low = data_after_entry['Low'].min()
-
             mfe = ((high - entry) / entry) * 100
             mae = ((low - entry) / entry) * 100
 
@@ -59,15 +56,14 @@ def update_trades():
             pnl = None
             win = None
 
-            # Check for both TP and Stop in same candle (conservative: Stop first)
+            # Conservative: if both TP and Stop in same candle -> Stop first
             if both_tp_and_stop_hit(high, low, tp1, stop):
                 exit_reason = "STOP"
                 exit_price = stop
                 pnl = ((stop - entry) / entry) * 100
                 win = 0
-                print(f"[TradeMonitor] ⚠️ {ticker} both TP and Stop in same candle → STOP (conservative)")
-
-            # TP2 first (since if TP2 hit, TP1 also hit)
+                print(f"[TradeMonitor] ⚠️ {ticker} both TP and Stop → STOP (conservative)")
+            # TP2 first (since TP2 implies TP1)
             elif tp2 > 0 and high >= tp2:
                 exit_reason = "TP2"
                 exit_price = tp2
