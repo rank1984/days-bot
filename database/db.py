@@ -18,7 +18,6 @@ def _ensure_db():
 def init_db():
     _ensure_db_dir()
     conn = sqlite3.connect(DB_PATH)
-    
     conn.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,8 +30,6 @@ def init_db():
             UNIQUE(ticker, sent_at)
         )
     """)
-    
-    # טבלת trades – נוספו שדות Trigger
     conn.execute("""
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,21 +65,9 @@ def init_db():
             entry_type TEXT
         )
     """)
-    
     conn.commit()
     conn.close()
     print("[Database] DB Initialized and ready.")
-
-def save_alert(ticker, price, gap_pct, score, catalyst):
-    _ensure_db()
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT OR IGNORE INTO alerts (ticker, sent_at, price, gap_pct, score, catalyst)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (ticker, datetime.now().isoformat(), price, gap_pct, score, catalyst))
-    conn.commit()
-    conn.close()
-    print(f"[Database] Alert for {ticker} saved.")
 
 def save_trade(ticker, entry, stop, tp1, tp2, rr1, rr2, score, rvol, gap, dvol, catalyst,
                trigger_price=None, pm_high=None, vwap=None, entry_type='MARKET'):
@@ -117,36 +102,6 @@ def get_open_trades():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
-def update_trade_outcome(ticker: str, exit_price: float, high: float, low: float, close: float):
-    if not os.path.exists(DB_PATH):
-        return
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        SELECT id, entry_price, tp1, tp2, stop_price FROM trades
-        WHERE ticker = ? AND exit_time IS NULL
-        ORDER BY entry_time DESC LIMIT 1
-    """, (ticker,))
-    row = cursor.fetchone()
-    if not row:
-        print(f"[Database] No open trade for {ticker}")
-        conn.close()
-        return
-    trade_id, entry, tp1, tp2, stop = row
-    pnl = ((exit_price - entry) / entry) * 100 if entry else 0
-    win = 1 if pnl > 0 else 0
-    tp1_hit = 1 if high >= tp1 else 0
-    tp2_hit = 1 if high >= tp2 else 0
-    stop_hit = 1 if low <= stop else 0
-    conn.execute("""
-        UPDATE trades SET
-            exit_time = ?, exit_price = ?, high = ?, low = ?, close = ?,
-            pnl = ?, win = ?, tp1_hit = ?, tp2_hit = ?, stop_hit = ?
-        WHERE id = ?
-    """, (datetime.now().isoformat(), exit_price, high, low, close, pnl, win, tp1_hit, tp2_hit, stop_hit, trade_id))
-    conn.commit()
-    conn.close()
-    print(f"[Database] ✅ Updated {ticker}: PnL={pnl:.2f}%")
 
 def update_trade_monitor(ticker: str, current_price: float = None, high: float = None, 
                          low: float = None, mfe: float = None, mae: float = None,
@@ -208,18 +163,3 @@ def get_all_trades():
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
-
-def already_sent_today(ticker, date_str=None):
-    if not os.path.exists(DB_PATH):
-        return False
-    if date_str is None:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        SELECT id FROM alerts 
-        WHERE ticker = ? AND sent_at LIKE ?
-        LIMIT 1
-    """, (ticker, f"{date_str}%"))
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
