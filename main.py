@@ -71,13 +71,13 @@ def scan_mode():
 
 def entry_mode():
     """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלת הפוזיציות"""
-    from database.db import get_open_trades, save_trade
+    from database.db import get_open_trades
+    import sqlite3
 
     init_db()
     wm = WatchlistManager()
     trader = PaperTrader()
 
-    # בדיקת כמות עסקים פתוחות
     open_trades = get_open_trades()
     if len(open_trades) >= MAX_ACTIVE_TRADES:
         print(f"[Entry] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
@@ -85,37 +85,49 @@ def entry_mode():
 
     slots = MAX_ACTIVE_TRADES - len(open_trades)
 
-    # קבל מועמדים ב-READY
     ready = [w for w in wm.get_active_watchlist() if w.get("status") == "READY"]
     if not ready:
         print("[Entry] No READY candidates.")
         return
 
-    # מיון לפי Score
     ready.sort(key=lambda x: x.get("score", 0), reverse=True)
 
-    executed = 0
     for candidate in ready[:slots]:
         ticker = candidate["ticker"]
-        # שימוש במחיר ה-Breakout במידה וקיים, אחרת fallback למחיר המקורי
-        entry_price = candidate.get("ready_price") or candidate["price"]
+        price = candidate.get("ready_price") or candidate["price"]
 
-        print(f"[Entry] 🚀 ENTER {ticker} @ ${entry_price:.2f}")
+        result = trader.enter_trade(
+            symbol=ticker,
+            price=price,
+            stop_price=candidate.get("stop_price"),
+            tp1=candidate.get("tp1"),
+            tp2=candidate.get("tp2"),
+            rr1=candidate.get("rr1"),
+            rr2=candidate.get("rr2"),
+            score=candidate.get("score", 0),
+            rvol=candidate.get("rvol", 0),
+            gap=candidate.get("gap_pct", 0),
+            dvol=candidate.get("dvol", 0),
+            catalyst=candidate.get("catalyst", ""),
+            trigger_price=candidate.get("trigger_price"),
+            pm_high=candidate.get("pm_high"),
+            vwap=candidate.get("vwap"),
+            entry_type="LIMIT",
+            wait_for_fill=10
+        )
 
-        # כניסה לעסקה
-        trader.enter_trade(ticker, entry_price)
-
-        # עדכון סטטוס ל-EXECUTED ב-Watchlist
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""
-            UPDATE watchlist SET status = 'EXECUTED'
-            WHERE ticker = ? AND status = 'READY'
-        """, (ticker,))
-        conn.commit()
-        conn.close()
-        executed += 1
-
-    print(f"[Entry] Executed {executed} trades.")
+        if result.get("filled"):
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("""
+                UPDATE watchlist SET status = 'EXECUTED'
+                WHERE ticker = ? AND status = 'READY'
+            """, (ticker,))
+            conn.commit()
+            conn.close()
+            print(f"[Entry] ✅ {ticker} FILLED @ ${result['filled_price']:.2f}")
+        else:
+            # השאר כ-READY כדי שניתן יהיה לנסות שוב
+            print(f"[Entry] ⏳ {ticker} NOT FILLED")
 
 
 def full_mode():
