@@ -29,6 +29,13 @@ from ai_quant.parser import parse_and_validate
 from ai_quant.engine import AIQuantEngine
 from ai_quant.formatter import format_report
 
+# DEBUG: בדיקת טעינת מפתח Finnhub בעת עליית המערכת
+finnhub_key = globals().get('FINNHUB_API_KEY', os.getenv('FINNHUB_API_KEY'))
+if finnhub_key:
+    print(f"[DEBUG] FINNHUB_API_KEY Loaded: {finnhub_key[:5]}***")
+else:
+    print("[DEBUG] ⚠️ FINNHUB_API_KEY NOT FOUND in Config / Environment Variables!")
+
 # Trade Constraints
 MAX_ACTIVE_TRADES = 2
 MAX_TRADES_PER_DAY = 3
