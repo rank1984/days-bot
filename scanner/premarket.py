@@ -149,7 +149,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > price else 0
 
                     # ====== Float ======
+                    print(f"[Premarket] Calling float provider for {symbol}...")
                     float_shares = get_float_shares(symbol)
+                    print(f"[Premarket] Float for {symbol}: {float_shares}")
                     if float_shares is None:
                         float_shares = 0
 
@@ -207,9 +209,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     volume = candidate.get("volume", 0)
                     float_shares = candidate.get("float_shares", 0)
 
-                    # ----------------------------------------------------------
                     # Spread
-                    # ----------------------------------------------------------
                     bid = 0
                     ask = 0
                     if hasattr(snapshot, 'bid_price') and snapshot.bid_price:
@@ -222,9 +222,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         spread_pct = 0.0
                     candidate["spread_pct"] = spread_pct
 
-                    # ----------------------------------------------------------
                     # RVOL Score
-                    # ----------------------------------------------------------
                     if rvol >= 250:
                         rvol_score = 60
                     elif rvol >= 100:
@@ -242,9 +240,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         rvol_score = 0
 
-                    # ----------------------------------------------------------
                     # Float Turnover
-                    # ----------------------------------------------------------
                     if float_shares > 0:
                         float_turnover = volume / float_shares
                     else:
@@ -267,9 +263,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         float_turnover_score = 0
 
-                    # ----------------------------------------------------------
                     # Low Float Score
-                    # ----------------------------------------------------------
                     if float_shares <= 0:
                         low_float_score = 0
                     elif float_shares < 1_000_000:
@@ -285,9 +279,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         low_float_score = 0
 
-                    # ----------------------------------------------------------
                     # Gap Score
-                    # ----------------------------------------------------------
                     if gap >= 20:
                         gap_score = 25
                     elif gap >= 10:
@@ -301,9 +293,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         gap_score = 0
 
-                    # ----------------------------------------------------------
                     # Liquidity / Spread Score
-                    # ----------------------------------------------------------
                     if spread_pct <= 1:
                         liquidity_score = 10
                     elif spread_pct <= 2:
@@ -313,14 +303,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         liquidity_score = 0
 
-                    # ----------------------------------------------------------
                     # Catalyst Score
-                    # ----------------------------------------------------------
                     catalyst_score = candidate.get("catalyst_score", 0)
 
-                    # ----------------------------------------------------------
                     # Risk Engine
-                    # ----------------------------------------------------------
                     risk_result = analyze_dilution_risk(catalyst_text)
                     risk_score = risk_result.get("risk_score", 0)
                     dilution_risk = risk_result.get("dilution_risk", "UNKNOWN")
@@ -334,9 +320,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         risk_penalty = 0
 
-                    # ----------------------------------------------------------
                     # EVENT SCORE (max 100)
-                    # ----------------------------------------------------------
                     event_score = (
                         rvol_score
                         + float_turnover_score
@@ -347,9 +331,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     )
                     event_score = max(0, min(100, event_score - risk_penalty))
 
-                    # ----------------------------------------------------------
                     # SETUP GRADE
-                    # ----------------------------------------------------------
                     if (
                         event_score >= 85
                         and rvol >= 20
@@ -370,9 +352,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         setup_grade = "REJECT"
 
-                    # ----------------------------------------------------------
                     # Store V2 metrics
-                    # ----------------------------------------------------------
                     candidate.update({
                         "rvol_score": rvol_score,
                         "float_turnover": float_turnover,
