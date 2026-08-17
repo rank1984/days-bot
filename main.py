@@ -16,7 +16,12 @@ from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
 from database.db import init_db, save_alert, DB_PATH
-from telegram_formatter import format_watchlist, format_no_candidates, send_message
+from telegram_formatter import (
+    format_watchlist,
+    format_quant_report,
+    format_no_candidates,
+    send_message
+)
 from watchlist_manager import WatchlistManager
 from trade_manager.trade_manager import TradeManager
 from paper_trader.paper_trader import PaperTrader
@@ -24,16 +29,13 @@ from ai_quant.parser import parse_and_validate
 from ai_quant.engine import AIQuantEngine
 from ai_quant.formatter import format_report
 
-from quant_agent.quant_engine import analyze_watchlist
-from quant_agent.telegram_quant import format_quant_report
-
 # Trade Constraints
 MAX_ACTIVE_TRADES = 2
 MAX_TRADES_PER_DAY = 3
 
 
 def scan_mode():
-    """סריקה והוספה ל-Watchlist (ללא כניסה)"""
+    """סריקה, הוספה ל-Watchlist ושליחת דוחות לטלגרם"""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -63,41 +65,23 @@ def scan_mode():
     
     print(f"[Main] Added {added} candidates to Watchlist")
     
-    # שליחת Watchlist
-    watchlist = wm.get_active_watchlist()
-    msg = format_watchlist(watchlist, today)
-    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-
-    # ========================================================
-    # AI QUANT AGENT V1
-    # Layer 2 above DAYS-BOT
-    # ========================================================
-
+    # 1. שליחת דוח AI Quant Report
     try:
-        print("[QuantAgent] Starting Layer 2 analysis...")
-
-        quant_results = analyze_watchlist(
-            candidates[:10]
-        )
-
-        quant_msg = format_quant_report(
-            quant_results,
-            source_count=len(candidates[:10])
-        )
-
-        send_message(
-            TELEGRAM_TOKEN,
-            TELEGRAM_CHAT_ID,
-            quant_msg
-        )
-
-        print("[QuantAgent] ✅ Quant report sent.")
-
+        msg_quant = format_quant_report(candidates[:10], today)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg_quant)
+        print("[Main] ✅ AI Quant report sent to Telegram")
     except Exception as e:
-        print(
-            f"[QuantAgent] ❌ Error: {e}"
-        )
-    
+        print(f"[Main] ❌ Error sending Quant report: {e}")
+
+    # 2. שליחת Watchlist
+    try:
+        watchlist = wm.get_active_watchlist()
+        msg_watchlist = format_watchlist(watchlist, today)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg_watchlist)
+        print("[Main] ✅ Watchlist report sent to Telegram")
+    except Exception as e:
+        print(f"[Main] ❌ Error sending Watchlist report: {e}")
+
     # שמירת התראות
     for c in candidates[:10]:
         save_alert(
@@ -108,13 +92,12 @@ def scan_mode():
             catalyst=c.get('catalyst', '')
         )
     
-    print(f"[Main] Done. {added} candidates added.")
+    print(f"[Main] Done. {added} candidates processed.")
 
 
 def entry_mode():
     """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלת הפוזיציות ול-Event Score"""
     from database.db import get_open_trades
-    import sqlite3
 
     init_db()
     wm = WatchlistManager()
@@ -127,7 +110,6 @@ def entry_mode():
 
     slots = MAX_ACTIVE_TRADES - len(open_trades)
 
-    # בדוק Event Score מינימום וסינון סיכונים ל-READY
     min_ready_score = globals().get('MIN_READY_EVENT_SCORE', 60)
     min_ready_rvol = globals().get('MIN_READY_RVOL', 1.5)
     max_ready_spread = globals().get('MAX_READY_SPREAD', 3.0)
@@ -183,13 +165,10 @@ def entry_mode():
 
 
 def ai_mode():
-    # 1. Parse
     candidates = parse_and_validate()
 
     if not candidates:
-        print(
-            "[AI] ❌ No valid candidates parsed."
-        )
+        print("[AI] ❌ No valid candidates parsed.")
         return
 
     for candidate in candidates:
@@ -201,37 +180,18 @@ def ai_mode():
             f"DAYS={candidate['days_score']}"
         )
 
-    # 2. Quant Engine
     engine = AIQuantEngine()
-
-    result = engine.analyze(
-        candidates
-    )
-
-    # 3. Format
-    report = format_report(
-        result
-    )
+    result = engine.analyze(candidates)
+    report = format_report(result)
 
     print("\n")
     print(report)
 
-    # 4. Telegram
     try:
-        send_message(
-            TELEGRAM_TOKEN,
-            TELEGRAM_CHAT_ID,
-            report
-        )
-
-        print(
-            "[AI] ✅ Report sent to Telegram."
-        )
-
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, report)
+        print("[AI] ✅ Report sent to Telegram.")
     except Exception as e:
-        print(
-            f"[AI] ⚠️ Telegram error: {e}"
-        )
+        print(f"[AI] ⚠️ Telegram error: {e}")
 
 
 def full_mode():
@@ -249,7 +209,6 @@ def full_mode():
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
     
-    # בדיקת Trigger
     tm = TradeManager()
     for c in candidates[:5]:
         if '/' in c['ticker']:
@@ -258,7 +217,6 @@ def full_mode():
         if trigger['status'] == 'READY':
             print(f"[Main] Ready: {c['ticker']} @ ${c['price']:.2f}")
             trader.enter_trade(c['ticker'], c['price'])
-            # שמור ב-DB
             save_alert(
                 ticker=c['ticker'],
                 price=c['price'],
@@ -272,27 +230,18 @@ def full_mode():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print(
-            "Usage: python main.py [scan|entry|ai|full]"
-        )
+        print("Usage: python main.py [scan|entry|ai|full]")
         sys.exit(1)
     
     mode = sys.argv[1].lower()
 
     if mode == "scan":
         scan_mode()
-
     elif mode == "entry":
         entry_mode()
-
     elif mode == "ai":
         ai_mode()
-
     elif mode == "full":
         full_mode()
-
     else:
-        print(
-            f"Unknown mode: {mode}. "
-            "Use scan, entry, ai, or full."
-        )
+        print(f"Unknown mode: {mode}. Use scan, entry, ai, or full.")
