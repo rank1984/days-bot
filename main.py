@@ -1,5 +1,5 @@
 """
-DAYS-BOT – Main Entry Point
+DAYS-BOT V2.2 – Main Entry Point
 Modes: scan (watchlist) | entry (execute trades) | ai (ai-powered analysis) | full (legacy)
 """
 import sys
@@ -18,7 +18,7 @@ from scanner.universe import load_universe
 from database.db import init_db, save_alert, DB_PATH
 from telegram_formatter import (
     format_watchlist,
-    format_quant_report,
+    format_quant_report_v22,
     format_no_candidates,
     send_message
 )
@@ -36,18 +36,14 @@ if finnhub_key:
 else:
     print("[DEBUG] ⚠️ FINNHUB_API_KEY NOT FOUND in Config / Environment Variables!")
 
-# Trade Constraints
-MAX_ACTIVE_TRADES = 2
-MAX_TRADES_PER_DAY = 3
-
 
 def scan_mode():
-    """סריקה, הוספה ל-Watchlist ושליחת דוחות לטלגרם"""
+    """סריקה, הוספה ל-Watchlist ושליחת דוחות לטלגרם בגרסה V2.2"""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE - {today}")
-    
+    print(f"\n[Main] SCAN MODE (V2.2 FROZEN) - {today}")
+
     candidates = scan_premarket(today)
     if not candidates:
         universe = load_universe()
@@ -55,32 +51,26 @@ def scan_mode():
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found")
         return
-    
+
     added = 0
     for c in candidates[:10]:
         if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
             continue
-            
-        # הוסף Event Score ונתונים נלווים למועמד
-        c['event_score'] = c.get('event_score', 0)
-        c['setup_grade'] = c.get('setup_grade', 'UNKNOWN')
-        c['dilution_risk'] = c.get('dilution_risk', 'UNKNOWN')
-        
-        # הוסף ל-Watchlist
+
         wm.add_to_watchlist(c)
         added += 1
-    
+
     print(f"[Main] Added {added} candidates to Watchlist")
-    
-    # 1. שליחת דוח AI Quant Report
+
+    # 1. שליחת דוח V2.2 Quant Report
     try:
-        msg_quant = format_quant_report(candidates[:10], today)
+        msg_quant = format_quant_report_v22(candidates[:5], today)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg_quant)
-        print("[Main] ✅ AI Quant report sent to Telegram")
+        print("[Main] ✅ V2.2 Quant report sent to Telegram")
     except Exception as e:
         print(f"[Main] ❌ Error sending Quant report: {e}")
 
-    # 2. שליחת Watchlist
+    # 2. שליחת Watchlist סטנדרטי לגיבוי
     try:
         watchlist = wm.get_active_watchlist()
         msg_watchlist = format_watchlist(watchlist, today)
@@ -89,54 +79,87 @@ def scan_mode():
     except Exception as e:
         print(f"[Main] ❌ Error sending Watchlist report: {e}")
 
-    # שמירת התראות
+    # שמירת התראות במסד הנתונים
     for c in candidates[:10]:
         save_alert(
             ticker=c['ticker'],
             price=c['price'],
             gap_pct=c['gap_pct'],
-            score=c.get('score', 0),
+            score=c.get('event_score', 0),
             catalyst=c.get('catalyst', '')
         )
-    
+
     print(f"[Main] Done. {added} candidates processed.")
 
 
 def entry_mode():
-    """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלת הפוזיציות ול-Event Score"""
+    """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלות יומית ופוזיציות פתוחות"""
     from database.db import get_open_trades
 
     init_db()
     wm = WatchlistManager()
     trader = PaperTrader()
 
+    # ---- Check daily trade count ----
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("""
+        SELECT COUNT(*) FROM trades
+        WHERE entry_time LIKE ?
+    """, (today + '%',))
+    daily_trades = cursor.fetchone()[0]
+    conn.close()
+
+    if daily_trades >= MAX_TRADES_PER_DAY:
+        print(f"[Entry] Daily limit reached: {daily_trades} >= {MAX_TRADES_PER_DAY}")
+        return
+
+    # ---- Check active trades ----
     open_trades = get_open_trades()
     if len(open_trades) >= MAX_ACTIVE_TRADES:
         print(f"[Entry] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
         return
 
-    slots = MAX_ACTIVE_TRADES - len(open_trades)
-
-    min_ready_score = globals().get('MIN_READY_EVENT_SCORE', 60)
-    min_ready_rvol = globals().get('MIN_READY_RVOL', 1.5)
-    max_ready_spread = globals().get('MAX_READY_SPREAD', 3.0)
-
-    ready = [w for w in wm.get_active_watchlist() 
-             if w.get("status") == "READY"
-             and w.get("event_score", 0) >= min_ready_score
-             and w.get("rvol", 0) >= min_ready_rvol
-             and w.get("spread_pct", 10) <= max_ready_spread
-             and w.get("dilution_risk") != "CRITICAL"]
-             
-    if not ready:
-        print("[Entry] No READY candidates meeting Event Score criteria.")
+    slots = min(
+        MAX_ACTIVE_TRADES - len(open_trades),
+        MAX_TRADES_PER_DAY - daily_trades
+    )
+    if slots <= 0:
+        print("[Entry] No slots available")
         return
 
-    ready.sort(key=lambda x: x.get("event_score", x.get("score", 0)), reverse=True)
+    # ---- Get READY candidates ----
+    ready = [w for w in wm.get_active_watchlist()
+             if w.get("status") == "READY"
+             and w.get("event_score", 0) >= MIN_READY_EVENT_SCORE
+             and w.get("rvol", 0) >= MIN_READY_RVOL
+             and w.get("spread_pct", 10) <= MAX_READY_SPREAD
+             and w.get("dilution_risk") != "CRITICAL"
+             and w.get("gap_pct", 0) < MAX_GAP_FOR_READY  # anti-chase
+             and w.get("pm_high_dist", 999) <= PM_HIGH_DISTANCE_WATCH  # not too extended
+             ]
+
+    if not ready:
+        print("[Entry] No READY candidates meeting V2.2 execution criteria.")
+        return
+
+    ready.sort(key=lambda x: x.get("event_score", 0), reverse=True)
 
     for candidate in ready[:slots]:
         ticker = candidate["ticker"]
         price = candidate.get("ready_price") or candidate["price"]
+
+        # ---- Prevent duplicate entry ----
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.execute("""
+            SELECT id FROM trades
+            WHERE ticker = ? AND exit_time IS NULL
+        """, (ticker,))
+        if cursor.fetchone():
+            print(f"[Entry] {ticker} already has open trade. Skipping.")
+            conn.close()
+            continue
+        conn.close()
 
         result = trader.enter_trade(
             symbol=ticker,
@@ -146,7 +169,7 @@ def entry_mode():
             tp2=candidate.get("tp2"),
             rr1=candidate.get("rr1"),
             rr2=candidate.get("rr2"),
-            score=candidate.get("event_score", candidate.get("score", 0)),
+            score=candidate.get("event_score", 0),
             rvol=candidate.get("rvol", 0),
             gap=candidate.get("gap_pct", 0),
             dvol=candidate.get("dvol", 0),
@@ -168,7 +191,7 @@ def entry_mode():
             conn.close()
             print(f"[Entry] ✅ {ticker} FILLED @ ${result['filled_price']:.2f}")
         else:
-            print(f"[Entry] ⏳ {ticker} NOT FILLED")
+            print(f"[Entry] ⏳ {ticker} NOT FILLED — remains READY")
 
 
 def ai_mode():
@@ -208,14 +231,14 @@ def full_mode():
     trader = PaperTrader()
     today = datetime.now().strftime("%Y-%m-%d")
     print(f"\n[Main] FULL MODE - {today}")
-    
+
     candidates = scan_premarket(today)
     if not candidates:
         universe = load_universe()
         msg = format_no_candidates(today, len(universe) if universe else 0)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
-    
+
     tm = TradeManager()
     for c in candidates[:5]:
         if '/' in c['ticker']:
@@ -228,7 +251,7 @@ def full_mode():
                 ticker=c['ticker'],
                 price=c['price'],
                 gap_pct=c['gap_pct'],
-                score=c.get('score', 0),
+                score=c.get('event_score', 0),
                 catalyst=c.get('catalyst', '')
             )
         else:
@@ -239,7 +262,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python main.py [scan|entry|ai|full]")
         sys.exit(1)
-    
+
     mode = sys.argv[1].lower()
 
     if mode == "scan":
