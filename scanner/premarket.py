@@ -1,5 +1,5 @@
 """
-Premarket scanner for DAYS-BOT - Optimized Execution
+Premarket scanner for DAYS-BOT - Optimized Execution (V2 Engine)
 """
 import sys
 import os
@@ -17,18 +17,9 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 from utils.config import *
 from scanner.universe import load_universe
 
-try:
-    from scanner.news_scanner import score_news_quality, get_catalyst_news_score, classify_catalyst
-except ImportError:
-    def score_news_quality(news): return 0.0
-    def get_catalyst_news_score(symbol): return 0.0, "—"
-    def classify_catalyst(headlines): return {"type": "UNKNOWN", "score": 0, "headline": "", "quality": "LOW"}
-
-try:
-    from scanner.risk_analyzer import analyze_dilution_risk
-except ImportError:
-    def analyze_dilution_risk(catalyst):
-        return {'dilution_risk': 'LOW', 'risk_score': 0, 'red_flags': []}
+# יבוא המודולים החדשים כפי שביקשת
+from scanner.risk_engine import analyze_dilution_risk
+from scanner.news_scanner import classify_catalyst, get_catalyst_news_score
 
 # ====== Volume Trend Management ======
 VOLUME_TREND_FILE = os.path.join(BASE_DIR, "data", "volume_trend.json")
@@ -142,7 +133,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     
                     price = float(latest_trade.price)
-                    daily_bar = snapshot.daily_bar
+                    daily_bar = getattr(snapshot, 'daily_bar', None)
                     prev_daily_bar = getattr(snapshot, 'prev_daily_bar', None)
                     
                     if not daily_bar:
@@ -168,14 +159,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     if volume < MIN_AVG_VOLUME:
                         continue
                     stats['volume_passed'] += 1
-
-                    # ====== Spread Filter ======
-                    bid = getattr(snapshot, 'bid_price', None) or getattr(getattr(snapshot, 'latest_quote', None), 'bid_price', None)
-                    ask = getattr(snapshot, 'ask_price', None) or getattr(getattr(snapshot, 'latest_quote', None), 'ask_price', None)
-                    if bid and ask and bid > 0 and price > 0:
-                        spread_pct = ((ask - bid) / price) * 100
-                        if spread_pct > 3.0:
-                            continue
 
                     # Relative Strength Filter
                     market_change = get_market_strength()
@@ -221,15 +204,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     atr = price * 0.04
                     
                     catalyst_text = get_catalyst(symbol)
-                    news_score = score_news_quality([catalyst_text])
                     
-                    if bid and ask and price > 0:
-                        spread_pct = ((ask - bid) / price) * 100
-                    else:
-                        spread_pct = 0.5
-                    
-                    spread_estimate = (ask - bid) if (bid and ask) else (0.005 * price)
-
+                    # יצירת מילון המועמד ההתחלתי
                     candidate = {
                         'ticker': symbol,
                         'price': price,
@@ -242,137 +218,217 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'float': float_shares,
                         'dollar_volume': dollar_volume,
                         'catalyst': catalyst_text,
-                        'news_score': news_score,
                         'pm_high': pm_high,
                         'pm_high_dist': pm_high_dist,
                         'volume_trend': trend_status,
                         'relative_strength': rs_val,
-                        'atr': atr,
-                        'bid': bid if bid else 0,
-                        'ask': ask if ask else 0,
-                        'spread_pct': spread_pct,
-                        'spread_estimate': spread_estimate,
+                        'atr': atr
                     }
 
-                    # ====== EVENT SCORE CALCULATION ======
-                    # 1. RVOL Score
-                    rvol_score = 0
-                    if rvol >= 250: rvol_score = 60
-                    elif rvol >= 100: rvol_score = 50
-                    elif rvol >= 50: rvol_score = 40
-                    elif rvol >= 20: rvol_score = 30
-                    elif rvol >= 10: rvol_score = 20
-                    elif rvol >= 5: rvol_score = 10
-                    elif rvol >= 2: rvol_score = 5
-
-                    # 2. Float Turnover
-                    float_turnover = (volume / float_shares) if float_shares > 0 else None
-                    float_turnover_score = 0
-                    if float_turnover is not None:
-                        if float_turnover >= 20: float_turnover_score = 30
-                        elif float_turnover >= 10: float_turnover_score = 25
-                        elif float_turnover >= 5: float_turnover_score = 20
-                        elif float_turnover >= 3: float_turnover_score = 15
-                        elif float_turnover >= 1: float_turnover_score = 10
-                        elif float_turnover >= 0.5: float_turnover_score = 5
-
-                    # 3. Low Float Score
-                    float_score = 0
-                    if float_shares > 0:
-                        if float_shares < 1_000_000: float_score = 20
-                        elif float_shares < 3_000_000: float_score = 18
-                        elif float_shares < 5_000_000: float_score = 15
-                        elif float_shares < 10_000_000: float_score = 10
-                        elif float_shares < 20_000_000: float_score = 5
-
-                    # 4. Gap Score
-                    gap_score = 0
-                    if gap_pct >= 20: gap_score = 25
-                    elif gap_pct >= 10: gap_score = 20
-                    elif gap_pct >= 5: gap_score = 15
-                    elif gap_pct >= 3: gap_score = 10
-                    elif gap_pct >= 1: gap_score = 5
-
-                    # 5. Liquidity Score
-                    liquidity_score = 0
-                    if spread_pct <= 1: liquidity_score = 10
-                    elif spread_pct <= 2: liquidity_score = 5
-                    elif spread_pct <= 3: liquidity_score = 2
-
-                    # 6. Catalyst Score
-                    catalyst_score = 0
-                    if 'fda' in catalyst_text.lower() or 'approval' in catalyst_text.lower():
-                        catalyst_score = 5
-                    elif 'contract' in catalyst_text.lower() or 'acquisition' in catalyst_text.lower():
-                        catalyst_score = 4
-                    elif 'earnings' in catalyst_text.lower():
-                        catalyst_score = 3
+                    # ==========================================================
+                    # DAYS-BOT V2 EVENT ENGINE
+                    # ==========================================================
+                    rvol_val = candidate.get("rvol", 0.0)
+                    gap = candidate.get("gap_pct", 0.0)
+                    volume_val = candidate.get("volume", 0)
+                    float_shares_val = candidate.get("float", 0)
+                    
+                    # ----------------------------------------------------------
+                    # Spread
+                    # ----------------------------------------------------------
+                    # נסה לקבל bid/ask מה-snapshot (אם קיים)
+                    bid = 0
+                    ask = 0
+                    if hasattr(snapshot, 'bid_price') and snapshot.bid_price:
+                        bid = snapshot.bid_price
+                    if hasattr(snapshot, 'ask_price') and snapshot.ask_price:
+                        ask = snapshot.ask_price
+                    if bid and ask and price > 0:
+                        spread_pct = ((ask - bid) / price) * 100
                     else:
-                        catalyst_score = 1 if catalyst_text != '—' else 0
-
-                    # Total Event Score computation
-                    event_score = 0
-                    event_score += rvol_score
-                    if float_turnover_score > 0:
-                        event_score += float_turnover_score
+                        spread_pct = 0.0
+                    candidate["spread_pct"] = spread_pct
+                    
+                    # ----------------------------------------------------------
+                    # RVOL Score
+                    # ----------------------------------------------------------
+                    if rvol_val >= 250:
+                        rvol_score = 60
+                    elif rvol_val >= 100:
+                        rvol_score = 50
+                    elif rvol_val >= 50:
+                        rvol_score = 40
+                    elif rvol_val >= 20:
+                        rvol_score = 30
+                    elif rvol_val >= 10:
+                        rvol_score = 20
+                    elif rvol_val >= 5:
+                        rvol_score = 10
+                    elif rvol_val >= 2:
+                        rvol_score = 5
                     else:
-                        event_score += 10  # compensation for unknown float
-                    event_score += float_score
-                    event_score += gap_score
-                    event_score += liquidity_score
-                    event_score += catalyst_score
-                    event_score = min(100, max(0, event_score))
-
-                    # ====== Risk ======
+                        rvol_score = 0
+                        
+                    # ----------------------------------------------------------
+                    # Float Turnover
+                    # ----------------------------------------------------------
+                    if float_shares_val > 0:
+                        float_turnover = volume_val / float_shares_val
+                    else:
+                        float_turnover = None
+                    if float_turnover is None:
+                        float_turnover_score = 0
+                    elif float_turnover >= 20:
+                        float_turnover_score = 30
+                    elif float_turnover >= 10:
+                        float_turnover_score = 25
+                    elif float_turnover >= 5:
+                        float_turnover_score = 20
+                    elif float_turnover >= 3:
+                        float_turnover_score = 15
+                    elif float_turnover >= 1:
+                        float_turnover_score = 10
+                    elif float_turnover >= 0.5:
+                        float_turnover_score = 5
+                    else:
+                        float_turnover_score = 0
+                        
+                    # ----------------------------------------------------------
+                    # Low Float Score
+                    # ----------------------------------------------------------
+                    if float_shares_val <= 0:
+                        low_float_score = 0
+                    elif float_shares_val < 1_000_000:
+                        low_float_score = 20
+                    elif float_shares_val < 3_000_000:
+                        low_float_score = 18
+                    elif float_shares_val < 5_000_000:
+                        low_float_score = 15
+                    elif float_shares_val < 10_000_000:
+                        low_float_score = 10
+                    elif float_shares_val < 20_000_000:
+                        low_float_score = 5
+                    else:
+                        low_float_score = 0
+                        
+                    # ----------------------------------------------------------
+                    # Gap Score
+                    # ----------------------------------------------------------
+                    if gap >= 20:
+                        gap_score = 25
+                    elif gap >= 10:
+                        gap_score = 20
+                    elif gap >= 5:
+                        gap_score = 15
+                    elif gap >= 3:
+                        gap_score = 10
+                    elif gap >= 1:
+                        gap_score = 5
+                    else:
+                        gap_score = 0
+                        
+                    # ----------------------------------------------------------
+                    # Liquidity / Spread Score
+                    # ----------------------------------------------------------
+                    if spread_pct <= 1:
+                        liquidity_score = 10
+                    elif spread_pct <= 2:
+                        liquidity_score = 5
+                    elif spread_pct <= 3:
+                        liquidity_score = 2
+                    else:
+                        liquidity_score = 0
+                        
+                    # ----------------------------------------------------------
+                    # Catalyst – משתמש בפונקציה החדשה
+                    # ----------------------------------------------------------
+                    catalyst_text = candidate.get("catalyst", "—")
+                    catalyst_result = classify_catalyst([catalyst_text])
+                    catalyst_score = catalyst_result["score"]
+                    
+                    # ----------------------------------------------------------
+                    # Risk Engine
+                    # ----------------------------------------------------------
                     risk_result = analyze_dilution_risk(catalyst_text)
-                    risk_penalty = 0
-                    if risk_result['dilution_risk'] == 'LOW': risk_penalty = 0
-                    elif risk_result['dilution_risk'] == 'MEDIUM': risk_penalty = 5
-                    elif risk_result['dilution_risk'] == 'HIGH': risk_penalty = 15
-                    elif risk_result['dilution_risk'] == 'CRITICAL': risk_penalty = 30
-
-                    final_event_score = max(0, event_score - risk_penalty)
-
-                    # ====== Setup Grade ======
-                    if final_event_score >= 85 and rvol >= 20 and spread_pct <= 2 and float_shares > 0 and float_turnover is not None and float_turnover >= 3 and risk_result['dilution_risk'] != 'CRITICAL':
-                        grade = "A+"
-                    elif final_event_score >= 75 and rvol >= 10:
-                        grade = "A"
-                    elif final_event_score >= 60:
-                        grade = "B"
-                    elif final_event_score >= 45:
-                        grade = "C"
-                    elif final_event_score >= 30:
-                        grade = "WATCH"
+                    risk_score = risk_result.get("risk_score", 0)
+                    dilution_risk = risk_result.get("dilution_risk", "UNKNOWN")
+                    if dilution_risk == "CRITICAL":
+                        risk_penalty = 30
+                    elif dilution_risk == "HIGH":
+                        risk_penalty = 15
+                    elif dilution_risk == "MEDIUM":
+                        risk_penalty = 5
                     else:
-                        grade = "REJECT"
-
+                        risk_penalty = 0
+                        
+                    # ----------------------------------------------------------
+                    # EVENT SCORE (max 100)
+                    # ----------------------------------------------------------
+                    event_score = (
+                        rvol_score
+                        + float_turnover_score
+                        + low_float_score
+                        + gap_score
+                        + liquidity_score
+                        + catalyst_score
+                    )
+                    event_score = max(0, min(100, event_score - risk_penalty))
+                    
+                    # ----------------------------------------------------------
+                    # SETUP GRADE
+                    # ----------------------------------------------------------
+                    if (
+                        event_score >= 85
+                        and rvol_val >= 20
+                        and spread_pct <= 2
+                        and float_turnover is not None
+                        and float_turnover >= 3
+                        and dilution_risk != "CRITICAL"
+                    ):
+                        setup_grade = "A+"
+                    elif event_score >= 75 and rvol_val >= 10:
+                        setup_grade = "A"
+                    elif event_score >= 60:
+                        setup_grade = "B"
+                    elif event_score >= 45:
+                        setup_grade = "C"
+                    elif event_score >= 30:
+                        setup_grade = "WATCH"
+                    else:
+                        setup_grade = "REJECT"
+                        
+                    # ----------------------------------------------------------
+                    # Store V2 metrics
+                    # ----------------------------------------------------------
                     candidate.update({
-                        'rvol_score': rvol_score,
-                        'float_turnover': float_turnover,
-                        'float_turnover_score': float_turnover_score,
-                        'float_score': float_score,
-                        'gap_score': gap_score,
-                        'liquidity_score': liquidity_score,
-                        'catalyst_score': catalyst_score,
-                        'event_score': final_event_score,
-                        'setup_grade': grade,
-                        'dilution_risk': risk_result['dilution_risk'],
-                        'risk_score': risk_result['risk_score'],
-                        'red_flags': json.dumps(risk_result['red_flags']) if isinstance(risk_result['red_flags'], list) else str(risk_result['red_flags']),
-                        'float_shares': float_shares,
-                        'spread_pct': spread_pct,
-                        'score': final_event_score
+                        "rvol_score": rvol_score,
+                        "float_turnover": float_turnover,
+                        "float_turnover_score": float_turnover_score,
+                        "float_score": low_float_score,
+                        "gap_score": gap_score,
+                        "liquidity_score": liquidity_score,
+                        "catalyst_score": catalyst_score,
+                        "event_score": event_score,
+                        "score": event_score, # For sorting
+                        "setup_grade": setup_grade,
+                        "dilution_risk": dilution_risk,
+                        "risk_score": risk_score,
+                        "red_flags": risk_result.get("red_flags", []),
+                        "float_shares": float_shares_val,
+                        "spread_pct": spread_pct,
+                        "catalyst_type": catalyst_result.get("type", "UNKNOWN")
                     })
-
+                    
                     candidates.append(candidate)
                     
-                except Exception:
+                except Exception as e:
+                    # מומלץ להוסיף לוג במקרה של שגיאה במועמד ספציפי בעתיד
                     continue
         except Exception:
             continue
             
     save_volume_trend(volume_trend_data)
     
+    # מיון לפי הציון הסופי מהמנוע החדש
     candidates.sort(key=lambda x: x.get('score', 0.0), reverse=True)
     return candidates[:10]
