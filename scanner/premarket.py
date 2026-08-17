@@ -18,10 +18,17 @@ from utils.config import *
 from scanner.universe import load_universe
 
 try:
-    from scanner.news_scanner import score_news_quality, get_catalyst_news_score
+    from scanner.news_scanner import score_news_quality, get_catalyst_news_score, classify_catalyst
 except ImportError:
     def score_news_quality(news): return 0.0
     def get_catalyst_news_score(symbol): return 0.0, "—"
+    def classify_catalyst(headlines): return {"type": "UNKNOWN", "score": 0, "headline": "", "quality": "LOW"}
+
+try:
+    from scanner.risk_analyzer import analyze_dilution_risk
+except ImportError:
+    def analyze_dilution_risk(catalyst):
+        return {'dilution_risk': 'LOW', 'risk_score': 0, 'red_flags': []}
 
 # ====== Volume Trend Management ======
 VOLUME_TREND_FILE = os.path.join(BASE_DIR, "data", "volume_trend.json")
@@ -83,32 +90,6 @@ def get_catalyst(symbol: str) -> str:
         return catalyst_text if catalyst_text else "—"
     except Exception:
         return "—"
-
-def calculate_breakout_score(candidate: Dict[str, Any]) -> float:
-    score = candidate.get('score_bonus', 0) + candidate.get('float_score', 0)
-    
-    gap = candidate.get('gap_pct', 0)
-    if gap >= 5.0: score += 25
-    elif gap >= 3.0: score += 18
-    elif gap >= 1.0: score += 10
-    
-    volume = candidate.get('volume', 0)
-    if volume >= 500_000: score += 20
-    elif volume >= 200_000: score += 15
-    elif volume >= 100_000: score += 10
-    elif volume >= 50_000: score += 5
-    
-    rvol = candidate.get('rvol', 0)
-    if rvol >= 3.0: score += 20
-    elif rvol >= 2.0: score += 15
-    elif rvol >= 1.0: score += 10
-    
-    dvol = candidate.get('dollar_volume', 0)
-    if dvol >= 1_000_000: score += 20
-    elif dvol >= 500_000: score += 15
-    elif dvol >= 200_000: score += 10
-    
-    return min(100.0, max(0.0, float(score)))
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
@@ -194,7 +175,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     if bid and ask and bid > 0 and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
                         if spread_pct > 3.0:
-                            print(f"[Spread] {symbol}: spread={spread_pct:.1f}%. Skipping.")
                             continue
 
                     # Relative Strength Filter
@@ -209,29 +189,15 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         pm_high = daily_bar.high
                         
                     pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > price else 0
-                    
-                    score_bonus = 0
-                    if pm_high_dist <= 1: score_bonus = 15
-                    elif pm_high_dist <= 2: score_bonus = 10
-                    elif pm_high_dist <= 4: score_bonus = 5
-                    elif pm_high_dist <= 7: score_bonus = 0
-                    else: continue
 
-                    # Float Scoring
+                    # Float Shares Retrieval
                     float_shares = 0
                     for item in batch:
                         if item.get('symbol') == symbol:
                             float_shares = item.get('float', 0)
                             break
-                            
-                    float_score = 0
-                    if float_shares > 0:
-                        if float_shares < 15_000_000:
-                            float_score = 10
-                        elif float_shares < 30_000_000:
-                            float_score = 5
 
-                    # Volume Trend Tracking (נשמר בזיכרון)
+                    # Volume Trend Tracking
                     if symbol not in volume_trend_data:
                         volume_trend_data[symbol] = []
                     volume_trend_data[symbol].append({'time': datetime.now().isoformat(), 'volume': volume})
@@ -256,17 +222,14 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     
                     catalyst_text = get_catalyst(symbol)
                     news_score = score_news_quality([catalyst_text])
-                    momentum_score = min(100.0, max(0.0, gap_pct * 2 + rvol * 10))
-                    
-                    spread_estimate = (ask - bid) if (bid and ask) else (0.005 * price)
-                    liquidity_score = min(100, (dollar_volume / 1_000_000) * 20 - (spread_estimate / price) * 100)
-                    liquidity_score = max(0, liquidity_score)
                     
                     if bid and ask and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
                     else:
                         spread_pct = 0.5
                     
+                    spread_estimate = (ask - bid) if (bid and ask) else (0.005 * price)
+
                     candidate = {
                         'ticker': symbol,
                         'price': price,
@@ -277,54 +240,139 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'volume_ratio': volume_ratio,
                         'rvol': rvol,
                         'float': float_shares,
-                        'float_score': float_score,
                         'dollar_volume': dollar_volume,
-                        'freshness': "FRESH",
-                        'momentum_score': momentum_score,
-                        'combined': momentum_score,
                         'catalyst': catalyst_text,
                         'news_score': news_score,
                         'pm_high': pm_high,
                         'pm_high_dist': pm_high_dist,
-                        'score_bonus': score_bonus,
                         'volume_trend': trend_status,
                         'relative_strength': rs_val,
-                        'liquidity_score': liquidity_score,
                         'atr': atr,
-                        'score': 0.0,
-                        'pm_volume': volume,
-                        'pm_rvol': volume_ratio,
-                        'vwap_dist': 0,
-                        'vol_accel': 1.0,
-                        'momentum_5m': gap_pct * 0.1,
                         'bid': bid if bid else 0,
                         'ask': ask if ask else 0,
                         'spread_pct': spread_pct,
                         'spread_estimate': spread_estimate,
                     }
+
+                    # ====== EVENT SCORE CALCULATION ======
+                    # 1. RVOL Score
+                    rvol_score = 0
+                    if rvol >= 250: rvol_score = 60
+                    elif rvol >= 100: rvol_score = 50
+                    elif rvol >= 50: rvol_score = 40
+                    elif rvol >= 20: rvol_score = 30
+                    elif rvol >= 10: rvol_score = 20
+                    elif rvol >= 5: rvol_score = 10
+                    elif rvol >= 2: rvol_score = 5
+
+                    # 2. Float Turnover
+                    float_turnover = (volume / float_shares) if float_shares > 0 else None
+                    float_turnover_score = 0
+                    if float_turnover is not None:
+                        if float_turnover >= 20: float_turnover_score = 30
+                        elif float_turnover >= 10: float_turnover_score = 25
+                        elif float_turnover >= 5: float_turnover_score = 20
+                        elif float_turnover >= 3: float_turnover_score = 15
+                        elif float_turnover >= 1: float_turnover_score = 10
+                        elif float_turnover >= 0.5: float_turnover_score = 5
+
+                    # 3. Low Float Score
+                    float_score = 0
+                    if float_shares > 0:
+                        if float_shares < 1_000_000: float_score = 20
+                        elif float_shares < 3_000_000: float_score = 18
+                        elif float_shares < 5_000_000: float_score = 15
+                        elif float_shares < 10_000_000: float_score = 10
+                        elif float_shares < 20_000_000: float_score = 5
+
+                    # 4. Gap Score
+                    gap_score = 0
+                    if gap_pct >= 20: gap_score = 25
+                    elif gap_pct >= 10: gap_score = 20
+                    elif gap_pct >= 5: gap_score = 15
+                    elif gap_pct >= 3: gap_score = 10
+                    elif gap_pct >= 1: gap_score = 5
+
+                    # 5. Liquidity Score
+                    liquidity_score = 0
+                    if spread_pct <= 1: liquidity_score = 10
+                    elif spread_pct <= 2: liquidity_score = 5
+                    elif spread_pct <= 3: liquidity_score = 2
+
+                    # 6. Catalyst Score
+                    catalyst_score = 0
+                    if 'fda' in catalyst_text.lower() or 'approval' in catalyst_text.lower():
+                        catalyst_score = 5
+                    elif 'contract' in catalyst_text.lower() or 'acquisition' in catalyst_text.lower():
+                        catalyst_score = 4
+                    elif 'earnings' in catalyst_text.lower():
+                        catalyst_score = 3
+                    else:
+                        catalyst_score = 1 if catalyst_text != '—' else 0
+
+                    # Total Event Score computation
+                    event_score = 0
+                    event_score += rvol_score
+                    if float_turnover_score > 0:
+                        event_score += float_turnover_score
+                    else:
+                        event_score += 10  # compensation for unknown float
+                    event_score += float_score
+                    event_score += gap_score
+                    event_score += liquidity_score
+                    event_score += catalyst_score
+                    event_score = min(100, max(0, event_score))
+
+                    # ====== Risk ======
+                    risk_result = analyze_dilution_risk(catalyst_text)
+                    risk_penalty = 0
+                    if risk_result['dilution_risk'] == 'LOW': risk_penalty = 0
+                    elif risk_result['dilution_risk'] == 'MEDIUM': risk_penalty = 5
+                    elif risk_result['dilution_risk'] == 'HIGH': risk_penalty = 15
+                    elif risk_result['dilution_risk'] == 'CRITICAL': risk_penalty = 30
+
+                    final_event_score = max(0, event_score - risk_penalty)
+
+                    # ====== Setup Grade ======
+                    if final_event_score >= 85 and rvol >= 20 and spread_pct <= 2 and float_shares > 0 and float_turnover is not None and float_turnover >= 3 and risk_result['dilution_risk'] != 'CRITICAL':
+                        grade = "A+"
+                    elif final_event_score >= 75 and rvol >= 10:
+                        grade = "A"
+                    elif final_event_score >= 60:
+                        grade = "B"
+                    elif final_event_score >= 45:
+                        grade = "C"
+                    elif final_event_score >= 30:
+                        grade = "WATCH"
+                    else:
+                        grade = "REJECT"
+
+                    candidate.update({
+                        'rvol_score': rvol_score,
+                        'float_turnover': float_turnover,
+                        'float_turnover_score': float_turnover_score,
+                        'float_score': float_score,
+                        'gap_score': gap_score,
+                        'liquidity_score': liquidity_score,
+                        'catalyst_score': catalyst_score,
+                        'event_score': final_event_score,
+                        'setup_grade': grade,
+                        'dilution_risk': risk_result['dilution_risk'],
+                        'risk_score': risk_result['risk_score'],
+                        'red_flags': json.dumps(risk_result['red_flags']) if isinstance(risk_result['red_flags'], list) else str(risk_result['red_flags']),
+                        'float_shares': float_shares,
+                        'spread_pct': spread_pct,
+                        'score': final_event_score
+                    })
+
                     candidates.append(candidate)
                     
                 except Exception:
                     continue
-            
         except Exception:
             continue
             
-    # שמירת נתוני מגמת הנפח בסיום הסריקה במרוכז
     save_volume_trend(volume_trend_data)
     
-    print(f"\n[DEBUG] Total Universe: {stats['total']}")
-    print(f"[DEBUG] Price Passed:  {stats['price_passed']}")
-    print(f"[DEBUG] Gap Passed:    {stats['gap_passed']}")
-    print(f"[DEBUG] Volume Passed: {stats['volume_passed']}")
-    print(f"[DEBUG] Final Passed:  {stats['final_passed']}")
-    
-    scored = []
-    for c in candidates:
-        score = calculate_breakout_score(c)
-        if score >= MIN_SCORE:
-            c['score'] = score
-            scored.append(c)
-    
-    scored.sort(key=lambda x: x.get('score', 0.0), reverse=True)
-    return scored[:10]
+    candidates.sort(key=lambda x: x.get('score', 0.0), reverse=True)
+    return candidates[:10]
