@@ -1,17 +1,18 @@
 """
-News scoring module for DAYS-BOT
+News scoring module for DAYS-BOT – Real Finnhub Integration & Logging
 """
 import sys
 import os
+import re
+import requests
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import List, Dict, Tuple, Optional
 
 # הוסף את ספריית הבסיס ו-utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
-
-import re
-from typing import List, Dict, Tuple, Optional
 
 from utils.config import *
 
@@ -22,7 +23,7 @@ def classify_catalyst(headlines: list) -> dict:
     """
     if not headlines:
         return {"type": "UNKNOWN", "score": 0, "headline": "", "quality": "LOW"}
-    
+
     text = " ".join(headlines).lower()
     headline = headlines[0] if headlines else ""
 
@@ -48,37 +49,36 @@ def classify_catalyst(headlines: list) -> dict:
 def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
     """
     Scores news headlines for positive and negative sentiment.
-    
+
     Returns:
         Tuple of (positive_score, negative_score, best_catalyst)
     """
     if not headlines:
         return 0, 0, None
-    
+
     text = " ".join(headlines).lower()
     positive_score = 0
     negative_score = 0
     best_catalyst = None
     best_weight = 0
-    
-    # Check positive catalysts
-    for cat in POSITIVE_CATALYSTS:
+
+    positive_cats = getattr(sys.modules[__name__], 'POSITIVE_CATALYSTS', [])
+    for cat in positive_cats:
         if cat in text:
             weight = 1
             if weight > best_weight:
                 best_weight = weight
                 best_catalyst = cat
             positive_score += weight
-    
-    # Check negative catalysts
-    for neg in NEGATIVE_CATALYSTS:
+
+    negative_cats = getattr(sys.modules[__name__], 'NEGATIVE_CATALYSTS', [])
+    for neg in negative_cats:
         if neg in text:
             negative_score += 1
-    
-    # Normalize positive score to reasonable range
+
     positive_score = min(positive_score, 15)
     negative_score = min(negative_score, 5)
-    
+
     return positive_score, negative_score, best_catalyst
 
 
@@ -88,18 +88,18 @@ def get_catalyst_label(headlines: List[str]) -> str:
     """
     if not headlines:
         return "—"
-    
+
     cat_dict = classify_catalyst(headlines)
     if cat_dict["type"] != "MOMENTUM_ONLY" and cat_dict["type"] != "UNKNOWN":
         return cat_dict["type"]
 
     _, _, catalyst = score_news(headlines)
-    
+
     if catalyst:
         catalyst = catalyst.replace("direct offering", "offering")
         catalyst = catalyst.capitalize()
         return catalyst
-    
+
     try:
         first = headlines[0]
         if len(first) > 50:
@@ -115,5 +115,38 @@ def score_news_quality(headlines: List[str]) -> float:
 
 
 def get_catalyst_news_score(symbol: str) -> Tuple[float, str]:
-    # Placeholder or integration with news fetcher if available
+    """
+    Fetches real news headlines using Finnhub API and evaluates catalyst score.
+    """
+    finnhub_key = getattr(sys.modules[__name__], 'FINNHUB_API_KEY', os.getenv('FINNHUB_API_KEY'))
+
+    if not finnhub_key:
+        print(f"[NewsScanner] ⚠️ FINNHUB_API_KEY missing for {symbol}")
+        return 0.0, "—"
+
+    print(f"[NewsScanner] Fetching news for {symbol}...")
+    to_date = datetime.now().strftime("%Y-%m-%d")
+    from_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+
+    url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={from_date}&to={to_date}&token={finnhub_key}"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            articles = resp.json()
+            if isinstance(articles, list):
+                print(f"[NewsScanner] Found {len(articles)} articles for {symbol}")
+                headlines = [a.get('headline', '').strip() for a in articles if a.get('headline')]
+                if headlines:
+                    cat_result = classify_catalyst(headlines)
+                    cat_score = float(cat_result.get("score", 0))
+                    headline_text = headlines[0]
+                    print(f"[NewsScanner] Catalyst for {symbol}: '{headline_text}' (Score: {cat_score})")
+                    return cat_score, headline_text
+        else:
+            print(f"[NewsScanner] Finnhub API returned status code {resp.status_code} for {symbol}")
+    except Exception as e:
+        print(f"[NewsScanner] Error fetching news for {symbol}: {e}")
+
+    print(f"[NewsScanner] No valid news found for {symbol}")
     return 0.0, "—"
