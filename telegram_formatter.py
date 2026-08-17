@@ -34,6 +34,51 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
+def format_quant_report(candidates: list, date: str) -> str:
+    time_str = datetime.now(ET).strftime("%H:%M ET")
+    lines = [
+        "🔥 <b>AI SMALL-CAP QUANT</b>",
+        f"📅 {date}  |  🕐 {time_str}",
+        "━━━━━━━━━━━━━━━━━━",
+    ]
+        
+    for i, r in enumerate(candidates[:5], 1):
+        ticker = r['ticker']
+        price = r['price']
+        gap = r['gap_pct']
+        rvol = r['rvol']
+        float_shares = r.get('float_shares', 0)
+        float_turnover = r.get('float_turnover', None)
+        dvol = r.get('dvol', 0)
+        spread = r.get('spread_pct', 0)
+        catalyst = r.get('catalyst', '—')
+        risk = r.get('dilution_risk', 'UNKNOWN')
+        event_score = r.get('event_score', 0)
+        grade = r.get('setup_grade', '?')
+                
+        float_str = f"{float_shares/1_000_000:.1f}M" if float_shares > 0 else "UNKNOWN"
+        turnover_str = f"{float_turnover:.1f}x" if float_turnover is not None else "UNKNOWN"
+        dvol_str = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol/1_000:.0f}K"
+        spread_str = f"{spread:.1f}%" if spread > 0 else "?"
+                
+        lines.append("")
+        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
+        lines.append(f"   🎯 Event Score: <b>{event_score:.0f}/100</b>  Grade: <b>{grade}</b>")
+        lines.append(f"   📊 RVOL: {rvol:.1f}x  |  Float: {float_str}  |  Turnover: {turnover_str}")
+        lines.append(f"   💵 DVol: {dvol_str}  |  Spread: {spread_str}")
+        lines.append(f"   📰 Catalyst: {catalyst[:50]}")
+        lines.append(f"   ⚠️ Risk: {risk}")
+        
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "🚀 READY only if Event Score ≥ 70 & RVOL ≥ 10x",
+        "⚡ A+ = Extreme event setup (research only)",
+        "🚫 לא המלצת השקעה"
+    ]
+    return "\n".join(lines)
+
+
 def format_trade_plan(plan: Dict[str, Any]) -> str:
     """עיצוב תוכנית מסחר לטלגרם"""
     lines = []
