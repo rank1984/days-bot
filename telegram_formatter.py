@@ -1,5 +1,5 @@
 """
-Telegram formatter – HTML mode (safe) + Hebrew support
+Telegram Formatter Module for DAYS-BOT V2.2 (HTML mode + Hebrew Support)
 """
 import requests
 from datetime import datetime
@@ -10,240 +10,137 @@ ET = pytz.timezone("America/New_York")
 
 
 def send_message(token: str, chat_id: str, text: str) -> bool:
+    """שליחת הודעה לטלגרם בפורמט HTML"""
     if not token or not chat_id:
+        print("[Telegram] ⚠️ Token or Chat ID missing.")
         return False
-    
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
     try:
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
-            },
-            timeout=30
-        )
+        resp = requests.post(url, json=payload, timeout=30)
         if resp.status_code == 200:
             return True
         print(f"[Telegram] Failed. Status: {resp.status_code}, Response: {resp.text}")
         return False
     except Exception as e:
-        print(f"[Telegram] Error: {e}")
+        print(f"[Telegram] Error sending message: {e}")
         return False
 
 
-def format_trade_plan(plan: Dict[str, Any]) -> str:
-    """עיצוב תוכנית מסחר (לא בשימוש כרגע)"""
-    lines = []
-    ticker = plan.get('ticker', '???')
-    confidence = plan.get('confidence', '')
-    entry = plan.get('entry', 0.0)
-    stop = plan.get('stop', 0.0)
-    tp1 = plan.get('tp1', 0.0)
-    tp2 = plan.get('tp2', 0.0)
-    runner = plan.get('runner', False)
-    level = str(plan.get('level', 'N/A')).upper()
-    score = plan.get('score', 0)
-    rvol = plan.get('rvol', 0.0)
-
-    tp1_pct = ((tp1 / entry) - 1) * 100 if entry > 0 else 0
-    tp2_pct = ((tp2 / entry) - 1) * 100 if entry > 0 else 0
-    stop_pct = ((1 - (stop / entry)) * 100) if entry > 0 else 5.0
-
-    lines.append(f"🎯 <b>{ticker}</b>  {confidence}")
-    lines.append(f"💰 כניסה: ${entry:.2f}")
-    lines.append(f"🛑 סטופ:  ${stop:.2f}  (-{stop_pct:.0f}%)")
-    lines.append(f"🎯 TP1:   ${tp1:.2f}  (+{tp1_pct:.0f}%)")
-    lines.append(f"🎯 TP2:   ${tp2:.2f}  (+{tp2_pct:.0f}%)")
-    lines.append(f"🏃 Runner: {'כן' if runner else 'לא'}")
-    lines.append(f"📊 Level: {level}  |  Score: {score:.0f}  |  RVOL: {rvol:.1f}x")
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    return "\n".join(lines)
-
-
-def format_preopen_list(candidates: List[Dict[str, Any]], date: str, low_quality: bool = False, universe_size: int = 0) -> str:
-    """פורמט ישן – נשמר לתאימות"""
+def format_quant_report_v22(candidates: List[Dict[str, Any]], date: str) -> str:
+    """פורמט דוח קוואנט V2.2 מעודכן"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
-    
-    if not candidates:
-        return format_no_candidates(date, universe_size)
-    
     lines = [
-        "🎯 <b>DAYS-BOT - מועמדויות לפריצה</b>",
+        "🔥 <b>DAYS-BOT V2.2 — QUANT SCAN</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
     ]
-    
+
+    states = {}
+    for c in candidates:
+        st = c.get('state', 'REJECT')
+        states[st] = states.get(st, 0) + 1
+
+    lines.append(f"📊 EARLY: {states.get('EARLY', 0)} | WATCH: {states.get('WATCH', 0)} | PREPARE: {states.get('PREPARE', 0)}")
+    lines.append(f"📊 READY: {states.get('READY', 0)} | EXTENDED: {states.get('EXTENDED', 0)} | REJECTED: {states.get('REJECT', 0)}")
+    lines.append("━━━━━━━━━━━━━━━━━━")
+
     for i, r in enumerate(candidates[:5], 1):
         ticker = r.get('ticker', '???')
-        price = r.get('price', 0)
-        gap = r.get('gap_pct', 0)
-        vol = r.get('volume', 0)
-        score = r.get('score', 0)
+        price = r.get('price', 0.0)
+        gap = r.get('gap_pct', 0.0)
+        rvol = r.get('rvol', 0.0)
+        rvol_method = r.get('rvol_method', 'DAILY_FALLBACK')
+        state = r.get('state', 'UNKNOWN')
+        event_score = r.get('event_score', 0)
+        grade = r.get('grade', r.get('setup_grade', '?'))
+        risk = r.get('dilution_risk', 'UNKNOWN')
+        float_shares = r.get('float_shares') or r.get('float')
+        float_turnover = r.get('float_turnover')
+        dvol = r.get('dollar_volume', 0.0)
         catalyst = r.get('catalyst', '—')
-        rvol = r.get('rvol', 0)
-        
-        if vol >= 1_000_000:
-            vol_str = f"{vol/1_000_000:.1f}M"
-        elif vol >= 1_000:
-            vol_str = f"{vol/1_000:.0f}K"
-        else:
-            vol_str = f"{vol}"
-        
-        if gap >= 5:
-            gap_icon = "🔥"
-        elif gap >= 3:
-            gap_icon = "⚡"
-        elif gap >= 1:
-            gap_icon = "📈"
-        else:
-            gap_icon = "➡️"
-        
-        if score >= 70:
-            grade = "🚀 EXCELLENT"
-        elif score >= 50:
-            grade = "✅ GOOD"
-        elif score >= 30:
-            grade = "👀 WATCH"
-        else:
-            grade = "⛔ SKIP"
-        
+        pm_dist = r.get('pm_high_dist', 999.0)
+        spread = r.get('spread_pct', 0.0)
+
+        float_str = f"{float_shares / 1_000_000:.1f}M" if float_shares else "UNKNOWN"
+        turnover_str = f"{float_turnover:.1f}x" if float_turnover else "UNKNOWN"
+        dvol_str = f"${dvol / 1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol / 1_000:.0f}K"
+
         lines.append("")
-        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  {gap_icon} {gap:+.1f}%")
-        lines.append(f"   📊 נפח: {vol_str}  |  RVOL: {rvol:.1f}x  |  🎯 {score:.0f}/100  {grade}")
-        if catalyst and catalyst != '—':
-            lines.append(f"   📰 {catalyst[:60]}")
-    
+        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
+        lines.append(f"   🎯 Event Score: {event_score}  |  Grade: {grade}  |  Risk: {risk}")
+        lines.append(f"   📊 RVOL: {rvol:.1f}x ({rvol_method})  |  PM Dist: {pm_dist:.1f}%")
+        lines.append(f"   🏷️ Float: {float_str}  |  Turnover: {turnover_str}  |  DVol: {dvol_str}")
+        lines.append(f"   📰 Catalyst: {catalyst[:40] if catalyst != '—' else '—'}")
+        lines.append(f"   🔵 State: <b>{state}</b>  |  Spread: {spread:.1f}%")
+
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "⚡ כניסה: Gap > 1% + נפח > 50K + RVOL > 1.5",
-        "🎯 יעד: +20%  |  🛑 סטופ: -5%",
+        "⚡ READY = Trigger + RVOL + execution filters",
+        "🏆 A/A+ = setup quality only, NOT an entry signal",
+        "🚫 NO CHASE = large gaps require fresh trigger",
         "🚫 לא המלצת השקעה"
     ]
-    
     return "\n".join(lines)
 
 
 def format_watchlist(watchlist: list, date: str) -> str:
-    """פורמט רשימת מעקב (בעברית)"""
+    """פורמט תצוגה מותאם ל-Watchlist בעברית"""
     time_str = datetime.now(ET).strftime("%H:%M ET")
-    
     if not watchlist:
         return f"📋 <b>DAYS-BOT - רשימת מעקב</b>\n📅 {date}  |  🕐 {time_str}\n━━━━━━━━━━━━━━━━━━\n😴 אין מועמדויות פעילות."
-    
+
     lines = [
         "📋 <b>DAYS-BOT - רשימת מעקב</b>",
         f"📅 {date}  |  🕐 {time_str}",
         f"📊 {len(watchlist)} מועמדויות | {sum(1 for w in watchlist if w.get('status') == 'READY')} מוכנות",
         "━━━━━━━━━━━━━━━━━━",
     ]
-    
+
     for i, w in enumerate(watchlist[:10], 1):
         ticker = w.get('ticker', '???')
-        price = w.get('price', 0)
-        gap = w.get('gap_pct', 0)
-        score = w.get('score', 0)
+        price = w.get('price', 0.0)
+        gap = w.get('gap_pct', 0.0)
         status = w.get('status', 'WATCH')
-        hits = w.get('hits', 1)
-        catalyst = w.get('catalyst', '')
-        event_score = w.get('event_score', 0)
-        grade = w.get('setup_grade', '?')
-        rvol = w.get('rvol', 0)
-        float_shares = w.get('float_shares', 0)
+        score = w.get('event_score', w.get('score', 0))
+        grade = w.get('grade', w.get('setup_grade', '?'))
+        rvol = w.get('rvol', 0.0)
+        float_shares = w.get('float_shares') or w.get('float') or 0
         float_turnover = w.get('float_turnover')
         dilution_risk = w.get('dilution_risk', 'UNKNOWN')
-        
+        catalyst = w.get('catalyst', '')
+
         if status == 'READY':
             status_icon = "🟢 מוכנה"
         elif status == 'PREPARE':
             status_icon = "🟡 בהכנה"
         else:
             status_icon = "🔵 במעקב"
-        
-        if float_shares > 0:
-            float_str = f"{float_shares/1_000_000:.1f}M"
-        else:
-            float_str = "❓"
-        
-        if float_turnover is not None and float_turnover > 0:
-            turnover_str = f"{float_turnover:.1f}x"
-        else:
-            turnover_str = "❓"
-        
+
+        float_str = f"{float_shares / 1_000_000:.1f}M" if float_shares > 0 else "❓"
+        turnover_str = f"{float_turnover:.1f}x" if float_turnover else "❓"
+
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
-        lines.append(f"   🎯 ציון אירוע: {event_score:.0f}/100  |  דירוג: {grade}")
+        lines.append(f"   🎯 ציון אירוע: {score:.0f}/100  |  דירוג: {grade}")
         lines.append(f"   📊 RVOL: {rvol:.1f}x  |  Float: {float_str}  |  מחזור: {turnover_str}")
-        lines.append(f"   {status_icon}  |  סיכון: {dilution_risk}  |  הופעות: {hits}")
+        lines.append(f"   {status_icon}  |  סיכון: {dilution_risk}")
         if catalyst:
             lines.append(f"   📰 {catalyst[:50]}")
-    
+
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
         "⚡ מוכנה = Trigger + RVOL מאושר",
         "🚀 כניסה רק בפריצה עם נפח",
         "🚫 לא המלצת השקעה"
-    ]
-    return "\n".join(lines)
-
-
-def format_quant_report(candidates: list, date: str) -> str:
-    """דוח QUANT (בעברית)"""
-    time_str = datetime.now(ET).strftime("%H:%M ET")
-    lines = [
-        "🔥 <b>AI SMALL-CAP QUANT</b>",
-        f"📅 {date}  |  🕐 {time_str}",
-        "━━━━━━━━━━━━━━━━━━",
-    ]
-    
-    tradeable = [c for c in candidates if c.get('event_score', 0) >= 30]
-    rejected = [c for c in candidates if c.get('event_score', 0) < 30]
-    
-    lines.append(f"📊 נסרקו: {len(candidates)} מועמדויות")
-    lines.append(f"✅ עברו סינון: {len(tradeable)}")
-    lines.append(f"❌ נפסלו: {len(rejected)}")
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    
-    for i, r in enumerate(tradeable[:3], 1):
-        ticker = r['ticker']
-        price = r['price']
-        gap = r['gap_pct']
-        rvol = r.get('rvol', 0)
-        score = r.get('score', 0)
-        event_score = r.get('event_score', 0)
-        grade = r.get('setup_grade', '?')
-        risk = r.get('dilution_risk', 'UNKNOWN')
-        float_shares = r.get('float_shares', 0)
-        float_turnover = r.get('float_turnover')
-        dvol = r.get('dollar_volume', 0)
-        catalyst = r.get('catalyst', '—')
-        
-        float_str = f"{float_shares/1_000_000:.1f}M" if float_shares > 0 else "❓"
-        turnover_str = f"{float_turnover:.1f}x" if float_turnover else "❓"
-        dvol_str = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol/1_000:.0f}K"
-        
-        lines.append("")
-        lines.append(f"🥇 <b>{ticker}</b> — {event_score:.0f}/100")
-        lines.append(f"   דירוג: {grade}  |  סיכון: {risk}")
-        lines.append(f"   Gap: {gap:+.1f}%  |  RVOL: {rvol:.1f}x")
-        lines.append(f"   Float: {float_str}  |  מחזור: {turnover_str}")
-        lines.append(f"   DVol: {dvol_str}  |  Catalyst: {catalyst[:30]}")
-    
-    if rejected:
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("🚫 <b>נפסלו</b>")
-        for r in rejected[:5]:
-            lines.append(f"   • {r['ticker']} — Event Score: {r.get('event_score', 0):.0f}")
-    
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━",
-        "🤖 QUANT LEADER: המניה המובילה במדדי מומנטום, נזילות וסיכון",
-        "⚠️ ניתוח בלבד – לא המלצת השקעה"
     ]
     return "\n".join(lines)
 
