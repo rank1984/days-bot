@@ -22,7 +22,7 @@ def _load_cache():
         try:
             with open(CACHE_FILE, 'r') as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
     return {}
 
@@ -41,7 +41,7 @@ def get_float_from_fmp(symbol: str) -> Optional[float]:
             data = resp.json()
             if data and isinstance(data, list) and len(data) > 0:
                 return data[0].get('sharesOutstanding', 0)
-    except:
+    except Exception:
         pass
     return None
 
@@ -55,11 +55,13 @@ def get_float_from_polygon(symbol: str) -> Optional[float]:
             data = resp.json()
             if data.get('results'):
                 return data['results'].get('float_shares')
-    except:
+    except Exception:
         pass
     return None
 
 def get_float_shares(symbol: str) -> Optional[float]:
+    print(f"[FloatProvider] Fetching float for {symbol}...")
+    
     cache = _load_cache()
     now = datetime.now()
     
@@ -68,13 +70,20 @@ def get_float_shares(symbol: str) -> Optional[float]:
         if 'timestamp' in entry and 'value' in entry:
             ts = datetime.fromisoformat(entry['timestamp'])
             if (now - ts).total_seconds() < CACHE_TTL:
-                return entry['value']
-    
+                val = entry['value']
+                if val is not None and val > 0:
+                    print(f"[FloatProvider] Found float for {symbol} (cached): {val}")
+                    return val
+                else:
+                    print(f"[FloatProvider] No float found for {symbol} (cached None)")
+                    return None
+
     # Try FMP first
     val = get_float_from_fmp(symbol)
     if val is not None and val > 0:
         cache[symbol] = {'value': val, 'timestamp': now.isoformat()}
         _save_cache(cache)
+        print(f"[FloatProvider] Found float for {symbol}: {val}")
         return val
     
     # Try Polygon
@@ -82,9 +91,11 @@ def get_float_shares(symbol: str) -> Optional[float]:
     if val is not None and val > 0:
         cache[symbol] = {'value': val, 'timestamp': now.isoformat()}
         _save_cache(cache)
+        print(f"[FloatProvider] Found float for {symbol}: {val}")
         return val
     
     # Mark as unknown
     cache[symbol] = {'value': None, 'timestamp': now.isoformat()}
     _save_cache(cache)
+    print(f"[FloatProvider] No float found for {symbol}")
     return None
