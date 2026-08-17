@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 
-# הוסף את ספריית הבסיס ו-utils לנתיב
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
@@ -18,16 +17,12 @@ from utils.config import *
 
 
 def classify_catalyst(headlines: list) -> dict:
-    """
-    מחזיר סוג קטליזטור + ציון
-    """
     if not headlines:
         return {"type": "UNKNOWN", "score": 0, "headline": "", "quality": "LOW"}
 
     text = " ".join(headlines).lower()
     headline = headlines[0] if headlines else ""
 
-    # סוגי קטליזטור
     if "fda" in text or "approval" in text:
         return {"type": "FDA", "score": 10, "headline": headline, "quality": "HIGH"}
     if "phase" in text and ("trial" in text or "clinical" in text):
@@ -47,12 +42,6 @@ def classify_catalyst(headlines: list) -> dict:
 
 
 def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
-    """
-    Scores news headlines for positive and negative sentiment.
-
-    Returns:
-        Tuple of (positive_score, negative_score, best_catalyst)
-    """
     if not headlines:
         return 0, 0, None
 
@@ -83,9 +72,6 @@ def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
 
 
 def get_catalyst_label(headlines: List[str]) -> str:
-    """
-    Returns a short catalyst label for display.
-    """
     if not headlines:
         return "—"
 
@@ -115,16 +101,14 @@ def score_news_quality(headlines: List[str]) -> float:
 
 
 def get_catalyst_news_score(symbol: str) -> Tuple[float, str]:
-    """
-    Fetches real news headlines using Finnhub API and evaluates catalyst score.
-    """
+    print(f"[NewsScanner] 🔍 Fetching news for {symbol}...")
     finnhub_key = getattr(sys.modules[__name__], 'FINNHUB_API_KEY', os.getenv('FINNHUB_API_KEY'))
+    print(f"[NewsScanner] FINNHUB_API_KEY: {'✅' if finnhub_key else '❌ MISSING'}")
 
     if not finnhub_key:
         print(f"[NewsScanner] ⚠️ FINNHUB_API_KEY missing for {symbol}")
         return 0.0, "—"
 
-    print(f"[NewsScanner] Fetching news for {symbol}...")
     to_date = datetime.now().strftime("%Y-%m-%d")
     from_date = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
 
