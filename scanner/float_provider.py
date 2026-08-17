@@ -1,5 +1,5 @@
 """
-Float Provider – fetches float_shares from FMP API with caching
+Float Provider – fetches float_shares from FMP or Polygon with caching
 """
 import os
 import sys
@@ -12,7 +12,7 @@ from typing import Optional
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 
-from utils.config import FMP_API_KEY
+from utils.config import FMP_API_KEY, POLYGON_API_KEY
 
 CACHE_FILE = os.path.join(BASE_DIR, "data", "float_cache.json")
 CACHE_TTL = 86400  # 24 hours
@@ -31,14 +31,38 @@ def _save_cache(cache):
     with open(CACHE_FILE, 'w') as f:
         json.dump(cache, f)
 
+def get_float_from_fmp(symbol: str) -> Optional[float]:
+    if not FMP_API_KEY:
+        return None
+    try:
+        url = f"https://financialmodelingprep.com/api/v3/stock-shares-outstanding/{symbol}?apikey={FMP_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0].get('sharesOutstanding', 0)
+    except:
+        pass
+    return None
+
+def get_float_from_polygon(symbol: str) -> Optional[float]:
+    if not POLYGON_API_KEY:
+        return None
+    try:
+        url = f"https://api.polygon.io/v3/reference/tickers/{symbol}?apiKey={POLYGON_API_KEY}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('results'):
+                return data['results'].get('float_shares')
+    except:
+        pass
+    return None
+
 def get_float_shares(symbol: str) -> Optional[float]:
-    """
-    מחזיר float_shares עבור סימבול, או None אם לא זמין
-    """
     cache = _load_cache()
     now = datetime.now()
     
-    # בדיקת Cache
     if symbol in cache:
         entry = cache[symbol]
         if 'timestamp' in entry and 'value' in entry:
@@ -46,25 +70,21 @@ def get_float_shares(symbol: str) -> Optional[float]:
             if (now - ts).total_seconds() < CACHE_TTL:
                 return entry['value']
     
-    # אם אין FMP API Key – מחזיר None
-    if not FMP_API_KEY:
-        return None
+    # Try FMP first
+    val = get_float_from_fmp(symbol)
+    if val is not None and val > 0:
+        cache[symbol] = {'value': val, 'timestamp': now.isoformat()}
+        _save_cache(cache)
+        return val
     
-    try:
-        url = f"https://financialmodelingprep.com/api/v3/stock-shares-outstanding/{symbol}?apikey={FMP_API_KEY}"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and isinstance(data, list) and len(data) > 0:
-                float_val = data[0].get('sharesOutstanding', 0)
-                if float_val > 0:
-                    cache[symbol] = {'value': float_val, 'timestamp': now.isoformat()}
-                    _save_cache(cache)
-                    return float_val
-    except Exception as e:
-        print(f"[FloatProvider] Error fetching float for {symbol}: {e}")
+    # Try Polygon
+    val = get_float_from_polygon(symbol)
+    if val is not None and val > 0:
+        cache[symbol] = {'value': val, 'timestamp': now.isoformat()}
+        _save_cache(cache)
+        return val
     
-    # סימון כלא זמין (למנוע קריאות חוזרות)
+    # Mark as unknown
     cache[symbol] = {'value': None, 'timestamp': now.isoformat()}
     _save_cache(cache)
     return None
