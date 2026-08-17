@@ -1,16 +1,20 @@
 """
-Watchlist Manager - SQLite based watchlist for DAYS-BOT (V2 Updated)
+Watchlist Manager – stores candidates across runs, tracks triggers and breakout prices
 """
 import sqlite3
+import os
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, List, Any
+from zoneinfo import ZoneInfo
 
-DB_PATH = "watchlist.db"
+from database.db import DB_PATH
+
+ET = ZoneInfo("America/New_York")
 
 class WatchlistManager:
     def __init__(self):
         self._ensure_table()
-
+    
     def _ensure_table(self):
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
@@ -25,9 +29,11 @@ class WatchlistManager:
                 trigger_price REAL,
                 catalyst TEXT,
                 added_time TEXT,
-                last_seen TEXT,
                 status TEXT DEFAULT 'WATCH',
                 hits INTEGER DEFAULT 1,
+                last_seen TEXT,
+                ready_price REAL,
+                ready_time TEXT,
                 stop_price REAL,
                 tp1 REAL,
                 tp2 REAL,
@@ -38,7 +44,7 @@ class WatchlistManager:
             )
         """)
         
-        # ====== V2: הוסף שדות חדשים אם חסרים ======
+        # הוסף שדות V2 אם חסרים
         columns = [row[1] for row in conn.execute("PRAGMA table_info(watchlist)")]
         new_fields = {
             "rvol_score": "REAL",
@@ -60,25 +66,27 @@ class WatchlistManager:
         for field, dtype in new_fields.items():
             if field not in columns:
                 conn.execute(f"ALTER TABLE watchlist ADD COLUMN {field} {dtype}")
-                
         conn.commit()
         conn.close()
-
-    def _determine_status(self, candidate: Dict[str, Any]) -> str:
-        score = candidate.get('score', 0)
-        rvol = candidate.get('rvol', 0)
-        if score >= 70 and rvol >= 10:
+    
+    def _determine_status(self, candidate: Dict) -> str:
+        price = candidate['price']
+        pm_high = candidate.get('pm_high', price * 1.02)
+        rvol = candidate.get('rvol', 1.0)
+        trigger_price = round(pm_high * 1.005, 2)
+        if price >= trigger_price and rvol >= 1.5:
             return 'READY'
-        elif score >= 50:
+        elif price >= pm_high * 0.97 and rvol >= 1.2:
             return 'PREPARE'
-        return 'WATCH'
-
+        else:
+            return 'WATCH'
+    
     def add_to_watchlist(self, candidate: Dict[str, Any]):
         ticker = candidate['ticker']
         pm_high = candidate.get('pm_high', candidate['price'] * 1.02)
         trigger_price = round(pm_high * 1.005, 2)
         
-        # V2 fields
+        # חישוב ערכי ברירת מחדל
         stop_price = round(candidate['price'] * 0.95, 2)
         tp1 = round(candidate['price'] * 1.06, 2)
         tp2 = round(candidate['price'] * 1.12, 2)
@@ -94,25 +102,59 @@ class WatchlistManager:
         row = cursor.fetchone()
         
         if row:
+            # UPDATE – צריך להתאים את כל השדות
             conn.execute("""
                 UPDATE watchlist SET
-                    price = ?, gap_pct = ?, score = ?, rvol = ?,
-                    pm_high = ?, trigger_price = ?, catalyst = ?,
-                    hits = hits + 1, last_seen = ?, status = ?,
-                    stop_price = ?, tp1 = ?, tp2 = ?, rr1 = ?, rr2 = ?,
-                    dvol = ?, vwap = ?,
-                    rvol_score = ?, float_turnover = ?, float_turnover_score = ?,
-                    float_score = ?, gap_score = ?, liquidity_score = ?,
-                    catalyst_score = ?, event_score = ?, setup_grade = ?,
-                    dilution_risk = ?, risk_score = ?, red_flags = ?,
-                    float_shares = ?, spread_pct = ?, catalyst_type = ?
+                    price = ?,
+                    gap_pct = ?,
+                    score = ?,
+                    rvol = ?,
+                    pm_high = ?,
+                    trigger_price = ?,
+                    catalyst = ?,
+                    hits = hits + 1,
+                    last_seen = ?,
+                    status = ?,
+                    stop_price = ?,
+                    tp1 = ?,
+                    tp2 = ?,
+                    rr1 = ?,
+                    rr2 = ?,
+                    dvol = ?,
+                    vwap = ?,
+                    rvol_score = ?,
+                    float_turnover = ?,
+                    float_turnover_score = ?,
+                    float_score = ?,
+                    gap_score = ?,
+                    liquidity_score = ?,
+                    catalyst_score = ?,
+                    event_score = ?,
+                    setup_grade = ?,
+                    dilution_risk = ?,
+                    risk_score = ?,
+                    red_flags = ?,
+                    float_shares = ?,
+                    spread_pct = ?,
+                    catalyst_type = ?
                 WHERE id = ?
             """, (
-                candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', 0),
-                pm_high, trigger_price, candidate.get('catalyst', ''),
-                datetime.now().isoformat(), self._determine_status(candidate),
-                stop_price, tp1, tp2, rr1, rr2,
-                candidate.get('dollar_volume', 0), candidate.get('vwap_est', 0),
+                candidate['price'],
+                candidate['gap_pct'],
+                candidate.get('score', 0),
+                candidate.get('rvol', 0),
+                pm_high,
+                trigger_price,
+                candidate.get('catalyst', ''),
+                datetime.now().isoformat(),
+                self._determine_status(candidate),
+                stop_price,
+                tp1,
+                tp2,
+                rr1,
+                rr2,
+                candidate.get('dollar_volume', 0),
+                candidate.get('vwap_est', 0),
                 candidate.get('rvol_score', 0),
                 candidate.get('float_turnover'),
                 candidate.get('float_turnover_score', 0),
@@ -131,6 +173,7 @@ class WatchlistManager:
                 row[0]
             ))
         else:
+            # INSERT – 34 ערכים, 34 סימני שאלה
             conn.execute("""
                 INSERT INTO watchlist (
                     ticker, price, gap_pct, score, rvol,
@@ -142,14 +185,27 @@ class WatchlistManager:
                     catalyst_score, event_score, setup_grade,
                     dilution_risk, risk_score, red_flags,
                     float_shares, spread_pct, catalyst_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
-                ticker, candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', 0),
-                pm_high, trigger_price, candidate.get('catalyst', ''),
-                datetime.now().isoformat(), datetime.now().isoformat(),
-                self._determine_status(candidate), 1,
-                stop_price, tp1, tp2, rr1, rr2,
-                candidate.get('dollar_volume', 0), candidate.get('vwap_est', 0),
+                ticker,
+                candidate['price'],
+                candidate['gap_pct'],
+                candidate.get('score', 0),
+                candidate.get('rvol', 0),
+                pm_high,
+                trigger_price,
+                candidate.get('catalyst', ''),
+                datetime.now().isoformat(),
+                datetime.now().isoformat(),
+                self._determine_status(candidate),
+                1,
+                stop_price,
+                tp1,
+                tp2,
+                rr1,
+                rr2,
+                candidate.get('dollar_volume', 0),
+                candidate.get('vwap_est', 0),
                 candidate.get('rvol_score', 0),
                 candidate.get('float_turnover'),
                 candidate.get('float_turnover_score', 0),
@@ -169,11 +225,29 @@ class WatchlistManager:
         conn.commit()
         conn.close()
         print(f"[Watchlist] ✅ {ticker} added/updated (Trigger: ${trigger_price:.2f})")
-
-    def get_watchlist(self) -> List[Dict[str, Any]]:
+    
+    def get_active_watchlist(self) -> List[Dict]:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute("SELECT * FROM watchlist WHERE status != 'EXECUTED' ORDER BY score DESC")
-        rows = [dict(row) for row in cursor.fetchall()]
+        cursor = conn.execute("""
+            SELECT * FROM watchlist
+            WHERE status != 'EXECUTED'
+            AND added_time > datetime('now', '-1 day')
+            ORDER BY score DESC, hits DESC
+            LIMIT 20
+        """)
+        rows = cursor.fetchall()
         conn.close()
-        return rows
+        return [dict(row) for row in rows]
+    
+    def mark_ready(self, ticker: str, breakout_price: float):
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""
+            UPDATE watchlist
+            SET status = 'READY',
+                ready_price = ?,
+                ready_time = ?
+            WHERE ticker = ? AND status != 'EXECUTED'
+        """, (breakout_price, datetime.now(ET).isoformat(), ticker))
+        conn.commit()
+        conn.close()
