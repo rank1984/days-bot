@@ -1,5 +1,5 @@
 """
-Premarket scanner for DAYS-BOT - Optimized Execution (V2 Engine)
+Premarket scanner for DAYS-BOT - Optimized Execution (V2 Engine + Float Provider)
 """
 import sys
 import os
@@ -17,9 +17,10 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 from utils.config import *
 from scanner.universe import load_universe
 
-# יבוא המודולים החדשים כפי שביקשת
+# imports
 from scanner.risk_engine import analyze_dilution_risk
 from scanner.news_scanner import classify_catalyst, get_catalyst_news_score
+from scanner.float_provider import get_float_shares
 
 # ====== Volume Trend Management ======
 VOLUME_TREND_FILE = os.path.join(BASE_DIR, "data", "volume_trend.json")
@@ -100,19 +101,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     candidates = []
     volume_trend_data = load_volume_trend()
     
-    stats = {
-        'total': len(universe),
-        'no_snapshot': 0,
-        'no_trade': 0,
-        'no_bar': 0,
-        'price_passed': 0,
-        'gap_passed': 0,
-        'volume_passed': 0,
-        'rvol_passed': 0,
-        'dvol_passed': 0,
-        'final_passed': 0,
-    }
-    
     batch_size = 100
     for i in range(0, len(universe), batch_size):
         batch = universe[i:i+batch_size]
@@ -124,12 +112,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                 try:
                     snapshot = snapshots.get(symbol)
                     if not snapshot:
-                        stats['no_snapshot'] += 1
                         continue
                     
                     latest_trade = snapshot.latest_trade
                     if not latest_trade or not getattr(latest_trade, 'price', None):
-                        stats['no_trade'] += 1
                         continue
                     
                     price = float(latest_trade.price)
@@ -137,7 +123,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     prev_daily_bar = getattr(snapshot, 'prev_daily_bar', None)
                     
                     if not daily_bar:
-                        stats['no_bar'] += 1
                         continue
                     
                     prev_close = prev_daily_bar.close if prev_daily_bar else daily_bar.open
@@ -147,18 +132,15 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     # 1. Price Filter
                     if price < MIN_PRICE or price > MAX_PRICE:
                         continue
-                    stats['price_passed'] += 1
                     
                     # 2. Gap % Filter
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close and prev_close > 0 else 0
                     if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
                         continue
-                    stats['gap_passed'] += 1
 
                     # 3. Volume Filter
                     if volume < MIN_AVG_VOLUME:
                         continue
-                    stats['volume_passed'] += 1
 
                     # Relative Strength Filter
                     market_change = get_market_strength()
@@ -173,12 +155,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         
                     pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > price else 0
 
-                    # Float Shares Retrieval
-                    float_shares = 0
-                    for item in batch:
-                        if item.get('symbol') == symbol:
-                            float_shares = item.get('float', 0)
-                            break
+                    # ====== Float ======
+                    float_shares = get_float_shares(symbol)
+                    if float_shares is None:
+                        float_shares = 0
 
                     # Volume Trend Tracking
                     if symbol not in volume_trend_data:
@@ -194,18 +174,11 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                             trend_status = 'declining'
 
                     rvol = volume / prev_volume if prev_volume > 0 else 1.0
-                    stats['rvol_passed'] += 1
-                    
                     dollar_volume = price * volume
-                    stats['dvol_passed'] += 1
-                    stats['final_passed'] += 1
-
                     volume_ratio = volume / prev_volume if prev_volume > 0 else 1.0
                     atr = price * 0.04
-                    
                     catalyst_text = get_catalyst(symbol)
                     
-                    # יצירת מילון המועמד ההתחלתי
                     candidate = {
                         'ticker': symbol,
                         'price': price,
@@ -216,6 +189,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'volume_ratio': volume_ratio,
                         'rvol': rvol,
                         'float': float_shares,
+                        'float_shares': float_shares,
                         'dollar_volume': dollar_volume,
                         'catalyst': catalyst_text,
                         'pm_high': pm_high,
@@ -228,15 +202,14 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     # ==========================================================
                     # DAYS-BOT V2 EVENT ENGINE
                     # ==========================================================
-                    rvol_val = candidate.get("rvol", 0.0)
+                    rvol = candidate.get("rvol", 0.0)
                     gap = candidate.get("gap_pct", 0.0)
-                    volume_val = candidate.get("volume", 0)
-                    float_shares_val = candidate.get("float", 0)
-                    
+                    volume = candidate.get("volume", 0)
+                    float_shares = candidate.get("float_shares", 0)
+
                     # ----------------------------------------------------------
                     # Spread
                     # ----------------------------------------------------------
-                    # נסה לקבל bid/ask מה-snapshot (אם קיים)
                     bid = 0
                     ask = 0
                     if hasattr(snapshot, 'bid_price') and snapshot.bid_price:
@@ -248,34 +221,35 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         spread_pct = 0.0
                     candidate["spread_pct"] = spread_pct
-                    
+
                     # ----------------------------------------------------------
                     # RVOL Score
                     # ----------------------------------------------------------
-                    if rvol_val >= 250:
+                    if rvol >= 250:
                         rvol_score = 60
-                    elif rvol_val >= 100:
+                    elif rvol >= 100:
                         rvol_score = 50
-                    elif rvol_val >= 50:
+                    elif rvol >= 50:
                         rvol_score = 40
-                    elif rvol_val >= 20:
+                    elif rvol >= 20:
                         rvol_score = 30
-                    elif rvol_val >= 10:
+                    elif rvol >= 10:
                         rvol_score = 20
-                    elif rvol_val >= 5:
+                    elif rvol >= 5:
                         rvol_score = 10
-                    elif rvol_val >= 2:
+                    elif rvol >= 2:
                         rvol_score = 5
                     else:
                         rvol_score = 0
-                        
+
                     # ----------------------------------------------------------
                     # Float Turnover
                     # ----------------------------------------------------------
-                    if float_shares_val > 0:
-                        float_turnover = volume_val / float_shares_val
+                    if float_shares > 0:
+                        float_turnover = volume / float_shares
                     else:
                         float_turnover = None
+
                     if float_turnover is None:
                         float_turnover_score = 0
                     elif float_turnover >= 20:
@@ -292,25 +266,25 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         float_turnover_score = 5
                     else:
                         float_turnover_score = 0
-                        
+
                     # ----------------------------------------------------------
                     # Low Float Score
                     # ----------------------------------------------------------
-                    if float_shares_val <= 0:
+                    if float_shares <= 0:
                         low_float_score = 0
-                    elif float_shares_val < 1_000_000:
+                    elif float_shares < 1_000_000:
                         low_float_score = 20
-                    elif float_shares_val < 3_000_000:
+                    elif float_shares < 3_000_000:
                         low_float_score = 18
-                    elif float_shares_val < 5_000_000:
+                    elif float_shares < 5_000_000:
                         low_float_score = 15
-                    elif float_shares_val < 10_000_000:
+                    elif float_shares < 10_000_000:
                         low_float_score = 10
-                    elif float_shares_val < 20_000_000:
+                    elif float_shares < 20_000_000:
                         low_float_score = 5
                     else:
                         low_float_score = 0
-                        
+
                     # ----------------------------------------------------------
                     # Gap Score
                     # ----------------------------------------------------------
@@ -326,7 +300,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         gap_score = 5
                     else:
                         gap_score = 0
-                        
+
                     # ----------------------------------------------------------
                     # Liquidity / Spread Score
                     # ----------------------------------------------------------
@@ -338,20 +312,21 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         liquidity_score = 2
                     else:
                         liquidity_score = 0
-                        
+
                     # ----------------------------------------------------------
-                    # Catalyst – משתמש בפונקציה החדשה
+                    # Catalyst
                     # ----------------------------------------------------------
                     catalyst_text = candidate.get("catalyst", "—")
                     catalyst_result = classify_catalyst([catalyst_text])
                     catalyst_score = catalyst_result["score"]
-                    
+
                     # ----------------------------------------------------------
                     # Risk Engine
                     # ----------------------------------------------------------
                     risk_result = analyze_dilution_risk(catalyst_text)
                     risk_score = risk_result.get("risk_score", 0)
                     dilution_risk = risk_result.get("dilution_risk", "UNKNOWN")
+
                     if dilution_risk == "CRITICAL":
                         risk_penalty = 30
                     elif dilution_risk == "HIGH":
@@ -360,7 +335,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         risk_penalty = 5
                     else:
                         risk_penalty = 0
-                        
+
                     # ----------------------------------------------------------
                     # EVENT SCORE (max 100)
                     # ----------------------------------------------------------
@@ -373,20 +348,20 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         + catalyst_score
                     )
                     event_score = max(0, min(100, event_score - risk_penalty))
-                    
+
                     # ----------------------------------------------------------
                     # SETUP GRADE
                     # ----------------------------------------------------------
                     if (
                         event_score >= 85
-                        and rvol_val >= 20
+                        and rvol >= 20
                         and spread_pct <= 2
                         and float_turnover is not None
                         and float_turnover >= 3
                         and dilution_risk != "CRITICAL"
                     ):
                         setup_grade = "A+"
-                    elif event_score >= 75 and rvol_val >= 10:
+                    elif event_score >= 75 and rvol >= 10:
                         setup_grade = "A"
                     elif event_score >= 60:
                         setup_grade = "B"
@@ -396,7 +371,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         setup_grade = "WATCH"
                     else:
                         setup_grade = "REJECT"
-                        
+
                     # ----------------------------------------------------------
                     # Store V2 metrics
                     # ----------------------------------------------------------
@@ -409,26 +384,23 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         "liquidity_score": liquidity_score,
                         "catalyst_score": catalyst_score,
                         "event_score": event_score,
-                        "score": event_score, # For sorting
+                        "score": event_score,
                         "setup_grade": setup_grade,
                         "dilution_risk": dilution_risk,
                         "risk_score": risk_score,
                         "red_flags": risk_result.get("red_flags", []),
-                        "float_shares": float_shares_val,
+                        "float_shares": float_shares,
                         "spread_pct": spread_pct,
-                        "catalyst_type": catalyst_result.get("type", "UNKNOWN")
+                        "catalyst_type": catalyst_result.get("type", "UNKNOWN"),
                     })
-                    
+
                     candidates.append(candidate)
                     
-                except Exception as e:
-                    # מומלץ להוסיף לוג במקרה של שגיאה במועמד ספציפי בעתיד
+                except Exception:
                     continue
         except Exception:
             continue
             
     save_volume_trend(volume_trend_data)
-    
-    # מיון לפי הציון הסופי מהמנוע החדש
     candidates.sort(key=lambda x: x.get('score', 0.0), reverse=True)
     return candidates[:10]
