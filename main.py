@@ -51,6 +51,12 @@ def scan_mode():
     for c in candidates[:10]:
         if '/' in c['ticker'] or 'USDC' in c['ticker'] or 'USDT' in c['ticker']:
             continue
+            
+        # הוסף Event Score ונתונים נלווים למועמד
+        c['event_score'] = c.get('event_score', 0)
+        c['setup_grade'] = c.get('setup_grade', 'UNKNOWN')
+        c['dilution_risk'] = c.get('dilution_risk', 'UNKNOWN')
+        
         # הוסף ל-Watchlist
         wm.add_to_watchlist(c)
         added += 1
@@ -68,7 +74,6 @@ def scan_mode():
     # ========================================================
 
     try:
-
         print("[QuantAgent] Starting Layer 2 analysis...")
 
         quant_results = analyze_watchlist(
@@ -89,7 +94,6 @@ def scan_mode():
         print("[QuantAgent] ✅ Quant report sent.")
 
     except Exception as e:
-
         print(
             f"[QuantAgent] ❌ Error: {e}"
         )
@@ -108,7 +112,7 @@ def scan_mode():
 
 
 def entry_mode():
-    """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלת הפוזיציות"""
+    """ביצוע PaperTrades על מועמדים ב-READY בהתאם למגבלת הפוזיציות ול-Event Score"""
     from database.db import get_open_trades
     import sqlite3
 
@@ -123,12 +127,23 @@ def entry_mode():
 
     slots = MAX_ACTIVE_TRADES - len(open_trades)
 
-    ready = [w for w in wm.get_active_watchlist() if w.get("status") == "READY"]
+    # בדוק Event Score מינימום וסינון סיכונים ל-READY
+    min_ready_score = globals().get('MIN_READY_EVENT_SCORE', 60)
+    min_ready_rvol = globals().get('MIN_READY_RVOL', 1.5)
+    max_ready_spread = globals().get('MAX_READY_SPREAD', 3.0)
+
+    ready = [w for w in wm.get_active_watchlist() 
+             if w.get("status") == "READY"
+             and w.get("event_score", 0) >= min_ready_score
+             and w.get("rvol", 0) >= min_ready_rvol
+             and w.get("spread_pct", 10) <= max_ready_spread
+             and w.get("dilution_risk") != "CRITICAL"]
+             
     if not ready:
-        print("[Entry] No READY candidates.")
+        print("[Entry] No READY candidates meeting Event Score criteria.")
         return
 
-    ready.sort(key=lambda x: x.get("score", 0), reverse=True)
+    ready.sort(key=lambda x: x.get("event_score", x.get("score", 0)), reverse=True)
 
     for candidate in ready[:slots]:
         ticker = candidate["ticker"]
@@ -142,7 +157,7 @@ def entry_mode():
             tp2=candidate.get("tp2"),
             rr1=candidate.get("rr1"),
             rr2=candidate.get("rr2"),
-            score=candidate.get("score", 0),
+            score=candidate.get("event_score", candidate.get("score", 0)),
             rvol=candidate.get("rvol", 0),
             gap=candidate.get("gap_pct", 0),
             dvol=candidate.get("dvol", 0),
