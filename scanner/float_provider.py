@@ -60,11 +60,13 @@ def get_float_from_polygon(symbol: str) -> Optional[float]:
     return None
 
 def get_float_shares(symbol: str) -> Optional[float]:
-    print(f"[FloatProvider] Fetching float for {symbol}...")
-    
+    print(f"[FloatProvider] 🔍 Trying {symbol}...")
+    print(f"[FloatProvider] FMP_API_KEY: {'✅' if FMP_API_KEY else '❌ MISSING'}")
+    print(f"[FloatProvider] POLYGON_API_KEY: {'✅' if POLYGON_API_KEY else '❌ MISSING'}")
+
     cache = _load_cache()
     now = datetime.now()
-    
+
     if symbol in cache:
         entry = cache[symbol]
         if 'timestamp' in entry and 'value' in entry:
@@ -85,7 +87,7 @@ def get_float_shares(symbol: str) -> Optional[float]:
         _save_cache(cache)
         print(f"[FloatProvider] Found float for {symbol}: {val}")
         return val
-    
+
     # Try Polygon
     val = get_float_from_polygon(symbol)
     if val is not None and val > 0:
@@ -93,7 +95,7 @@ def get_float_shares(symbol: str) -> Optional[float]:
         _save_cache(cache)
         print(f"[FloatProvider] Found float for {symbol}: {val}")
         return val
-    
+
     # Mark as unknown
     cache[symbol] = {'value': None, 'timestamp': now.isoformat()}
     _save_cache(cache)
