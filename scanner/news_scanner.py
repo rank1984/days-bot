@@ -3,7 +3,6 @@ News scoring module for DAYS-BOT – Real Finnhub Integration & Logging
 """
 import sys
 import os
-import re
 import requests
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,10 +12,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
 
-from utils.config import *
+from utils.config import FINNHUB_API_KEY, POSITIVE_CATALYSTS, NEGATIVE_CATALYSTS
 
 
-def classify_catalyst(headlines: list) -> dict:
+def classify_catalyst(headlines: List[str]) -> Dict[str, Any]:
+    """סיווג סוג הקטליזטור מתוך כותרות החדשות"""
     if not headlines:
         return {"type": "UNKNOWN", "score": 0, "headline": "", "quality": "LOW"}
 
@@ -42,6 +42,7 @@ def classify_catalyst(headlines: list) -> dict:
 
 
 def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
+    """חישוב מאזן חיובי/שלילי של החדשות"""
     if not headlines:
         return 0, 0, None
 
@@ -51,7 +52,7 @@ def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
     best_catalyst = None
     best_weight = 0
 
-    positive_cats = getattr(sys.modules[__name__], 'POSITIVE_CATALYSTS', [])
+    positive_cats = POSITIVE_CATALYSTS if 'POSITIVE_CATALYSTS' in globals() else []
     for cat in positive_cats:
         if cat in text:
             weight = 1
@@ -60,7 +61,7 @@ def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
                 best_catalyst = cat
             positive_score += weight
 
-    negative_cats = getattr(sys.modules[__name__], 'NEGATIVE_CATALYSTS', [])
+    negative_cats = NEGATIVE_CATALYSTS if 'NEGATIVE_CATALYSTS' in globals() else []
     for neg in negative_cats:
         if neg in text:
             negative_score += 1
@@ -72,37 +73,37 @@ def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
 
 
 def get_catalyst_label(headlines: List[str]) -> str:
+    """הפקת תווית קטליזטור לתצוגה"""
     if not headlines:
         return "—"
 
     cat_dict = classify_catalyst(headlines)
-    if cat_dict["type"] != "MOMENTUM_ONLY" and cat_dict["type"] != "UNKNOWN":
+    if cat_dict["type"] not in ["MOMENTUM_ONLY", "UNKNOWN"]:
         return cat_dict["type"]
 
     _, _, catalyst = score_news(headlines)
 
     if catalyst:
         catalyst = catalyst.replace("direct offering", "offering")
-        catalyst = catalyst.capitalize()
-        return catalyst
+        return catalyst.capitalize()
 
     try:
         first = headlines[0]
-        if len(first) > 50:
-            first = first[:50] + "..."
-        return first
+        return first[:50] + "..." if len(first) > 50 else first
     except Exception:
         return "—"
 
 
 def score_news_quality(headlines: List[str]) -> float:
+    """החזרת ציון איכות הקטליזטור"""
     cat_dict = classify_catalyst(headlines)
     return float(cat_dict.get("score", 0))
 
 
 def get_catalyst_news_score(symbol: str) -> Tuple[float, str]:
+    """שליפת חדשות עבור מניה מ-Finnhub וסיווג הציון"""
     print(f"[NewsScanner] 🔍 Fetching news for {symbol}...")
-    finnhub_key = getattr(sys.modules[__name__], 'FINNHUB_API_KEY', os.getenv('FINNHUB_API_KEY'))
+    finnhub_key = FINNHUB_API_KEY or os.getenv('FINNHUB_API_KEY')
     print(f"[NewsScanner] FINNHUB_API_KEY: {'✅' if finnhub_key else '❌ MISSING'}")
 
     if not finnhub_key:
@@ -128,7 +129,7 @@ def get_catalyst_news_score(symbol: str) -> Tuple[float, str]:
                     print(f"[NewsScanner] Catalyst for {symbol}: '{headline_text}' (Score: {cat_score})")
                     return cat_score, headline_text
         else:
-            print(f"[NewsScanner] Finnhub API returned status code {resp.status_code} for {symbol}")
+            print(f"[NewsScanner] Finnhub API status {resp.status_code} for {symbol}")
     except Exception as e:
         print(f"[NewsScanner] Error fetching news for {symbol}: {e}")
 
