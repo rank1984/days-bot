@@ -1,78 +1,119 @@
 """
-News scanner using Finnhub API for DAYS-BOT
-Calculates catalyst impact scores and keywords for breakout tracking.
+News scoring module for DAYS-BOT
 """
-import requests
-from datetime import datetime, timedelta
-from typing import List, Dict, Any, Tuple
+import sys
+import os
+from pathlib import Path
 
-from utils.config import FINNHUB_API_KEY
+# הוסף את ספריית הבסיס ו-utils לנתיב
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
-def score_news_quality(headlines):
+import re
+from typing import List, Dict, Tuple, Optional
+
+from utils.config import *
+
+
+def classify_catalyst(headlines: list) -> dict:
+    """
+    מחזיר סוג קטליזטור + ציון
+    """
     if not headlines:
-        return 2  # ברירת מחדל
+        return {"type": "UNKNOWN", "score": 0, "headline": "", "quality": "LOW"}
+    
     text = " ".join(headlines).lower()
-    if 'fda' in text or 'approval' in text:
-        return 10
-    if 'contract' in text or 'agreement' in text:
-        return 7
-    if 'earnings' in text or 'revenue' in text:
-        return 5
-    if 'partnership' in text or 'collaboration' in text:
-        return 4
-    return 2
+    headline = headlines[0] if headlines else ""
 
-class NewsScanner:
-    def __init__(self, api_key: str = FINNHUB_API_KEY):
-        self.api_key = api_key
-        self.base_url = "https://finnhub.io/api/v1"
+    # סוגי קטליזטור
+    if "fda" in text or "approval" in text:
+        return {"type": "FDA", "score": 10, "headline": headline, "quality": "HIGH"}
+    if "phase" in text and ("trial" in text or "clinical" in text):
+        return {"type": "CLINICAL", "score": 7, "headline": headline, "quality": "HIGH"}
+    if "earnings" in text or "revenue" in text:
+        return {"type": "EARNINGS", "score": 6, "headline": headline, "quality": "MEDIUM"}
+    if "acquisition" in text or "merger" in text:
+        return {"type": "M&A", "score": 8, "headline": headline, "quality": "HIGH"}
+    if "contract" in text or "agreement" in text:
+        return {"type": "CONTRACT", "score": 5, "headline": headline, "quality": "MEDIUM"}
+    if "bitcoin" in text or "crypto" in text:
+        return {"type": "CRYPTO_TREASURY", "score": 7, "headline": headline, "quality": "HIGH"}
+    if "pipe" in text or "atm" in text or "offering" in text:
+        return {"type": "CAPITAL_STRUCTURE", "score": 2, "headline": headline, "quality": "LOW"}
+
+    return {"type": "MOMENTUM_ONLY", "score": 1, "headline": headline, "quality": "LOW"}
+
+
+def score_news(headlines: List[str]) -> Tuple[int, int, Optional[str]]:
+    """
+    Scores news headlines for positive and negative sentiment.
     
-    def get_news(self, symbol: str) -> List[Dict[str, Any]]:
-        if not self.api_key:
-            print("[NewsScanner] ⚠️ Finnhub API Key is missing.")
-            return []
-        
-        url = f"{self.base_url}/company-news"
-        params = {
-            "symbol": symbol,
-            "token": self.api_key,
-            "from": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
-            "to": datetime.now().strftime("%Y-%m-%d"),
-        }
-        
-        try:
-            resp = requests.get(url, params=params, timeout=8)
-            if resp.status_code != 200:
-                return []
-            data = resp.json()
-            return data[:5]
-        except Exception as e:
-            print(f"[NewsScanner] Error fetching news for {symbol}: {e}")
-            return []
+    Returns:
+        Tuple of (positive_score, negative_score, best_catalyst)
+    """
+    if not headlines:
+        return 0, 0, None
     
-    def get_catalyst_news_score(self, symbol: str) -> Tuple[float, str]:
-        news = self.get_news(symbol)
-        if not news:
-            return 0.0, "—"
-        
-        headlines_text = " ".join([article.get('headline', '') for article in news]).lower()
-        score = 0.0
-        catalyst = "—"
-        
-        if 'fda' in headlines_text or 'approval' in headlines_text:
-            score += 10.0
-            catalyst = "FDA Approval"
-        if 'acquisition' in headlines_text or 'merger' in headlines_text:
-            score += 8.0
-            catalyst = "M&A"
-        if 'earnings' in headlines_text or 'revenue' in headlines_text or 'eps' in headlines_text:
-            score += 6.0
-            catalyst = "Earnings"
-        if 'contract' in headlines_text or 'partnership' in headlines_text or 'deal' in headlines_text:
-            score += 5.0
-            catalyst = "Contract/Partnership"
-            
-        if score == 0.0 and news:
-            catalyst = news[0].get('headline', '—')[:45] + "..."
-            
-        return min(score, 15.0), catalyst
+    text = " ".join(headlines).lower()
+    positive_score = 0
+    negative_score = 0
+    best_catalyst = None
+    best_weight = 0
+    
+    # Check positive catalysts
+    for cat in POSITIVE_CATALYSTS:
+        if cat in text:
+            weight = 1
+            if weight > best_weight:
+                best_weight = weight
+                best_catalyst = cat
+            positive_score += weight
+    
+    # Check negative catalysts
+    for neg in NEGATIVE_CATALYSTS:
+        if neg in text:
+            negative_score += 1
+    
+    # Normalize positive score to reasonable range
+    positive_score = min(positive_score, 15)
+    negative_score = min(negative_score, 5)
+    
+    return positive_score, negative_score, best_catalyst
+
+
+def get_catalyst_label(headlines: List[str]) -> str:
+    """
+    Returns a short catalyst label for display.
+    """
+    if not headlines:
+        return "—"
+    
+    cat_dict = classify_catalyst(headlines)
+    if cat_dict["type"] != "MOMENTUM_ONLY" and cat_dict["type"] != "UNKNOWN":
+        return cat_dict["type"]
+
+    _, _, catalyst = score_news(headlines)
+    
+    if catalyst:
+        catalyst = catalyst.replace("direct offering", "offering")
+        catalyst = catalyst.capitalize()
+        return catalyst
+    
+    try:
+        first = headlines[0]
+        if len(first) > 50:
+            first = first[:50] + "..."
+        return first
+    except Exception:
+        return "—"
+
+
+def score_news_quality(headlines: List[str]) -> float:
+    cat_dict = classify_catalyst(headlines)
+    return float(cat_dict.get("score", 0))
+
+
+def get_catalyst_news_score(symbol: str) -> Tuple[float, str]:
+    # Placeholder or integration with news fetcher if available
+    return 0.0, "—"
