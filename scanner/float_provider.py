@@ -2,6 +2,7 @@
 Float Provider – fetches float_shares from FMP API with caching
 """
 import os
+import sys
 import json
 import requests
 from datetime import datetime, timedelta
@@ -10,6 +11,7 @@ from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
+
 from utils.config import FMP_API_KEY
 
 CACHE_FILE = os.path.join(BASE_DIR, "data", "float_cache.json")
@@ -54,7 +56,6 @@ def get_float_shares(symbol: str) -> Optional[float]:
         if resp.status_code == 200:
             data = resp.json()
             if data and isinstance(data, list) and len(data) > 0:
-                # FMP מחזיר list של {symbol, date, sharesOutstanding}
                 float_val = data[0].get('sharesOutstanding', 0)
                 if float_val > 0:
                     cache[symbol] = {'value': float_val, 'timestamp': now.isoformat()}
