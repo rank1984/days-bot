@@ -5,19 +5,21 @@ import os
 import sys
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
+sys.path.insert(0, str(BASE_DIR / "utils"))
 
 from utils.config import FMP_API_KEY, POLYGON_API_KEY
 
 CACHE_FILE = os.path.join(BASE_DIR, "data", "float_cache.json")
 CACHE_TTL = 86400  # 24 hours
 
-def _load_cache():
+
+def _load_cache() -> dict:
     if os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE, 'r') as f:
@@ -26,10 +28,15 @@ def _load_cache():
             return {}
     return {}
 
-def _save_cache(cache):
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-    with open(CACHE_FILE, 'w') as f:
-        json.dump(cache, f)
+
+def _save_cache(cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        with open(CACHE_FILE, 'w') as f:
+            json.dump(cache, f)
+    except Exception as e:
+        print(f"[FloatProvider] Error saving cache: {e}")
+
 
 def get_float_from_fmp(symbol: str) -> Optional[float]:
     if not FMP_API_KEY:
@@ -45,6 +52,7 @@ def get_float_from_fmp(symbol: str) -> Optional[float]:
         pass
     return None
 
+
 def get_float_from_polygon(symbol: str) -> Optional[float]:
     if not POLYGON_API_KEY:
         return None
@@ -58,6 +66,7 @@ def get_float_from_polygon(symbol: str) -> Optional[float]:
     except Exception:
         pass
     return None
+
 
 def get_float_shares(symbol: str) -> Optional[float]:
     print(f"[FloatProvider] 🔍 Trying {symbol}...")
@@ -80,7 +89,7 @@ def get_float_shares(symbol: str) -> Optional[float]:
                     print(f"[FloatProvider] No float found for {symbol} (cached None)")
                     return None
 
-    # Try FMP first
+    # 1. Try FMP
     val = get_float_from_fmp(symbol)
     if val is not None and val > 0:
         cache[symbol] = {'value': val, 'timestamp': now.isoformat()}
@@ -88,7 +97,7 @@ def get_float_shares(symbol: str) -> Optional[float]:
         print(f"[FloatProvider] Found float for {symbol}: {val}")
         return val
 
-    # Try Polygon
+    # 2. Try Polygon
     val = get_float_from_polygon(symbol)
     if val is not None and val > 0:
         cache[symbol] = {'value': val, 'timestamp': now.isoformat()}
