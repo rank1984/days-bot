@@ -1,5 +1,5 @@
 """
-Premarket scanner for DAYS-BOT - Optimized Execution (V2 Engine + Float Provider)
+Premarket scanner for DAYS-BOT - Optimized Execution (V2 Engine + Float & News Catalyst)
 """
 import sys
 import os
@@ -17,7 +17,7 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 from utils.config import *
 from scanner.universe import load_universe
 
-# imports
+# Imports
 from scanner.risk_engine import analyze_dilution_risk
 from scanner.news_scanner import classify_catalyst, get_catalyst_news_score
 from scanner.float_provider import get_float_shares
@@ -75,13 +75,6 @@ def get_snapshots_cached(api, symbols: List[str]):
     data = api.get_snapshots(symbols)
     SNAPSHOT_CACHE[key] = data
     return data
-
-def get_catalyst(symbol: str) -> str:
-    try:
-        _, catalyst_text = get_catalyst_news_score(symbol)
-        return catalyst_text if catalyst_text else "—"
-    except Exception:
-        return "—"
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
@@ -160,6 +153,12 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     if float_shares is None:
                         float_shares = 0
 
+                    # ====== Catalyst ======
+                    _, catalyst_text = get_catalyst_news_score(symbol)
+                    if not catalyst_text:
+                        catalyst_text = "—"
+                    catalyst_result = classify_catalyst([catalyst_text])
+
                     # Volume Trend Tracking
                     if symbol not in volume_trend_data:
                         volume_trend_data[symbol] = []
@@ -177,7 +176,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     dollar_volume = price * volume
                     volume_ratio = volume / prev_volume if prev_volume > 0 else 1.0
                     atr = price * 0.04
-                    catalyst_text = get_catalyst(symbol)
                     
                     candidate = {
                         'ticker': symbol,
@@ -192,6 +190,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'float_shares': float_shares,
                         'dollar_volume': dollar_volume,
                         'catalyst': catalyst_text,
+                        'catalyst_type': catalyst_result.get('type', 'UNKNOWN'),
+                        'catalyst_score': catalyst_result.get('score', 0),
                         'pm_high': pm_high,
                         'pm_high_dist': pm_high_dist,
                         'volume_trend': trend_status,
@@ -314,11 +314,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         liquidity_score = 0
 
                     # ----------------------------------------------------------
-                    # Catalyst
+                    # Catalyst Score
                     # ----------------------------------------------------------
-                    catalyst_text = candidate.get("catalyst", "—")
-                    catalyst_result = classify_catalyst([catalyst_text])
-                    catalyst_score = catalyst_result["score"]
+                    catalyst_score = candidate.get("catalyst_score", 0)
 
                     # ----------------------------------------------------------
                     # Risk Engine
@@ -382,16 +380,13 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         "float_score": low_float_score,
                         "gap_score": gap_score,
                         "liquidity_score": liquidity_score,
-                        "catalyst_score": catalyst_score,
                         "event_score": event_score,
                         "score": event_score,
                         "setup_grade": setup_grade,
                         "dilution_risk": dilution_risk,
                         "risk_score": risk_score,
                         "red_flags": risk_result.get("red_flags", []),
-                        "float_shares": float_shares,
                         "spread_pct": spread_pct,
-                        "catalyst_type": catalyst_result.get("type", "UNKNOWN"),
                     })
 
                     candidates.append(candidate)
