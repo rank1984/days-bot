@@ -1,6 +1,16 @@
 import logging
 from typing import Dict, Any, List, Optional
+from datetime import datetime
 import yfinance as yf
+
+# Try importing load_universe from local universe engine if available
+try:
+    from scanner.universe import load_universe
+except ImportError:
+    try:
+        from universe import load_universe
+    except ImportError:
+        load_universe = None
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +124,40 @@ def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dic
         return None
 
 
-def scan_premarket(symbols_data: Any) -> List[Dict[str, Any]]:
+def scan_premarket(symbols_data: Any = None) -> List[Dict[str, Any]]:
     """
-    Main scanner engine wrapper with built-in DEBUG STATS output.
+    Main scanner engine wrapper. Loads universe if not provided, scans, and prints debug stats at the END.
     """
-    candidates = []
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    print(f"[Premarket] Scanning for {date_str}...")
+
+    # Step 1: Ensure Universe Data is loaded FIRST
+    universe_dict = {}
+    if symbols_data is None and load_universe is not None:
+        try:
+            loaded = load_universe()
+            if isinstance(loaded, list):
+                universe_dict = {sym: {} for sym in loaded}
+            elif isinstance(loaded, dict):
+                universe_dict = loaded
+        except Exception as e:
+            logger.error(f"Failed to load universe: {e}")
+
+    elif isinstance(symbols_data, dict):
+        universe_dict = symbols_data
+    elif isinstance(symbols_data, list):
+        for item in symbols_data:
+            if isinstance(item, str):
+                universe_dict[item] = {}
+            elif isinstance(item, dict) and 'symbol' in item:
+                universe_dict[item['symbol']] = item
+
+    if not universe_dict:
+        print("[Premarket] ❌ No universe loaded or empty dataset.")
+
+    # Step 2: Initialize Statistics Counters
     stats = {
-        'total': 0,
+        'total': len(universe_dict),
         'no_snapshot': 0,
         'no_trade': 0,
         'no_bar': 0,
@@ -130,35 +167,25 @@ def scan_premarket(symbols_data: Any) -> List[Dict[str, Any]]:
         'final_passed': 0
     }
 
-    items_to_scan = []
+    candidates = []
 
-    if isinstance(symbols_data, dict):
-        stats['total'] = len(symbols_data)
-        items_to_scan = list(symbols_data.items())
-    elif isinstance(symbols_data, list):
-        stats['total'] = len(symbols_data)
-        for item in symbols_data:
-            if isinstance(item, str):
-                items_to_scan.append((item, {}))
-            elif isinstance(item, dict) and 'symbol' in item:
-                items_to_scan.append((item['symbol'], item))
-
-    for symbol, raw_data in items_to_scan:
+    # Step 3: Run Scan Loop over the populated Universe
+    for symbol, raw_data in universe_dict.items():
         if not raw_data:
             stats['no_snapshot'] += 1
-            continue
+            # Fallback evaluation with minimal structure if snapshot missing
+            raw_data = {'price': 0.0, 'gap_pct': 0.0, 'volume': 0}
 
-        price = raw_data.get('price', 0.0)
-        gap_pct = raw_data.get('gap_pct', 0.0)
-        volume = raw_data.get('volume', 0)
+        price = float(raw_data.get('price', 0.0))
+        gap_pct = float(raw_data.get('gap_pct', 0.0))
+        volume = int(raw_data.get('volume', 0))
 
         if price > 0:
             stats['price_passed'] += 1
         else:
             stats['no_trade'] += 1
-            continue
 
-        if abs(gap_pct) >= 1.0:  # Loose initial gate for stats visibility
+        if abs(gap_pct) >= 1.0:
             stats['gap_passed'] += 1
 
         if volume >= 0:
@@ -169,7 +196,7 @@ def scan_premarket(symbols_data: Any) -> List[Dict[str, Any]]:
             candidates.append(cand)
             stats['final_passed'] += 1
 
-    # ===== DEBUG STATS =====
+    # Step 4: Print Statistics ONLY AFTER processing completes
     print("\n" + "=" * 50)
     print("📊 PREMARKET SCAN STATISTICS")
     print("=" * 50)
