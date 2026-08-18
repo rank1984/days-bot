@@ -119,3 +119,29 @@ def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dic
     except Exception as e:
         logger.error(f"Error scanning premarket for symbol {symbol}: {e}")
         return None
+
+
+def scan_premarket(symbols_data: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Main scanner function imported by main.py.
+    Processes a dictionary of symbols and returns a list of evaluated candidates.
+    """
+    results = []
+    if isinstance(symbols_data, list):
+        # Support for list of symbol strings or candidate dicts
+        for item in symbols_data:
+            if isinstance(item, str):
+                res = scan_premarket_symbol(item, {})
+                if res:
+                    results.append(res)
+            elif isinstance(item, dict) and 'symbol' in item:
+                res = scan_premarket_symbol(item['symbol'], item)
+                if res:
+                    results.append(res)
+    elif isinstance(symbols_data, dict):
+        for symbol, raw_data in symbols_data.items():
+            res = scan_premarket_symbol(symbol, raw_data)
+            if res:
+                results.append(res)
+
+    return results
