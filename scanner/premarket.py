@@ -7,11 +7,11 @@ logger = logging.getLogger(__name__)
 
 def get_previous_day_data(symbol: str) -> dict:
     """
-    Fetches the previous day's metrics: close price, volume, RVOL, and gain percentage.
+    Fetches previous day's data (close, volume, gain, estimated rvol).
+    Safe against exceptions to prevent scanner crashes.
     """
     try:
         ticker = yf.Ticker(symbol)
-        # Fetch last 3 days to correctly calculate yesterday's gain relative to day-before-yesterday
         hist = ticker.history(period="3d")
         if len(hist) < 2:
             return {}
@@ -19,8 +19,6 @@ def get_previous_day_data(symbol: str) -> dict:
         yesterday = hist.iloc[-2]
         prev_close = float(yesterday['Close'])
         prev_volume = float(yesterday['Volume'])
-
-        # Rough RVOL estimation against a standard baseline volume (100k)
         prev_rvol = prev_volume / 100_000.0 if prev_volume > 0 else 0.0
 
         if len(hist) >= 3:
@@ -37,42 +35,38 @@ def get_previous_day_data(symbol: str) -> dict:
             'prev_gain': prev_gain,
         }
     except Exception as e:
-        logger.warning(f"Failed to fetch previous day data for {symbol}: {e}")
+        logger.debug(f"Failed to fetch previous day data for {symbol}: {e}")
         return {}
 
 
 def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Evaluates a single symbol during Premarket using today's data combined with Previous Day momentum.
+    Evaluates a single stock symbol against V2.3 Premarket / PRE-RUNNER criteria.
     """
     try:
-        # Extract current premarket metrics
-        current_price = raw_data.get('price', 0.0)
-        prev_close_today = raw_data.get('prev_close', 0.0)
-        volume = raw_data.get('volume', 0)
-        rvol = raw_data.get('rvol', 0.0)
-        pm_high = raw_data.get('pm_high', current_price)
+        current_price = float(raw_data.get('price', 0.0))
+        prev_close_today = float(raw_data.get('prev_close', 0.0))
+        volume = int(raw_data.get('volume', 0))
+        rvol = float(raw_data.get('rvol', 0.0))
+        pm_high = float(raw_data.get('pm_high', current_price))
         float_shares = raw_data.get('float_shares', None)
-        spread_pct = raw_data.get('spread_pct', 0.0)
-        catalyst_score = raw_data.get('catalyst_score', 0)
+        spread_pct = float(raw_data.get('spread_pct', 0.0))
+        catalyst_score = int(raw_data.get('catalyst_score', 0))
 
         if current_price <= 0 or prev_close_today <= 0:
             return None
 
-        # Calculate today's gap and distance from Premarket High
         gap_pct = ((current_price - prev_close_today) / prev_close_today) * 100.0
         pm_high_dist = ((pm_high - current_price) / current_price) * 100.0 if current_price > 0 else 0.0
 
-        # Fetch Previous Day Data for PRE-RUNNER logic
+        # Previous Day Data Integration
         prev_data = get_previous_day_data(symbol)
         prev_gain = prev_data.get('prev_gain', 0.0)
         prev_rvol = prev_data.get('prev_rvol', 0.0)
         prev_volume = prev_data.get('prev_volume', 0.0)
 
-        # Check volume building pattern relative to yesterday's entire volume
         volume_building = volume > (prev_volume * 1.2) if prev_volume > 0 else False
 
-        # Assemble unified payload for scoring and state determination
         candidate = {
             'symbol': symbol,
             'price': current_price,
@@ -90,11 +84,10 @@ def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dic
             'volume_building': volume_building
         }
 
-        # Determine System State strictly following V2.3 rules
+        # V2.3 State Determination Rules
         is_prerunner = (
             prev_gain >= 8.0 and
             prev_rvol >= 3.0 and
-            prev_volume >= (prev_volume * 1.5) and  # Historical volume expansion check
             gap_pct < 20.0 and
             pm_high_dist <= 5.0 and
             (float_shares is None or float_shares < 50_000_000)
@@ -114,34 +107,81 @@ def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dic
             state = "REJECT"
 
         candidate['state'] = state
-        return candidate
+        return candidate if state != "REJECT" else None
 
     except Exception as e:
-        logger.error(f"Error scanning premarket for symbol {symbol}: {e}")
+        logger.error(f"Error scanning symbol {symbol}: {e}")
         return None
 
 
-def scan_premarket(symbols_data: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+def scan_premarket(symbols_data: Any) -> List[Dict[str, Any]]:
     """
-    Main scanner function imported by main.py.
-    Processes a dictionary of symbols and returns a list of evaluated candidates.
+    Main scanner engine wrapper with built-in DEBUG STATS output.
     """
-    results = []
-    if isinstance(symbols_data, list):
-        # Support for list of symbol strings or candidate dicts
+    candidates = []
+    stats = {
+        'total': 0,
+        'no_snapshot': 0,
+        'no_trade': 0,
+        'no_bar': 0,
+        'price_passed': 0,
+        'gap_passed': 0,
+        'volume_passed': 0,
+        'final_passed': 0
+    }
+
+    items_to_scan = []
+
+    if isinstance(symbols_data, dict):
+        stats['total'] = len(symbols_data)
+        items_to_scan = list(symbols_data.items())
+    elif isinstance(symbols_data, list):
+        stats['total'] = len(symbols_data)
         for item in symbols_data:
             if isinstance(item, str):
-                res = scan_premarket_symbol(item, {})
-                if res:
-                    results.append(res)
+                items_to_scan.append((item, {}))
             elif isinstance(item, dict) and 'symbol' in item:
-                res = scan_premarket_symbol(item['symbol'], item)
-                if res:
-                    results.append(res)
-    elif isinstance(symbols_data, dict):
-        for symbol, raw_data in symbols_data.items():
-            res = scan_premarket_symbol(symbol, raw_data)
-            if res:
-                results.append(res)
+                items_to_scan.append((item['symbol'], item))
 
-    return results
+    for symbol, raw_data in items_to_scan:
+        if not raw_data:
+            stats['no_snapshot'] += 1
+            continue
+
+        price = raw_data.get('price', 0.0)
+        gap_pct = raw_data.get('gap_pct', 0.0)
+        volume = raw_data.get('volume', 0)
+
+        if price > 0:
+            stats['price_passed'] += 1
+        else:
+            stats['no_trade'] += 1
+            continue
+
+        if abs(gap_pct) >= 1.0:  # Loose initial gate for stats visibility
+            stats['gap_passed'] += 1
+
+        if volume >= 0:
+            stats['volume_passed'] += 1
+
+        cand = scan_premarket_symbol(symbol, raw_data)
+        if cand:
+            candidates.append(cand)
+            stats['final_passed'] += 1
+
+    # ===== DEBUG STATS =====
+    print("\n" + "=" * 50)
+    print("📊 PREMARKET SCAN STATISTICS")
+    print("=" * 50)
+    print(f"Total Universe:        {stats['total']:,}")
+    print(f"No Snapshot:           {stats['no_snapshot']:,}")
+    print(f"No Trade/Price:        {stats['no_trade']:,}")
+    print(f"No Daily Bar:          {stats['no_bar']:,}")
+    print("-" * 50)
+    print(f"✅ Price Passed:        {stats['price_passed']:,}")
+    print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
+    print(f"✅ Volume Passed:       {stats['volume_passed']:,}")
+    print(f"✅ Final Passed:        {stats['final_passed']:,}")
+    print("=" * 50 + "\n")
+
+    return candidates
