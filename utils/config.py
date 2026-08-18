@@ -1,5 +1,5 @@
 """
-Configuration module for DAYS-BOT V2.2 FROZEN
+Configuration module for DAYS-BOT V2.3
 Loads environment variables and sets system defaults.
 """
 import os
@@ -23,17 +23,12 @@ POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY", "")
 FINNHUB_API_KEY   = os.getenv("FINNHUB_API_KEY", "")
 FMP_API_KEY       = os.getenv("FMP_API_KEY", "")
 
-# ====== HARDCODED FOR TESTING (Remove or comment out after test) ======
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY") or "zEWD5UCJZmlXTmNnvzGm1pKIyiSRGRqK"
-FMP_API_KEY     = os.getenv("FMP_API_KEY") or "YOUR_FMP_KEY_HERE"
-POLYGON_API_KEY = os.getenv("POLYGON_API_KEY") or "YOUR_POLYGON_KEY_HERE"
-
-# ── TRADING SCANNER PARAMETERS ─────────────────────────────
-MIN_PRICE = 0.50
-MAX_PRICE = 20.00
-MIN_GAP_PCT = 10.0
-MAX_GAP_PCT = 200.0
-MIN_AVG_VOLUME = 500_000
+# ── TRADING SCANNER PARAMETERS (RELAXED FOR TESTING & ALL-HOURS) ──
+MIN_PRICE       = float(os.getenv("MIN_PRICE", 0.10))
+MAX_PRICE       = float(os.getenv("MAX_PRICE", 50.00))
+MIN_GAP_PCT     = float(os.getenv("MIN_GAP_PCT", -5.0))   # כולל ירידות קלות
+MAX_GAP_PCT     = float(os.getenv("MAX_GAP_PCT", 100.0))  # הרחבת הטווח
+MIN_AVG_VOLUME  = int(os.getenv("MIN_AVG_VOLUME", 5_000))  # הופחת לטובת מניות קטנות
 
 # ── CATALYST DICTIONARIES ───────────────────────────────────
 POSITIVE_CATALYSTS = [
@@ -47,7 +42,7 @@ NEGATIVE_CATALYSTS = [
     "investigation", "delisting", "reverse split", "sec subpoena"
 ]
 
-# ── DAYS-BOT V2.2 FROZEN ────────────────────────────────
+# ── DAYS-BOT V2.3 LOGIC CONFIG ─────────────────────────────
 # RVOL
 MIN_READY_RVOL = 10.0
 
@@ -59,13 +54,13 @@ MIN_READY_EVENT_SCORE = 70
 MAX_READY_SPREAD = 2.0
 
 # Float
-ENABLE_FLOAT_LOOKUP = True   # if FMP_API_KEY exists
+ENABLE_FLOAT_LOOKUP = True if FMP_API_KEY else False
 
 # Entry limits
 MAX_ACTIVE_TRADES = 2
 MAX_TRADES_PER_DAY = 3
 
 # Anti-chase
-MAX_GAP_FOR_READY = 30.0       # gaps above this cannot go READY directly
-PM_HIGH_DISTANCE_REJECT = 7.0  # % below PM High to reject
-PM_HIGH_DISTANCE_WATCH = 2.0   # % below PM High for normal WATCH
+MAX_GAP_FOR_READY = 30.0        # gaps above this cannot go READY directly
+PM_HIGH_DISTANCE_REJECT = 7.0   # % below PM High to reject
+PM_HIGH_DISTANCE_WATCH = 2.0    # % below PM High for normal WATCH
