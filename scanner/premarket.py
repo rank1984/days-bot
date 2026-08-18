@@ -1,9 +1,11 @@
+import os
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import yfinance as yf
+import alpaca_trade_api as tradeapi
 
-# Try importing load_universe from local universe engine if available
+# Import load_universe from local module
 try:
     from scanner.universe import load_universe
 except ImportError:
@@ -14,11 +16,20 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Config Defaults / Fallbacks
+ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', '')
+ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY', '')
+MIN_PRICE = float(os.getenv('MIN_PRICE', 0.5))
+MAX_PRICE = float(os.getenv('MAX_PRICE', 20.0))
+MIN_GAP_PCT = float(os.getenv('MIN_GAP_PCT', 3.0))
+MAX_GAP_PCT = float(os.getenv('MAX_GAP_PCT', 100.0))
+MIN_AVG_VOLUME = int(os.getenv('MIN_AVG_VOLUME', 100_000))
+
 
 def get_previous_day_data(symbol: str) -> dict:
     """
-    Fetches previous day's data (close, volume, gain, estimated rvol).
-    Safe against exceptions to prevent scanner crashes.
+    Fetches previous day's metrics: close price, volume, gain, and estimated RVOL using yfinance.
+    Safe against runtime exceptions.
     """
     try:
         ticker = yf.Ticker(symbol)
@@ -49,154 +60,182 @@ def get_previous_day_data(symbol: str) -> dict:
         return {}
 
 
-def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     """
-    Evaluates a single stock symbol against V2.3 Premarket / PRE-RUNNER criteria.
+    Main Premarket Engine V2.3:
+    1. Loads filtered Universe.
+    2. Queries Alpaca Snapshots in batches of 100.
+    3. Evaluates criteria & integrates PRE-RUNNER logic.
+    4. Prints complete Debug Statistics at the END.
     """
-    try:
-        current_price = float(raw_data.get('price', 0.0))
-        prev_close_today = float(raw_data.get('prev_close', 0.0))
-        volume = int(raw_data.get('volume', 0))
-        rvol = float(raw_data.get('rvol', 0.0))
-        pm_high = float(raw_data.get('pm_high', current_price))
-        float_shares = raw_data.get('float_shares', None)
-        spread_pct = float(raw_data.get('spread_pct', 0.0))
-        catalyst_score = int(raw_data.get('catalyst_score', 0))
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
 
-        if current_price <= 0 or prev_close_today <= 0:
-            return None
+    print(f"[Premarket] Scanning for {date}...")
 
-        gap_pct = ((current_price - prev_close_today) / prev_close_today) * 100.0
-        pm_high_dist = ((pm_high - current_price) / current_price) * 100.0 if current_price > 0 else 0.0
+    # ====== 1. Load Universe ======
+    if load_universe is None:
+        print("[Premarket] ❌ load_universe function not available.")
+        return []
 
-        # Previous Day Data Integration
-        prev_data = get_previous_day_data(symbol)
-        prev_gain = prev_data.get('prev_gain', 0.0)
-        prev_rvol = prev_data.get('prev_rvol', 0.0)
-        prev_volume = prev_data.get('prev_volume', 0.0)
-
-        volume_building = volume > (prev_volume * 1.2) if prev_volume > 0 else False
-
-        candidate = {
-            'symbol': symbol,
-            'price': current_price,
-            'gap_pct': gap_pct,
-            'rvol': rvol,
-            'volume': volume,
-            'pm_high': pm_high,
-            'pm_high_dist': pm_high_dist,
-            'float_shares': float_shares,
-            'spread_pct': spread_pct,
-            'catalyst_score': catalyst_score,
-            'prev_gain': prev_gain,
-            'prev_rvol': prev_rvol,
-            'prev_volume': prev_volume,
-            'volume_building': volume_building
-        }
-
-        # V2.3 State Determination Rules
-        is_prerunner = (
-            prev_gain >= 8.0 and
-            prev_rvol >= 3.0 and
-            gap_pct < 20.0 and
-            pm_high_dist <= 5.0 and
-            (float_shares is None or float_shares < 50_000_000)
-        )
-
-        if is_prerunner:
-            state = "PRE-RUNNER"
-        elif gap_pct >= 30.0 and pm_high_dist > 2.0:
-            state = "EXTENDED"
-        elif rvol >= 10.0 and pm_high_dist <= 2.0:
-            state = "PREPARE"
-        elif rvol >= 5.0:
-            state = "WATCH"
-        elif gap_pct >= 3.0:
-            state = "EARLY"
-        else:
-            state = "REJECT"
-
-        candidate['state'] = state
-        return candidate if state != "REJECT" else None
-
-    except Exception as e:
-        logger.error(f"Error scanning symbol {symbol}: {e}")
-        return None
-
-
-def scan_premarket(symbols_data: Any = None) -> List[Dict[str, Any]]:
-    """
-    Main scanner engine wrapper. Loads universe if not provided, scans, and prints debug stats at the END.
-    """
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    print(f"[Premarket] Scanning for {date_str}...")
-
-    # Step 1: Ensure Universe Data is loaded FIRST
-    universe_dict = {}
-    if symbols_data is None and load_universe is not None:
-        try:
-            loaded = load_universe()
-            if isinstance(loaded, list):
-                universe_dict = {sym: {} for sym in loaded}
-            elif isinstance(loaded, dict):
-                universe_dict = loaded
-        except Exception as e:
-            logger.error(f"Failed to load universe: {e}")
-
-    elif isinstance(symbols_data, dict):
-        universe_dict = symbols_data
-    elif isinstance(symbols_data, list):
-        for item in symbols_data:
-            if isinstance(item, str):
-                universe_dict[item] = {}
-            elif isinstance(item, dict) and 'symbol' in item:
-                universe_dict[item['symbol']] = item
-
-    if not universe_dict:
+    universe = load_universe()
+    if not universe:
         print("[Premarket] ❌ No universe loaded or empty dataset.")
+        return []
 
-    # Step 2: Initialize Statistics Counters
+    print(f"[Premarket] Universe size: {len(universe)}")
+
+    # ====== 2. Initialize Alpaca API & Statistics ======
+    api = tradeapi.REST(
+        key_id=ALPACA_API_KEY,
+        secret_key=ALPACA_SECRET_KEY,
+        base_url='https://paper-api.alpaca.markets'
+    )
+
+    candidates = []
     stats = {
-        'total': len(universe_dict),
+        'total': len(universe),
         'no_snapshot': 0,
         'no_trade': 0,
         'no_bar': 0,
         'price_passed': 0,
         'gap_passed': 0,
         'volume_passed': 0,
-        'final_passed': 0
+        'final_passed': 0,
     }
 
-    candidates = []
-
-    # Step 3: Run Scan Loop over the populated Universe
-    for symbol, raw_data in universe_dict.items():
-        if not raw_data:
-            stats['no_snapshot'] += 1
-            # Fallback evaluation with minimal structure if snapshot missing
-            raw_data = {'price': 0.0, 'gap_pct': 0.0, 'volume': 0}
-
-        price = float(raw_data.get('price', 0.0))
-        gap_pct = float(raw_data.get('gap_pct', 0.0))
-        volume = int(raw_data.get('volume', 0))
-
-        if price > 0:
-            stats['price_passed'] += 1
+    # Extract ticker strings handling list of dicts or list of strings
+    if isinstance(universe, list):
+        if len(universe) > 0 and isinstance(universe[0], dict):
+            symbol_list = [str(item.get('symbol', '')) for item in universe if item.get('symbol')]
         else:
-            stats['no_trade'] += 1
+            symbol_list = [str(item) for item in universe]
+    else:
+        symbol_list = list(universe.keys())
 
-        if abs(gap_pct) >= 1.0:
-            stats['gap_passed'] += 1
+    batch_size = 100
 
-        if volume >= 0:
-            stats['volume_passed'] += 1
+    # ====== 3. Process Batches ======
+    for i in range(0, len(symbol_list), batch_size):
+        batch_symbols = symbol_list[i:i + batch_size]
 
-        cand = scan_premarket_symbol(symbol, raw_data)
-        if cand:
-            candidates.append(cand)
-            stats['final_passed'] += 1
+        try:
+            snapshots = api.get_snapshots(batch_symbols)
+        except Exception as e:
+            print(f"[Premarket] Batch snapshot error for index {i}: {e}")
+            continue
 
-    # Step 4: Print Statistics ONLY AFTER processing completes
+        for symbol in batch_symbols:
+            try:
+                snapshot = snapshots.get(symbol)
+                if not snapshot:
+                    stats['no_snapshot'] += 1
+                    continue
+
+                latest_trade = getattr(snapshot, 'latest_trade', None)
+                if not latest_trade:
+                    stats['no_trade'] += 1
+                    continue
+
+                price = float(latest_trade.price)
+                volume = int(latest_trade.size)
+
+                daily_bar = getattr(snapshot, 'daily_bar', None)
+                if not daily_bar:
+                    stats['no_bar'] += 1
+                    continue
+
+                prev_close = float(daily_bar.close)
+                prev_volume = float(daily_bar.volume)
+
+                # ---- Price Filter ----
+                if price < MIN_PRICE or price > MAX_PRICE:
+                    continue
+                stats['price_passed'] += 1
+
+                # ---- Gap Filter ----
+                gap_pct = ((price - prev_close) / prev_close) * 100.0 if prev_close > 0 else 0.0
+                if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
+                    continue
+                stats['gap_passed'] += 1
+
+                # ---- Volume Filter ----
+                if prev_volume < MIN_AVG_VOLUME:
+                    continue
+                stats['volume_passed'] += 1
+
+                # ---- Previous Day Momentum & PRE-RUNNER Logic ----
+                prev_data = get_previous_day_data(symbol)
+                prev_gain = prev_data.get('prev_gain', 0.0)
+                prev_rvol = prev_data.get('prev_rvol', 0.0)
+                yesterday_vol = prev_data.get('prev_volume', prev_volume)
+
+                pm_high = float(daily_bar.high) if hasattr(daily_bar, 'high') else price
+                pm_high_dist = ((pm_high - price) / price) * 100.0 if price > 0 else 0.0
+                rvol = volume / prev_volume if prev_volume > 0 else 0.0
+                volume_building = volume > (yesterday_vol * 1.2) if yesterday_vol > 0 else False
+
+                # V2.3 State Determination
+                is_prerunner = (
+                    prev_gain >= 8.0 and
+                    prev_rvol >= 3.0 and
+                    gap_pct < 20.0 and
+                    pm_high_dist <= 5.0
+                )
+
+                if is_prerunner:
+                    state = "PRE-RUNNER"
+                elif gap_pct >= 30.0 and pm_high_dist > 2.0:
+                    state = "EXTENDED"
+                elif rvol >= 10.0 and pm_high_dist <= 2.0:
+                    state = "PREPARE"
+                elif rvol >= 5.0:
+                    state = "WATCH"
+                elif gap_pct >= 3.0:
+                    state = "EARLY"
+                else:
+                    state = "REJECT"
+
+                if state == "REJECT":
+                    continue
+
+                candidate = {
+                    'symbol': symbol,
+                    'ticker': symbol,
+                    'price': price,
+                    'gap_pct': gap_pct,
+                    'prev_close': prev_close,
+                    'volume': volume,
+                    'avg_volume': prev_volume,
+                    'rvol': rvol,
+                    'rvol_method': 'DAILY_FALLBACK',
+                    'float_shares': None,
+                    'spread_pct': 0.0,
+                    'pm_high': pm_high,
+                    'pm_high_dist': pm_high_dist,
+                    'catalyst': '—',
+                    'catalyst_score': 0,
+                    'prev_gain': prev_gain,
+                    'prev_rvol': prev_rvol,
+                    'prev_volume': yesterday_vol,
+                    'volume_building': volume_building,
+                    'event_score': 50,
+                    'grade': state,
+                    'state': state,
+                    'dollar_volume': price * volume,
+                }
+
+                candidates.append(candidate)
+                stats['final_passed'] += 1
+
+            except Exception as e:
+                logger.debug(f"Error processing symbol {symbol}: {e}")
+                continue
+
+        processed_count = min(i + batch_size, len(symbol_list))
+        print(f"[Premarket] Processed {processed_count}/{len(symbol_list)}")
+
+    # ====== 4. Statistics Output ======
     print("\n" + "=" * 50)
     print("📊 PREMARKET SCAN STATISTICS")
     print("=" * 50)
@@ -211,4 +250,5 @@ def scan_premarket(symbols_data: Any = None) -> List[Dict[str, Any]]:
     print(f"✅ Final Passed:        {stats['final_passed']:,}")
     print("=" * 50 + "\n")
 
-    return candidates
+    candidates.sort(key=lambda x: x.get('event_score', 0), reverse=True)
+    return candidates[:10]
