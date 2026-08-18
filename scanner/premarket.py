@@ -16,24 +16,24 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Config Defaults / Fallbacks
+# Config Defaults / Fallbacks (Relaxed for small-cap & off-hours trading)
 ALPACA_API_KEY = os.getenv('ALPACA_API_KEY', '')
 ALPACA_SECRET_KEY = os.getenv('ALPACA_SECRET_KEY', '')
-MIN_PRICE = float(os.getenv('MIN_PRICE', 0.5))
-MAX_PRICE = float(os.getenv('MAX_PRICE', 20.0))
-MIN_GAP_PCT = float(os.getenv('MIN_GAP_PCT', 3.0))
+MIN_PRICE = float(os.getenv('MIN_PRICE', 0.1))
+MAX_PRICE = float(os.getenv('MAX_PRICE', 50.0))
+MIN_GAP_PCT = float(os.getenv('MIN_GAP_PCT', -5.0))
 MAX_GAP_PCT = float(os.getenv('MAX_GAP_PCT', 100.0))
-MIN_AVG_VOLUME = int(os.getenv('MIN_AVG_VOLUME', 100_000))
+MIN_AVG_VOLUME = int(os.getenv('MIN_AVG_VOLUME', 5_000))
 
 
 def get_previous_day_data(symbol: str) -> dict:
     """
-    Fetches previous day's metrics: close price, volume, gain, and estimated RVOL using yfinance.
-    Safe against runtime exceptions.
+    Fetches previous day's metrics using yfinance.
+    Provides robust fallbacks when Alpaca daily bars lack volume data.
     """
     try:
         ticker = yf.Ticker(symbol)
-        hist = ticker.history(period="3d")
+        hist = ticker.history(period="5d")
         if len(hist) < 2:
             return {}
 
@@ -62,11 +62,7 @@ def get_previous_day_data(symbol: str) -> dict:
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     """
-    Main Premarket Engine V2.3:
-    1. Loads filtered Universe.
-    2. Queries Alpaca Snapshots in batches of 100.
-    3. Evaluates criteria & integrates PRE-RUNNER logic.
-    4. Prints complete Debug Statistics at the END.
+    Main Premarket Engine V2.3 (Robust Volume & Gap Handling)
     """
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
@@ -104,7 +100,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         'final_passed': 0,
     }
 
-    # Extract ticker strings handling list of dicts or list of strings
+    # Extract ticker strings
     if isinstance(universe, list):
         if len(universe) > 0 and isinstance(universe[0], dict):
             symbol_list = [str(item.get('symbol', '')) for item in universe if item.get('symbol')]
@@ -138,7 +134,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     continue
 
                 price = float(latest_trade.price)
-                volume = int(latest_trade.size)
+                volume = int(getattr(latest_trade, 'size', 0))
 
                 daily_bar = getattr(snapshot, 'daily_bar', None)
                 if not daily_bar:
@@ -146,7 +142,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     continue
 
                 prev_close = float(daily_bar.close)
-                prev_volume = float(daily_bar.volume)
+                alpaca_prev_volume = float(getattr(daily_bar, 'volume', 0))
 
                 # ---- Price Filter ----
                 if price < MIN_PRICE or price > MAX_PRICE:
@@ -159,21 +155,26 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     continue
                 stats['gap_passed'] += 1
 
+                # ---- Get Fallback Data from yfinance if needed ----
+                prev_data = get_previous_day_data(symbol)
+                yf_prev_volume = prev_data.get('prev_volume', 0.0)
+
+                # Use Alpaca volume if available, otherwise fall back to yfinance volume
+                eval_volume = alpaca_prev_volume if alpaca_prev_volume > 0 else yf_prev_volume
+
                 # ---- Volume Filter ----
-                if prev_volume < MIN_AVG_VOLUME:
+                if eval_volume < MIN_AVG_VOLUME:
                     continue
                 stats['volume_passed'] += 1
 
-                # ---- Previous Day Momentum & PRE-RUNNER Logic ----
-                prev_data = get_previous_day_data(symbol)
+                # ---- Momentum & PRE-RUNNER Logic ----
                 prev_gain = prev_data.get('prev_gain', 0.0)
                 prev_rvol = prev_data.get('prev_rvol', 0.0)
-                yesterday_vol = prev_data.get('prev_volume', prev_volume)
 
-                pm_high = float(daily_bar.high) if hasattr(daily_bar, 'high') else price
+                pm_high = float(getattr(daily_bar, 'high', price))
                 pm_high_dist = ((pm_high - price) / price) * 100.0 if price > 0 else 0.0
-                rvol = volume / prev_volume if prev_volume > 0 else 0.0
-                volume_building = volume > (yesterday_vol * 1.2) if yesterday_vol > 0 else False
+                rvol = volume / eval_volume if eval_volume > 0 else 0.0
+                volume_building = volume > (eval_volume * 1.2) if eval_volume > 0 else False
 
                 # V2.3 State Determination
                 is_prerunner = (
@@ -191,7 +192,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     state = "PREPARE"
                 elif rvol >= 5.0:
                     state = "WATCH"
-                elif gap_pct >= 3.0:
+                elif gap_pct >= -5.0:
                     state = "EARLY"
                 else:
                     state = "REJECT"
@@ -206,9 +207,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     'gap_pct': gap_pct,
                     'prev_close': prev_close,
                     'volume': volume,
-                    'avg_volume': prev_volume,
+                    'avg_volume': eval_volume,
                     'rvol': rvol,
-                    'rvol_method': 'DAILY_FALLBACK',
+                    'rvol_method': 'HYBRID_ALPACA_YFINANCE',
                     'float_shares': None,
                     'spread_pct': 0.0,
                     'pm_high': pm_high,
@@ -217,7 +218,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     'catalyst_score': 0,
                     'prev_gain': prev_gain,
                     'prev_rvol': prev_rvol,
-                    'prev_volume': yesterday_vol,
+                    'prev_volume': eval_volume,
                     'volume_building': volume_building,
                     'event_score': 50,
                     'grade': state,
