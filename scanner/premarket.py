@@ -1,334 +1,121 @@
-"""
-Premarket scanner for DAYS-BOT - Optimized Execution (V2 Engine + Float & News Catalyst)
-"""
-import sys
-import os
-import json
-from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Any
+import logging
+from typing import Dict, Any, List, Optional
 import yfinance as yf
-import alpaca_trade_api as tradeapi
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(BASE_DIR))
-sys.path.insert(0, str(BASE_DIR / "utils"))
-
-from utils.config import *
-from scanner.universe import load_universe
-from scanner.risk_engine import analyze_dilution_risk
-from scanner.news_scanner import classify_catalyst, get_catalyst_news_score
-from scanner.float_provider import get_float_shares
-
-# ====== Volume Trend Management ======
-VOLUME_TREND_FILE = os.path.join(BASE_DIR, "data", "volume_trend.json")
+logger = logging.getLogger(__name__)
 
 
-def load_volume_trend() -> Dict[str, Any]:
-    if os.path.exists(VOLUME_TREND_FILE):
-        try:
-            with open(VOLUME_TREND_FILE, 'r') as f:
-                return json.load(f)
-        except Exception:
+def get_previous_day_data(symbol: str) -> dict:
+    """
+    Fetches the previous day's metrics: close price, volume, RVOL, and gain percentage.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        # Fetch last 3 days to correctly calculate yesterday's gain relative to day-before-yesterday
+        hist = ticker.history(period="3d")
+        if len(hist) < 2:
             return {}
-    return {}
 
+        yesterday = hist.iloc[-2]
+        prev_close = float(yesterday['Close'])
+        prev_volume = float(yesterday['Volume'])
 
-def save_volume_trend(data: Dict[str, Any]) -> None:
-    try:
-        os.makedirs(os.path.dirname(VOLUME_TREND_FILE), exist_ok=True)
-        with open(VOLUME_TREND_FILE, 'w') as f:
-            json.dump(data, f, indent=2)
+        # Rough RVOL estimation against a standard baseline volume (100k)
+        prev_rvol = prev_volume / 100_000.0 if prev_volume > 0 else 0.0
+
+        if len(hist) >= 3:
+            day_before = hist.iloc[-3]
+            day_before_close = float(day_before['Close'])
+            prev_gain = ((prev_close - day_before_close) / day_before_close) * 100.0 if day_before_close > 0 else 0.0
+        else:
+            prev_gain = 0.0
+
+        return {
+            'prev_close': prev_close,
+            'prev_volume': prev_volume,
+            'prev_rvol': prev_rvol,
+            'prev_gain': prev_gain,
+        }
     except Exception as e:
-        print(f"[Volume Trend] Error saving data: {e}")
+        logger.warning(f"Failed to fetch previous day data for {symbol}: {e}")
+        return {}
 
 
-# ====== Market Strength ======
-_market_cache = None
-
-
-def get_market_strength() -> float:
-    global _market_cache
-    if _market_cache is not None:
-        return _market_cache
+def scan_premarket_symbol(symbol: str, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Evaluates a single symbol during Premarket using today's data combined with Previous Day momentum.
+    """
     try:
-        data = yf.download(["SPY", "QQQ"], period="2d", progress=False, timeout=5)
-        if not data.empty and 'Close' in data:
-            spy_close = data['Close']['SPY']
-            qqq_close = data['Close']['QQQ']
+        # Extract current premarket metrics
+        current_price = raw_data.get('price', 0.0)
+        prev_close_today = raw_data.get('prev_close', 0.0)
+        volume = raw_data.get('volume', 0)
+        rvol = raw_data.get('rvol', 0.0)
+        pm_high = raw_data.get('pm_high', current_price)
+        float_shares = raw_data.get('float_shares', None)
+        spread_pct = raw_data.get('spread_pct', 0.0)
+        catalyst_score = raw_data.get('catalyst_score', 0)
 
-            spy_change = ((spy_close.iloc[-1] - spy_close.iloc[-2]) / spy_close.iloc[-2]) * 100
-            qqq_change = ((qqq_close.iloc[-1] - qqq_close.iloc[-2]) / qqq_close.iloc[-2]) * 100
+        if current_price <= 0 or prev_close_today <= 0:
+            return None
 
-            _market_cache = (spy_change + qqq_change) / 2.0
-            return _market_cache
-    except Exception:
-        pass
-    _market_cache = 0.0
-    return _market_cache
+        # Calculate today's gap and distance from Premarket High
+        gap_pct = ((current_price - prev_close_today) / prev_close_today) * 100.0
+        pm_high_dist = ((pm_high - current_price) / current_price) * 100.0 if current_price > 0 else 0.0
 
+        # Fetch Previous Day Data for PRE-RUNNER logic
+        prev_data = get_previous_day_data(symbol)
+        prev_gain = prev_data.get('prev_gain', 0.0)
+        prev_rvol = prev_data.get('prev_rvol', 0.0)
+        prev_volume = prev_data.get('prev_volume', 0.0)
 
-# ====== Alpaca Snapshot Caching ======
-SNAPSHOT_CACHE = {}
+        # Check volume building pattern relative to yesterday's entire volume
+        volume_building = volume > (prev_volume * 1.2) if prev_volume > 0 else False
 
+        # Assemble unified payload for scoring and state determination
+        candidate = {
+            'symbol': symbol,
+            'price': current_price,
+            'gap_pct': gap_pct,
+            'rvol': rvol,
+            'volume': volume,
+            'pm_high': pm_high,
+            'pm_high_dist': pm_high_dist,
+            'float_shares': float_shares,
+            'spread_pct': spread_pct,
+            'catalyst_score': catalyst_score,
+            'prev_gain': prev_gain,
+            'prev_rvol': prev_rvol,
+            'prev_volume': prev_volume,
+            'volume_building': volume_building
+        }
 
-def get_snapshots_cached(api, symbols: List[str]):
-    key = ",".join(sorted(symbols))
-    if key in SNAPSHOT_CACHE:
-        return SNAPSHOT_CACHE[key]
-    data = api.get_snapshots(symbols)
-    SNAPSHOT_CACHE[key] = data
-    return data
+        # Determine System State strictly following V2.3 rules
+        is_prerunner = (
+            prev_gain >= 8.0 and
+            prev_rvol >= 3.0 and
+            prev_volume >= (prev_volume * 1.5) and  # Historical volume expansion check
+            gap_pct < 20.0 and
+            pm_high_dist <= 5.0 and
+            (float_shares is None or float_shares < 50_000_000)
+        )
 
+        if is_prerunner:
+            state = "PRE-RUNNER"
+        elif gap_pct >= 30.0 and pm_high_dist > 2.0:
+            state = "EXTENDED"
+        elif rvol >= 10.0 and pm_high_dist <= 2.0:
+            state = "PREPARE"
+        elif rvol >= 5.0:
+            state = "WATCH"
+        elif gap_pct >= 3.0:
+            state = "EARLY"
+        else:
+            state = "REJECT"
 
-def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
-    if date is None:
-        date = datetime.now().strftime("%Y-%m-%d")
+        candidate['state'] = state
+        return candidate
 
-    print(f"[Premarket] Scanning for {date}...")
-    universe = load_universe()
-    if not universe:
-        return []
-
-    api = tradeapi.REST(
-        ALPACA_API_KEY,
-        ALPACA_SECRET_KEY,
-        base_url='https://paper-api.alpaca.markets'
-    )
-
-    candidates = []
-    volume_trend_data = load_volume_trend()
-
-    batch_size = 100
-    for i in range(0, len(universe), batch_size):
-        batch = universe[i:i + batch_size]
-        symbols = [str(s['symbol']) for s in batch]
-
-        try:
-            snapshots = get_snapshots_cached(api, symbols)
-            for symbol in symbols:
-                try:
-                    snapshot = snapshots.get(symbol)
-                    if not snapshot:
-                        continue
-
-                    latest_trade = snapshot.latest_trade
-                    if not latest_trade or not getattr(latest_trade, 'price', None):
-                        continue
-
-                    price = float(latest_trade.price)
-                    daily_bar = getattr(snapshot, 'daily_bar', None)
-                    prev_daily_bar = getattr(snapshot, 'prev_daily_bar', None)
-
-                    if not daily_bar:
-                        continue
-
-                    prev_close = prev_daily_bar.close if prev_daily_bar else daily_bar.open
-                    volume = daily_bar.volume
-                    prev_volume = prev_daily_bar.volume if prev_daily_bar else MIN_AVG_VOLUME
-
-                    # 1. Price Filter
-                    if price < MIN_PRICE or price > MAX_PRICE:
-                        continue
-
-                    # 2. Gap % Filter
-                    gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close and prev_close > 0 else 0
-                    if gap_pct < MIN_GAP_PCT or gap_pct > MAX_GAP_PCT:
-                        continue
-
-                    # 3. Volume Filter
-                    if volume < MIN_AVG_VOLUME:
-                        continue
-
-                    # Relative Strength Filter
-                    market_change = get_market_strength()
-                    rs_val = gap_pct - market_change
-                    if gap_pct < market_change + 2:
-                        continue
-
-                    # PM High Distance Calculation
-                    pm_high = price
-                    if daily_bar and getattr(daily_bar, 'high', price) > price:
-                        pm_high = daily_bar.high
-
-                    pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > price else 0
-
-                    # ====== Float ======
-                    float_shares = get_float_shares(symbol)
-
-                    # ====== Catalyst ======
-                    catalyst_text = "—"
-                    if FINNHUB_API_KEY:
-                        try:
-                            _, fetched_text = get_catalyst_news_score(symbol)
-                            if fetched_text:
-                                catalyst_text = fetched_text
-                        except Exception:
-                            pass
-
-                    catalyst_result = classify_catalyst([catalyst_text])
-
-                    # Volume Trend Tracking
-                    if symbol not in volume_trend_data:
-                        volume_trend_data[symbol] = []
-                    volume_trend_data[symbol].append({'time': datetime.now().isoformat(), 'volume': volume})
-                    volume_trend_data[symbol] = volume_trend_data[symbol][-4:]
-
-                    trend_status = 'rising'
-                    trend = volume_trend_data.get(symbol, [])
-                    if len(trend) >= 3:
-                        vols = [t['volume'] for t in trend[-3:]]
-                        if vols[0] > vols[1] > vols[2]:
-                            trend_status = 'declining'
-
-                    rvol = volume / prev_volume if prev_volume > 0 else 1.0
-                    dollar_volume = price * volume
-                    atr = price * 0.04
-
-                    # Spread calculation
-                    bid = getattr(snapshot, 'bid_price', 0) or 0
-                    ask = getattr(snapshot, 'ask_price', 0) or 0
-                    spread_pct = ((ask - bid) / price) * 100 if bid and ask and price > 0 else 0.0
-
-                    # ==========================================================
-                    # DAYS-BOT V2 EVENT ENGINE
-                    # ==========================================================
-                    # RVOL Score
-                    if rvol >= 250: rvol_score = 60
-                    elif rvol >= 100: rvol_score = 50
-                    elif rvol >= 50: rvol_score = 40
-                    elif rvol >= 20: rvol_score = 30
-                    elif rvol >= 10: rvol_score = 20
-                    elif rvol >= 5: rvol_score = 10
-                    elif rvol >= 2: rvol_score = 5
-                    else: rvol_score = 0
-
-                    # Float Turnover
-                    float_turnover = (volume / float_shares) if (float_shares and float_shares > 0) else None
-                    if float_turnover is None: float_turnover_score = 0
-                    elif float_turnover >= 20: float_turnover_score = 30
-                    elif float_turnover >= 10: float_turnover_score = 25
-                    elif float_turnover >= 5: float_turnover_score = 20
-                    elif float_turnover >= 3: float_turnover_score = 15
-                    elif float_turnover >= 1: float_turnover_score = 10
-                    elif float_turnover >= 0.5: float_turnover_score = 5
-                    else: float_turnover_score = 0
-
-                    # Low Float Score
-                    if float_shares is None or float_shares <= 0: low_float_score = 0
-                    elif float_shares < 1_000_000: low_float_score = 20
-                    elif float_shares < 3_000_000: low_float_score = 18
-                    elif float_shares < 5_000_000: low_float_score = 15
-                    elif float_shares < 10_000_000: low_float_score = 10
-                    elif float_shares < 20_000_000: low_float_score = 5
-                    else: low_float_score = 0
-
-                    # Gap Score
-                    if gap_pct >= 20: gap_score = 25
-                    elif gap_pct >= 10: gap_score = 20
-                    elif gap_pct >= 5: gap_score = 15
-                    elif gap_pct >= 3: gap_score = 10
-                    elif gap_pct >= 1: gap_score = 5
-                    else: gap_score = 0
-
-                    # Liquidity / Spread Score
-                    if spread_pct <= 1: liquidity_score = 10
-                    elif spread_pct <= 2: liquidity_score = 5
-                    elif spread_pct <= 3: liquidity_score = 2
-                    else: liquidity_score = 0
-
-                    # Risk Engine
-                    risk_result = analyze_dilution_risk(catalyst_text)
-                    dilution_risk = risk_result.get("dilution_risk", "UNKNOWN")
-
-                    if dilution_risk == "CRITICAL": risk_penalty = 30
-                    elif dilution_risk == "HIGH": risk_penalty = 15
-                    elif dilution_risk == "MEDIUM": risk_penalty = 5
-                    else: risk_penalty = 0
-
-                    catalyst_score = catalyst_result.get('score', 0)
-
-                    # EVENT SCORE
-                    event_score = (
-                        rvol_score
-                        + float_turnover_score
-                        + low_float_score
-                        + gap_score
-                        + liquidity_score
-                        + catalyst_score
-                    )
-                    event_score = max(0, min(100, event_score - risk_penalty))
-
-                    # SETUP GRADE
-                    if (
-                        event_score >= 85
-                        and rvol >= 20
-                        and spread_pct <= 2
-                        and float_turnover is not None
-                        and float_turnover >= 3
-                        and dilution_risk != "CRITICAL"
-                    ):
-                        setup_grade = "A+"
-                    elif event_score >= 75 and rvol >= 10:
-                        setup_grade = "A"
-                    elif event_score >= 60:
-                        setup_grade = "B"
-                    elif event_score >= 45:
-                        setup_grade = "C"
-                    elif event_score >= 30:
-                        setup_grade = "WATCH"
-                    else:
-                        setup_grade = "REJECT"
-
-                    # State determination
-                    if gap_pct >= 30 and pm_high_dist > 2:
-                        state = "EXTENDED"
-                    elif event_score >= 70 and rvol >= 10 and pm_high_dist <= 2:
-                        state = "PREPARE"
-                    elif event_score >= 50 and rvol >= 5 and pm_high_dist <= 5:
-                        state = "WATCH"
-                    elif event_score >= 30:
-                        state = "EARLY"
-                    else:
-                        state = "REJECT"
-
-                    candidate = {
-                        'ticker': symbol,
-                        'price': price,
-                        'gap_pct': gap_pct,
-                        'prev_close': prev_close,
-                        'volume': volume,
-                        'avg_volume': prev_volume,
-                        'rvol': rvol,
-                        'rvol_method': "DAILY_FALLBACK",
-                        'float_shares': float_shares,
-                        'float_turnover': float_turnover,
-                        'dollar_volume': dollar_volume,
-                        'catalyst': catalyst_text,
-                        'catalyst_type': catalyst_result.get('type', 'UNKNOWN'),
-                        'catalyst_score': catalyst_score,
-                        'pm_high': pm_high,
-                        'pm_high_dist': pm_high_dist,
-                        'volume_trend': trend_status,
-                        'relative_strength': rs_val,
-                        'atr': atr,
-                        'spread_pct': spread_pct,
-                        'event_score': event_score,
-                        'score': event_score,
-                        'grade': setup_grade,
-                        'setup_grade': setup_grade,
-                        'state': state,
-                        'dilution_risk': dilution_risk,
-                        'red_flags': risk_result.get("red_flags", []),
-                    }
-
-                    candidates.append(candidate)
-
-                except Exception:
-                    continue
-        except Exception:
-            continue
-
-    save_volume_trend(volume_trend_data)
-    candidates.sort(key=lambda x: x.get('event_score', 0), reverse=True)
-    return candidates[:10]
+    except Exception as e:
+        logger.error(f"Error scanning premarket for symbol {symbol}: {e}")
+        return None
