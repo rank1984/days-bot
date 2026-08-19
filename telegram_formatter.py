@@ -1,5 +1,5 @@
 """
-Telegram formatter – V2.5 (READY = SETUP WORTH YOUR MANUAL REVIEW)
+Telegram formatter – V2.6 (READY = MANUAL REVIEW)
 """
 import requests
 from datetime import datetime
@@ -33,10 +33,10 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def format_quant_report_v25(candidates: list, date: str) -> str:
+def format_quant_report_v26(candidates: list, date: str) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🔥 <b>DAYS-BOT V2.5 — QUANT SCAN</b>",
+        "🔥 <b>DAYS-BOT V2.6 — QUANT SCAN</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
     ]
@@ -68,8 +68,9 @@ def format_quant_report_v25(candidates: list, date: str) -> str:
         prev_day_volume = r.get('prev_day_volume', 0)
         pm_high = r.get('pm_high', 0)
         pm_high_dist = r.get('pm_high_dist', 999)
+        vwap = r.get('vwap', 0)
         spread = r.get('spread_pct')
-        spread_str = f"{spread:.1f}%" if spread is not None else "UNKNOWN"
+        spread_str = f"{spread:.2f}%" if spread is not None else "UNKNOWN"
 
         float_str = "UNKNOWN"
         dvol_str = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol/1_000:.0f}K"
@@ -82,7 +83,7 @@ def format_quant_report_v25(candidates: list, date: str) -> str:
         lines.append(f"   📈 Prev Day: {prev_day_return:+.1f}%  |  Vol: {prev_vol_str}")
         lines.append(f"   🏗️ Building: {building_state}")
         lines.append(f"   📏 PM High: ${pm_high:.2f}  |  PM Dist: {pm_high_dist:.1f}%")
-        lines.append(f"   💵 DVol: {dvol_str}  |  Spread: {spread_str}")
+        lines.append(f"   💵 VWAP: ${vwap:.2f}  |  DVol: {dvol_str}  |  Spread: {spread_str}")
         lines.append(f"   🏷️ Float: {float_str}  |  📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
         lines.append(f"   🔵 State: <b>{state}</b>")
 
@@ -121,7 +122,7 @@ def format_watchlist(watchlist: list, date: str) -> str:
         catalyst = w.get('catalyst', '—')
         pm_high_dist = w.get('pm_high_dist', 999)
         spread = w.get('spread_pct')
-        spread_str = f"{spread:.1f}%" if spread is not None else "UNKNOWN"
+        spread_str = f"{spread:.2f}%" if spread is not None else "UNKNOWN"
         prev_day_return = w.get('prev_day_return', 0)
 
         if state == 'PRE-RUNNER':
