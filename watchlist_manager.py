@@ -1,5 +1,5 @@
 """
-Watchlist Manager – V2.6 (full fields for READY checks)
+Watchlist Manager – V2.7 (full fields)
 """
 import sqlite3
 import os
@@ -46,18 +46,23 @@ class WatchlistManager:
                 prev_day_return REAL,
                 building_state TEXT,
                 event_score REAL,
+                opportunity REAL,
+                risk REAL,
+                final_score REAL,
                 grade TEXT,
                 state TEXT,
-                dilution_risk TEXT
+                dilution_risk TEXT,
+                rvol_method TEXT
             )
         """)
         conn.commit()
         conn.close()
     
     def _determine_status(self, candidate: Dict) -> str:
+        # This is a quick status; actual READY is checked in review_mode
         price = candidate['price']
         pm_high = candidate.get('pm_high', price * 1.02)
-        rvol = candidate.get('rvol', 1.0)
+        rvol = candidate.get('rvol', candidate.get('rvol_time_adj', 1.0))
         trigger_price = round(pm_high * 1.005, 2)
         if price >= trigger_price and rvol >= 1.5:
             return 'READY'
@@ -71,8 +76,8 @@ class WatchlistManager:
         pm_high = candidate.get('pm_high', candidate['price'] * 1.02)
         trigger_price = round(pm_high * 1.005, 2)
         pm_high_dist = candidate.get('pm_high_dist', 999.0)
-        spread_pct = candidate.get('spread_pct')  # may be None
-        vwap = candidate.get('vwap', candidate['price'])
+        spread_pct = candidate.get('spread_pct')
+        vwap = candidate.get('pm_vwap', candidate['price'])
         dvol = candidate.get('dollar_volume', 0)
         
         stop_price = round(candidate['price'] * 0.95, 2)
@@ -98,11 +103,13 @@ class WatchlistManager:
                     status = ?, stop_price = ?, tp1 = ?, tp2 = ?,
                     rr1 = ?, rr2 = ?, dvol = ?, vwap = ?,
                     spread_pct = ?, prev_day_return = ?,
-                    building_state = ?, event_score = ?, grade = ?,
-                    state = ?, dilution_risk = ?
+                    building_state = ?, event_score = ?,
+                    opportunity = ?, risk = ?, final_score = ?,
+                    grade = ?, state = ?, dilution_risk = ?,
+                    rvol_method = ?
                 WHERE id = ?
             """, (
-                candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', 0),
+                candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', candidate.get('rvol_time_adj', 0)),
                 pm_high, pm_high_dist, trigger_price,
                 candidate.get('catalyst', ''),
                 datetime.now().isoformat(),
@@ -113,9 +120,13 @@ class WatchlistManager:
                 candidate.get('prev_day_return', 0),
                 candidate.get('building_state', '—'),
                 candidate.get('event_score', 0),
+                candidate.get('opportunity', 0),
+                candidate.get('risk', 0),
+                candidate.get('final_score', 0),
                 candidate.get('grade', '?'),
                 candidate.get('state', 'WATCH'),
-                candidate.get('dilution_risk', 'UNKNOWN'),
+                candidate.get('dilution_risk', 'LOW'),
+                candidate.get('rvol_method', 'FALLBACK'),
                 row[0]
             ))
         else:
@@ -126,14 +137,15 @@ class WatchlistManager:
                     added_time, last_seen, status, hits,
                     stop_price, tp1, tp2, rr1, rr2, dvol, vwap,
                     spread_pct, prev_day_return, building_state,
-                    event_score, grade, state, dilution_risk
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    event_score, opportunity, risk, final_score,
+                    grade, state, dilution_risk, rvol_method
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ticker,
                 candidate['price'],
                 candidate['gap_pct'],
                 candidate.get('score', 0),
-                candidate.get('rvol', 0),
+                candidate.get('rvol', candidate.get('rvol_time_adj', 0)),
                 pm_high,
                 pm_high_dist,
                 trigger_price,
@@ -148,9 +160,13 @@ class WatchlistManager:
                 candidate.get('prev_day_return', 0),
                 candidate.get('building_state', '—'),
                 candidate.get('event_score', 0),
+                candidate.get('opportunity', 0),
+                candidate.get('risk', 0),
+                candidate.get('final_score', 0),
                 candidate.get('grade', '?'),
                 candidate.get('state', 'WATCH'),
-                candidate.get('dilution_risk', 'UNKNOWN')
+                candidate.get('dilution_risk', 'LOW'),
+                candidate.get('rvol_method', 'FALLBACK')
             ))
         conn.commit()
         conn.close()
@@ -163,21 +179,9 @@ class WatchlistManager:
             SELECT * FROM watchlist
             WHERE status != 'EXECUTED'
             AND added_time > datetime('now', '-1 day')
-            ORDER BY score DESC, hits DESC
+            ORDER BY final_score DESC, hits DESC
             LIMIT 20
         """)
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
-    
-    def mark_ready(self, ticker: str, breakout_price: float):
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""
-            UPDATE watchlist
-            SET status = 'READY',
-                ready_price = ?,
-                ready_time = ?
-            WHERE ticker = ? AND status != 'EXECUTED'
-        """, (breakout_price, datetime.now(ET).isoformat(), ticker))
-        conn.commit()
-        conn.close()
