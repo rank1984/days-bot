@@ -1,5 +1,5 @@
 """
-DAYS-BOT V2.2 – Main Entry Point
+DAYS-BOT V2.3 – Main Entry Point
 Modes: scan (watchlist) | entry (execute trades) | ai (ai-powered analysis) | full (legacy)
 """
 import sys
@@ -18,7 +18,7 @@ from scanner.universe import load_universe
 from database.db import init_db, save_alert, DB_PATH
 from telegram_formatter import (
     format_watchlist,
-    format_quant_report_v22,
+    format_quant_report_v23,
     format_no_candidates,
     send_message
 )
@@ -38,11 +38,11 @@ else:
 
 
 def scan_mode():
-    """סריקה, הוספה ל-Watchlist ושליחת דוחות לטלגרם בגרסה V2.2"""
+    """סריקה, הוספה ל-Watchlist ושליחת דוחות לטלגרם בגרסה V2.3"""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE (V2.2 FROZEN) - {today}")
+    print(f"\n[Main] SCAN MODE (V2.3 FROZEN) - {today}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -62,11 +62,11 @@ def scan_mode():
 
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    # 1. שליחת דוח V2.2 Quant Report
+    # 1. שליחת דוח V2.3 Quant Report
     try:
-        msg_quant = format_quant_report_v22(candidates[:5], today)
+        msg_quant = format_quant_report_v23(candidates[:5], today)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg_quant)
-        print("[Main] ✅ V2.2 Quant report sent to Telegram")
+        print("[Main] ✅ V2.3 Quant report sent to Telegram")
     except Exception as e:
         print(f"[Main] ❌ Error sending Quant report: {e}")
 
@@ -140,7 +140,7 @@ def entry_mode():
              ]
 
     if not ready:
-        print("[Entry] No READY candidates meeting V2.2 execution criteria.")
+        print("[Entry] No READY candidates meeting V2.3 execution criteria.")
         return
 
     ready.sort(key=lambda x: x.get("event_score", 0), reverse=True)
