@@ -1,5 +1,8 @@
 """
-DAYS-BOT V2.6 – Main Entry Point
+DAYS-BOT V2.7 – Manual Execution / LIVE-SAFE
+- scan: finds candidates, adds to watchlist, sends Telegram
+- review: evaluates READY candidates, calculates entry/stop/tp, sends detailed review
+- NO ORDER EXECUTION – bot recommends, you execute manually
 """
 import sys
 import sqlite3
@@ -13,11 +16,12 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
-from database.db import init_db, save_alert, DB_PATH
+from database.db import init_db, save_alert, DB_PATH, get_all_trades, get_open_trades
 from watchlist_manager import WatchlistManager
-from paper_trader.paper_trader import PaperTrader
+from utils.calculations import calculate_entry_stop_tp, calculate_net_profit
 from telegram_formatter import (
-    format_quant_report_v26,
+    format_quant_report_v27,
+    format_review_v27,
     format_watchlist,
     format_no_candidates,
     send_message
@@ -47,174 +51,153 @@ def scan_mode():
 
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    msg = format_quant_report_v26(candidates[:5], today)
+    # Quant report
+    msg = format_quant_report_v27(candidates[:5], today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
+    # Watchlist
     watchlist = wm.get_active_watchlist()
     msg = format_watchlist(watchlist, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
+    # Save alerts
     for c in candidates[:10]:
         save_alert(
             ticker=c['ticker'],
             price=c['price'],
             gap_pct=c['gap_pct'],
-            score=c.get('event_score', 0),
+            score=c.get('final_score', 0),
             catalyst=c.get('catalyst', '')
         )
 
     print(f"[Main] Done. {added} candidates added.")
 
 
-def entry_mode():
-    from database.db import get_open_trades, save_trade
+def review_mode():
+    """
+    Evaluates watchlist for READY candidates.
+    Calculates Entry, Stop, TP1, TP2, RR, Net Profit.
+    Sends detailed review via Telegram.
+    BOT DOES NOT EXECUTE ORDERS.
+    """
     init_db()
     wm = WatchlistManager()
-    trader = PaperTrader()
-
-    # ---- Daily trade count ----
     today = datetime.now().strftime("%Y-%m-%d")
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.execute("""
-        SELECT COUNT(*) FROM trades
-        WHERE entry_time LIKE ?
-    """, (today + '%',))
-    daily_trades = cursor.fetchone()[0]
-    conn.close()
-    if daily_trades >= MAX_TRADES_PER_DAY:
-        print(f"[Entry] Daily limit reached: {daily_trades} >= {MAX_TRADES_PER_DAY}")
+    print(f"\n[Main] REVIEW MODE - {today}")
+
+    watchlist = wm.get_active_watchlist()
+    if not watchlist:
+        print("[Main] Watchlist empty.")
         return
 
-    # ---- Active trades ----
+    # ---- Check daily loss limit ----
+    trades = get_all_trades()
+    today_trades = [t for t in trades if t.get('entry_time', '').startswith(today)]
+    today_pnl = sum(t.get('pnl', 0) for t in today_trades if t.get('exit_time'))
+    if today_pnl < -MAX_DAILY_LOSS * 100:  # negative percentage
+        print(f"[Main] Daily loss limit reached: {today_pnl:.2f}%. Stopping new recommendations.")
+        return
+
+    # ---- Active trades count ----
     open_trades = get_open_trades()
     if len(open_trades) >= MAX_ACTIVE_TRADES:
-        print(f"[Entry] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
+        print(f"[Main] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
         return
 
-    slots = min(
-        MAX_ACTIVE_TRADES - len(open_trades),
-        MAX_TRADES_PER_DAY - daily_trades
-    )
-    if slots <= 0:
-        print("[Entry] No slots available")
+    # ---- Daily trade count ----
+    today_trades_count = len([t for t in trades if t.get('entry_time', '').startswith(today)])
+    if today_trades_count >= MAX_TRADES_PER_DAY:
+        print(f"[Main] Daily trade limit reached: {today_trades_count} >= {MAX_TRADES_PER_DAY}")
         return
 
-    # ---- READY candidates with HARD FILTERS ----
-    ready = []
-    for w in wm.get_active_watchlist():
-        # 1. Spread must be known and <= MAX_READY_SPREAD
-        spread = w.get("spread_pct")
+    # ---- Evaluate each candidate ----
+    reviews = []
+    for w in watchlist:
+        if w.get('status') != 'READY':
+            continue
+
+        # Hard filters
+        spread = w.get('spread_pct')
         if spread is None or spread > MAX_READY_SPREAD:
             continue
 
-        # 2. Status must be READY
-        if w.get("status") != "READY":
+        if w.get('event_score', 0) < 70:
             continue
 
-        # 3. Event Score
-        if w.get("event_score", 0) < MIN_READY_EVENT_SCORE:
+        rvol = w.get('rvol', 0)
+        if rvol < MIN_READY_RVOL:
             continue
 
-        # 4. RVOL
-        if w.get("rvol", 0) < MIN_READY_RVOL:
+        if w.get('gap_pct', 0) > MAX_GAP_PCT:
             continue
 
-        # 5. Gap not too extended
-        if w.get("gap_pct", 0) >= MAX_GAP_FOR_READY:
+        if w.get('pm_high_dist', 999) > MAX_PM_HIGH_DIST:
             continue
 
-        # 6. PM High Distance must be within threshold
-        if w.get("pm_high_dist", 999) > MAX_PM_HIGH_DIST_READY:
+        if w.get('catalyst', '—') == '—' or w.get('catalyst_score', 0) <= 0:
             continue
 
-        # 7. VWAP – price must be above VWAP
-        price = w.get("price", 0)
-        vwap = w.get("vwap", price)
-        if price < vwap * 1.01:  # at least 1% above VWAP
+        price = w.get('price', 0)
+        vwap = w.get('vwap', price)
+        if price < vwap * 1.01:
             continue
 
-        # 8. Dilution risk
-        if w.get("dilution_risk") in ("HIGH", "CRITICAL"):
-            continue
+        # ---- Calculate Entry / Stop / TP ----
+        trade_plan = calculate_entry_stop_tp(w)
+        entry = trade_plan['entry']
+        stop = trade_plan['stop']
+        tp1 = trade_plan['tp1']
+        tp2 = trade_plan['tp2']
+        rr1 = trade_plan['rr1']
+        rr2 = trade_plan['rr2']
 
-        # 9. Catalyst must exist (not "—")
-        catalyst = w.get("catalyst", "—")
-        if catalyst == "—" or catalyst == "":
-            continue
+        # ---- Calculate Net Profit (assuming 100 shares for estimation) ----
+        shares = 100  # placeholder; actual sizing can be added later
+        net1 = calculate_net_profit(entry, tp1, shares)
+        net2 = calculate_net_profit(entry, tp2, shares)
 
-        ready.append(w)
+        if net1['net_pct'] < MIN_NET_PROFIT_PCT:
+            continue  # not worth it after costs
 
-    if not ready:
-        print("[Entry] No READY candidates meeting V2.6 execution criteria.")
+        reviews.append({
+            'candidate': w,
+            'entry': entry,
+            'stop': stop,
+            'tp1': tp1,
+            'tp2': tp2,
+            'rr1': rr1,
+            'rr2': rr2,
+            'net1': net1,
+            'net2': net2,
+        })
+
+    if not reviews:
+        print("[Main] No review-worthy candidates.")
         return
 
-    ready.sort(key=lambda x: x.get("event_score", 0), reverse=True)
+    # ---- Send review to Telegram ----
+    msg = format_review_v27(reviews, today)
+    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    for candidate in ready[:slots]:
-        ticker = candidate["ticker"]
-        price = candidate.get("ready_price") or candidate["price"]
-
-        # ---- Duplicate protection ----
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.execute("""
-            SELECT id FROM trades
-            WHERE ticker = ? AND exit_time IS NULL
-        """, (ticker,))
-        if cursor.fetchone():
-            print(f"[Entry] {ticker} already has open trade. Skipping.")
-            conn.close()
-            continue
-        conn.close()
-
-        result = trader.enter_trade(
-            symbol=ticker,
-            price=price,
-            stop_price=candidate.get("stop_price"),
-            tp1=candidate.get("tp1"),
-            tp2=candidate.get("tp2"),
-            rr1=candidate.get("rr1"),
-            rr2=candidate.get("rr2"),
-            score=candidate.get("event_score", 0),
-            rvol=candidate.get("rvol", 0),
-            gap=candidate.get("gap_pct", 0),
-            dvol=candidate.get("dvol", 0),
-            catalyst=candidate.get("catalyst", ""),
-            trigger_price=candidate.get("trigger_price"),
-            pm_high=candidate.get("pm_high"),
-            vwap=candidate.get("vwap"),
-            entry_type="LIMIT",
-            wait_for_fill=10
-        )
-
-        if result.get("filled"):
-            conn = sqlite3.connect(DB_PATH)
-            conn.execute("""
-                UPDATE watchlist SET status = 'EXECUTED'
-                WHERE ticker = ? AND status = 'READY'
-            """, (ticker,))
-            conn.commit()
-            conn.close()
-            print(f"[Entry] ✅ {ticker} FILLED @ ${result['filled_price']:.2f}")
-        else:
-            print(f"[Entry] ⏳ {ticker} NOT FILLED — remains READY")
+    print(f"[Main] Sent review for {len(reviews)} candidates.")
+    print("[Main] MANUAL EXECUTION REQUIRED – BOT DOES NOT TRADE.")
 
 
 def full_mode():
-    """Legacy full mode – for testing only"""
-    scan_mode()
-    entry_mode()
+    """Legacy full mode – disabled for safety."""
+    print("[Main] Full mode disabled. Use scan and review only.")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py [scan|entry|full]")
+        print("Usage: python main.py [scan|review|full]")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
     if mode == "scan":
         scan_mode()
-    elif mode == "entry":
-        entry_mode()
+    elif mode == "review":
+        review_mode()
     elif mode == "full":
         full_mode()
     else:
