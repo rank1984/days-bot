@@ -1,5 +1,5 @@
 """
-Telegram formatter – V2.3 STABLE (with Float & Catalyst)
+Telegram formatter – V2.5 (READY = SETUP WORTH YOUR MANUAL REVIEW)
 """
 import requests
 from datetime import datetime
@@ -33,15 +33,14 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
         return False
 
 
-def format_quant_report_v23(candidates: list, date: str) -> str:
+def format_quant_report_v25(candidates: list, date: str) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🔥 <b>DAYS-BOT V2.3 — QUANT SCAN</b>",
+        "🔥 <b>DAYS-BOT V2.5 — QUANT SCAN</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
     ]
 
-    # Count states
     states = {}
     for c in candidates:
         st = c.get('state', 'REJECT')
@@ -67,9 +66,12 @@ def format_quant_report_v23(candidates: list, date: str) -> str:
         building_state = r.get('building_state', '—')
         prev_day_return = r.get('prev_day_return', 0)
         prev_day_volume = r.get('prev_day_volume', 0)
-        float_shares = r.get('float_shares', None)
+        pm_high = r.get('pm_high', 0)
+        pm_high_dist = r.get('pm_high_dist', 999)
+        spread = r.get('spread_pct')
+        spread_str = f"{spread:.1f}%" if spread is not None else "UNKNOWN"
 
-        float_str = f"{float_shares/1_000_000:.1f}M" if float_shares and float_shares > 0 else "UNKNOWN"
+        float_str = "UNKNOWN"
         dvol_str = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol/1_000:.0f}K"
         prev_vol_str = f"{prev_day_volume/1_000:.0f}K" if prev_day_volume >= 1_000 else str(prev_day_volume)
 
@@ -77,19 +79,20 @@ def format_quant_report_v23(candidates: list, date: str) -> str:
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
         lines.append(f"   🎯 Event Score: {event_score}  |  Grade: {grade}  |  Risk: {risk}")
         lines.append(f"   📊 RVOL: {rvol:.1f}x ({rvol_method})")
-        if prev_day_return:
-            lines.append(f"   📈 Prev Day: {prev_day_return:+.1f}%  |  Vol: {prev_vol_str}")
+        lines.append(f"   📈 Prev Day: {prev_day_return:+.1f}%  |  Vol: {prev_vol_str}")
         lines.append(f"   🏗️ Building: {building_state}")
-        lines.append(f"   💵 DVol: {dvol_str}  |  🏷️ Float: {float_str}")
-        lines.append(f"   📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
+        lines.append(f"   📏 PM High: ${pm_high:.2f}  |  PM Dist: {pm_high_dist:.1f}%")
+        lines.append(f"   💵 DVol: {dvol_str}  |  Spread: {spread_str}")
+        lines.append(f"   🏷️ Float: {float_str}  |  📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
         lines.append(f"   🔵 State: <b>{state}</b>")
 
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "⚡ READY = Trigger + RVOL + execution filters",
-        "🏆 A/A+ = setup quality only, NOT an entry signal",
-        "🚫 PRE-RUNNER = building from yesterday, not yet a trade",
+        "🟢 READY = SETUP WORTH YOUR MANUAL REVIEW",
+        "⚡ Entry: $price | Stop: -5% | TP1: +6% | TP2: +12%",
+        "⚠️ MANUAL CONFIRMATION REQUIRED – BOT DOES NOT EXECUTE",
+        "🚫 NO CHASE – large gaps require fresh trigger",
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
@@ -116,7 +119,9 @@ def format_watchlist(watchlist: list, date: str) -> str:
         grade = w.get('grade', '?')
         rvol = w.get('rvol', 0)
         catalyst = w.get('catalyst', '—')
-        float_shares = w.get('float_shares', None)
+        pm_high_dist = w.get('pm_high_dist', 999)
+        spread = w.get('spread_pct')
+        spread_str = f"{spread:.1f}%" if spread is not None else "UNKNOWN"
         prev_day_return = w.get('prev_day_return', 0)
 
         if state == 'PRE-RUNNER':
@@ -132,21 +137,20 @@ def format_watchlist(watchlist: list, date: str) -> str:
         else:
             status_icon = "⚪ REJECT"
 
-        float_str = f"{float_shares/1_000_000:.1f}M" if float_shares and float_shares > 0 else "UNKNOWN"
-
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
         lines.append(f"   🎯 ציון: {event_score}  |  Grade: {grade}  |  RVOL: {rvol:.1f}x")
         if prev_day_return:
             lines.append(f"   📈 Prev Day: {prev_day_return:+.1f}%")
-        lines.append(f"   🏷️ Float: {float_str}  |  📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
+        lines.append(f"   📏 PM Dist: {pm_high_dist:.1f}%  |  Spread: {spread_str}")
+        lines.append(f"   📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
         lines.append(f"   {status_icon}")
 
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "⚡ READY = Trigger + RVOL + אישור",
-        "🚀 כניסה רק בפריצה עם נפח",
+        "🟢 READY = SETUP WORTH YOUR MANUAL REVIEW",
+        "⚠️ MANUAL CONFIRMATION REQUIRED",
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
