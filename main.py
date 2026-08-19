@@ -1,5 +1,5 @@
 """
-DAYS-BOT V2.5 – Main Entry Point
+DAYS-BOT V2.6 – Main Entry Point
 """
 import sys
 import sqlite3
@@ -17,7 +17,7 @@ from database.db import init_db, save_alert, DB_PATH
 from watchlist_manager import WatchlistManager
 from paper_trader.paper_trader import PaperTrader
 from telegram_formatter import (
-    format_quant_report_v25,
+    format_quant_report_v26,
     format_watchlist,
     format_no_candidates,
     send_message
@@ -47,7 +47,7 @@ def scan_mode():
 
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    msg = format_quant_report_v25(candidates[:5], today)
+    msg = format_quant_report_v26(candidates[:5], today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
     watchlist = wm.get_active_watchlist()
@@ -99,24 +99,53 @@ def entry_mode():
         print("[Entry] No slots available")
         return
 
-    # ---- READY candidates (with BLOCK on unknown spread) ----
+    # ---- READY candidates with HARD FILTERS ----
     ready = []
     for w in wm.get_active_watchlist():
-        # Spread must be known and <= MAX_READY_SPREAD
+        # 1. Spread must be known and <= MAX_READY_SPREAD
         spread = w.get("spread_pct")
         if spread is None or spread > MAX_READY_SPREAD:
             continue
 
-        if (w.get("status") == "READY"
-            and w.get("event_score", 0) >= MIN_READY_EVENT_SCORE
-            and w.get("rvol", 0) >= MIN_READY_RVOL
-            and w.get("dilution_risk") != "CRITICAL"
-            and w.get("gap_pct", 0) < MAX_GAP_FOR_READY
-            and w.get("pm_high_dist", 999) <= PM_HIGH_DISTANCE_WATCH):
-            ready.append(w)
+        # 2. Status must be READY
+        if w.get("status") != "READY":
+            continue
+
+        # 3. Event Score
+        if w.get("event_score", 0) < MIN_READY_EVENT_SCORE:
+            continue
+
+        # 4. RVOL
+        if w.get("rvol", 0) < MIN_READY_RVOL:
+            continue
+
+        # 5. Gap not too extended
+        if w.get("gap_pct", 0) >= MAX_GAP_FOR_READY:
+            continue
+
+        # 6. PM High Distance must be within threshold
+        if w.get("pm_high_dist", 999) > MAX_PM_HIGH_DIST_READY:
+            continue
+
+        # 7. VWAP – price must be above VWAP
+        price = w.get("price", 0)
+        vwap = w.get("vwap", price)
+        if price < vwap * 1.01:  # at least 1% above VWAP
+            continue
+
+        # 8. Dilution risk
+        if w.get("dilution_risk") in ("HIGH", "CRITICAL"):
+            continue
+
+        # 9. Catalyst must exist (not "—")
+        catalyst = w.get("catalyst", "—")
+        if catalyst == "—" or catalyst == "":
+            continue
+
+        ready.append(w)
 
     if not ready:
-        print("[Entry] No READY candidates meeting V2.5 execution criteria.")
+        print("[Entry] No READY candidates meeting V2.6 execution criteria.")
         return
 
     ready.sort(key=lambda x: x.get("event_score", 0), reverse=True)
