@@ -8,7 +8,7 @@ FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
-# ── FILTERS (V2.2 FAST) ──────────────────────────────
+# ── FILTERS (V2.3 STABLE) ──────────────────────────────
 MIN_PRICE            = 0.1
 MAX_PRICE            = 50.0
 MIN_AVG_VOLUME       = 10_000
@@ -37,8 +37,13 @@ WEEKLY_REPORT_DAY = 4
 
 # ── DISABLE SLOW FEATURES ──────────────────────────────
 ENABLE_FLOAT_LOOKUP = False
-ENABLE_PRE_RUNNER = False
+ENABLE_PRE_RUNNER = True   # PRE‑RUNNER פעיל
 
 # ── ENTRY LIMITS ──────────────────────────────────────────
 MAX_ACTIVE_TRADES = 2
 MAX_TRADES_PER_DAY = 3
+
+# ── PRE-RUNNER THRESHOLDS ────────────────────────────────
+PRE_RUNNER_MIN_GAIN = 8.0
+PRE_RUNNER_MIN_VOLUME = 200_000
+PRE_RUNNER_MAX_GAP = 25.0
