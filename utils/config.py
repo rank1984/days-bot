@@ -1,5 +1,6 @@
 import os
 
+# ── API ──────────────────────────────────────────────────
 ALPACA_API_KEY    = os.getenv("ALPACA_API_KEY")
 ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
 POLYGON_API_KEY   = os.getenv("POLYGON_API_KEY")
@@ -8,33 +9,38 @@ FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
-# ── FILTERS ──────────────────────────────────────────────
+# ── HARD FILTERS ──────────────────────────────────────────
 MIN_PRICE            = 1.0          # $1 minimum – avoid pennies
 MAX_PRICE            = 50.0
-MIN_AVG_VOLUME       = 50_000       # minimum daily volume
+MIN_AVG_VOLUME       = 50_000       # minimum daily volume (fallback)
+MIN_PREMARKET_VOL    = 200_000      # minimum premarket volume
 MIN_GAP_PCT          = 3.0          # need some gap
-MAX_GAP_PCT          = 25.0         # avoid already extended
+MAX_GAP_PCT          = 20.0         # avoid already extended (READY limit)
 
-# ── READY CRITERIA (HARD) ──────────────────────────────
-MIN_READY_RVOL = 2.0
-MIN_READY_EVENT_SCORE = 70
-MAX_READY_SPREAD = 1.5              # % – REJECT if unknown or >1.5%
-MIN_READY_VWAP_DIST = 0.0           # price must be above VWAP
-MAX_PM_HIGH_DIST_READY = 2.0        # must be within 2% of PM High
+# ── PREMARKET DATA (needs minute bars) ──────────────────
+MIN_PREMARKET_VOL    = 200_000
+MIN_READY_RVOL       = 2.0          # time-adjusted RVOL minimum
+MAX_READY_SPREAD     = 1.5          # % – REJECT if unknown or >1.5%
+MAX_PM_HIGH_DIST     = 2.0          # % below PM High to be READY
+MIN_VWAP_DIST        = 0.01         # price must be at least 1% above VWAP
 
 # ── PRE-RUNNER ────────────────────────────────────────────
 PRE_RUNNER_MIN_GAIN = 8.0
 PRE_RUNNER_MIN_VOLUME = 200_000
-PRE_RUNNER_MAX_GAP = 25.0
+PRE_RUNNER_MAX_GAP = 20.0
 
-# ── RISK ──────────────────────────────────────────────────
-MAX_RISK_PER_TRADE = 0.02           # 2% of equity
+# ── RISK & POSITION ──────────────────────────────────────
+MAX_RISK_PER_TRADE = 0.01           # 1% of equity (conservative)
 MAX_POSITION_NOTIONAL = 0.20        # 20% of equity
-MAX_DAILY_LOSS = 0.05               # 5% of equity
+MAX_DAILY_LOSS = 0.03               # 3% daily loss – stops new signals
+MAX_TRADES_PER_DAY = 2              # max 2 trades per day
+MAX_ACTIVE_TRADES = 2               # max 2 open positions
 
-# ── POSITION & TRADE LIMITS ─────────────────────────────
-MAX_ACTIVE_TRADES = 2
-MAX_TRADES_PER_DAY = 2              # only 2 per day
+# ── NET PROFIT GATE ──────────────────────────────────────
+MIN_NET_PROFIT_PCT = 4.0            # minimum net expected profit after costs
+TAX_RATE = 0.25                     # 25% capital gains tax (Israel)
+BROKER_FEE_PCT = 0.018              # max 1.8% of trade value (Blink)
+BROKER_FEE_MIN = 1.50               # min $1.50 per trade (Blink)
 
 # ── SCORING WEIGHTS ──────────────────────────────────────
 WEIGHT_RVOL = 20
