@@ -1,5 +1,5 @@
 """
-Watchlist Manager – stores candidates across runs, tracks triggers and breakout prices
+Watchlist Manager – stores candidates with full V2.5 fields
 """
 import sqlite3
 import os
@@ -26,6 +26,7 @@ class WatchlistManager:
                 score REAL,
                 rvol REAL,
                 pm_high REAL,
+                pm_high_dist REAL,
                 trigger_price REAL,
                 catalyst TEXT,
                 added_time TEXT,
@@ -40,32 +41,16 @@ class WatchlistManager:
                 rr1 REAL,
                 rr2 REAL,
                 dvol REAL,
-                vwap REAL
+                vwap REAL,
+                spread_pct REAL,
+                prev_day_return REAL,
+                building_state TEXT,
+                event_score REAL,
+                grade TEXT,
+                state TEXT,
+                dilution_risk TEXT
             )
         """)
-        
-        # הוסף שדות V2 אם חסרים
-        columns = [row[1] for row in conn.execute("PRAGMA table_info(watchlist)")]
-        new_fields = {
-            "rvol_score": "REAL",
-            "float_turnover": "REAL",
-            "float_turnover_score": "REAL",
-            "float_score": "REAL",
-            "gap_score": "REAL",
-            "liquidity_score": "REAL",
-            "catalyst_score": "REAL",
-            "event_score": "REAL",
-            "setup_grade": "TEXT",
-            "dilution_risk": "TEXT",
-            "risk_score": "REAL",
-            "red_flags": "TEXT",
-            "float_shares": "REAL",
-            "spread_pct": "REAL",
-            "catalyst_type": "TEXT",
-        }
-        for field, dtype in new_fields.items():
-            if field not in columns:
-                conn.execute(f"ALTER TABLE watchlist ADD COLUMN {field} {dtype}")
         conn.commit()
         conn.close()
     
@@ -85,8 +70,9 @@ class WatchlistManager:
         ticker = candidate['ticker']
         pm_high = candidate.get('pm_high', candidate['price'] * 1.02)
         trigger_price = round(pm_high * 1.005, 2)
+        pm_high_dist = candidate.get('pm_high_dist', 999.0)
+        spread_pct = candidate.get('spread_pct')  # may be None
         
-        # חישוב ערכי ברירת מחדל
         stop_price = round(candidate['price'] * 0.95, 2)
         tp1 = round(candidate['price'] * 1.06, 2)
         tp2 = round(candidate['price'] * 1.12, 2)
@@ -102,90 +88,44 @@ class WatchlistManager:
         row = cursor.fetchone()
         
         if row:
-            # UPDATE – צריך להתאים את כל השדות
             conn.execute("""
                 UPDATE watchlist SET
-                    price = ?,
-                    gap_pct = ?,
-                    score = ?,
-                    rvol = ?,
-                    pm_high = ?,
-                    trigger_price = ?,
-                    catalyst = ?,
-                    hits = hits + 1,
-                    last_seen = ?,
-                    status = ?,
-                    stop_price = ?,
-                    tp1 = ?,
-                    tp2 = ?,
-                    rr1 = ?,
-                    rr2 = ?,
-                    dvol = ?,
-                    vwap = ?,
-                    rvol_score = ?,
-                    float_turnover = ?,
-                    float_turnover_score = ?,
-                    float_score = ?,
-                    gap_score = ?,
-                    liquidity_score = ?,
-                    catalyst_score = ?,
-                    event_score = ?,
-                    setup_grade = ?,
-                    dilution_risk = ?,
-                    risk_score = ?,
-                    red_flags = ?,
-                    float_shares = ?,
-                    spread_pct = ?,
-                    catalyst_type = ?
+                    price = ?, gap_pct = ?, score = ?, rvol = ?,
+                    pm_high = ?, pm_high_dist = ?, trigger_price = ?,
+                    catalyst = ?, hits = hits + 1, last_seen = ?,
+                    status = ?, stop_price = ?, tp1 = ?, tp2 = ?,
+                    rr1 = ?, rr2 = ?, dvol = ?, vwap = ?,
+                    spread_pct = ?, prev_day_return = ?,
+                    building_state = ?, event_score = ?, grade = ?,
+                    state = ?, dilution_risk = ?
                 WHERE id = ?
             """, (
-                candidate['price'],
-                candidate['gap_pct'],
-                candidate.get('score', 0),
-                candidate.get('rvol', 0),
-                pm_high,
-                trigger_price,
+                candidate['price'], candidate['gap_pct'], candidate.get('score', 0), candidate.get('rvol', 0),
+                pm_high, pm_high_dist, trigger_price,
                 candidate.get('catalyst', ''),
                 datetime.now().isoformat(),
                 self._determine_status(candidate),
-                stop_price,
-                tp1,
-                tp2,
-                rr1,
-                rr2,
-                candidate.get('dollar_volume', 0),
-                candidate.get('vwap_est', 0),
-                candidate.get('rvol_score', 0),
-                candidate.get('float_turnover'),
-                candidate.get('float_turnover_score', 0),
-                candidate.get('float_score', 0),
-                candidate.get('gap_score', 0),
-                candidate.get('liquidity_score', 0),
-                candidate.get('catalyst_score', 0),
+                stop_price, tp1, tp2, rr1, rr2,
+                candidate.get('dollar_volume', 0), candidate.get('vwap', 0),
+                spread_pct,
+                candidate.get('prev_day_return', 0),
+                candidate.get('building_state', '—'),
                 candidate.get('event_score', 0),
-                candidate.get('setup_grade', 'UNKNOWN'),
-                candidate.get('dilution_risk', 'UNKNOWN'),
-                candidate.get('risk_score', 0),
-                ",".join(candidate.get('red_flags', [])),
-                candidate.get('float_shares', 0),
-                candidate.get('spread_pct', 0),
-                candidate.get('catalyst_type', 'UNKNOWN'),
+                candidate.get('grade', '?'),
+                candidate.get('state', 'WATCH'),
+                candidate.get('dilution_risk', 'LOW'),
                 row[0]
             ))
         else:
-            # INSERT – 34 ערכים, 34 סימני שאלה
             conn.execute("""
                 INSERT INTO watchlist (
                     ticker, price, gap_pct, score, rvol,
-                    pm_high, trigger_price, catalyst,
+                    pm_high, pm_high_dist, trigger_price, catalyst,
                     added_time, last_seen, status, hits,
                     stop_price, tp1, tp2, rr1, rr2, dvol, vwap,
-                    rvol_score, float_turnover, float_turnover_score,
-                    float_score, gap_score, liquidity_score,
-                    catalyst_score, event_score, setup_grade,
-                    dilution_risk, risk_score, red_flags,
-                    float_shares, spread_pct, catalyst_type
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    spread_pct, prev_day_return, building_state,
+                    event_score, grade, state, dilution_risk
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 ticker,
                 candidate['price'],
@@ -193,34 +133,22 @@ class WatchlistManager:
                 candidate.get('score', 0),
                 candidate.get('rvol', 0),
                 pm_high,
+                pm_high_dist,
                 trigger_price,
                 candidate.get('catalyst', ''),
                 datetime.now().isoformat(),
                 datetime.now().isoformat(),
                 self._determine_status(candidate),
                 1,
-                stop_price,
-                tp1,
-                tp2,
-                rr1,
-                rr2,
-                candidate.get('dollar_volume', 0),
-                candidate.get('vwap_est', 0),
-                candidate.get('rvol_score', 0),
-                candidate.get('float_turnover'),
-                candidate.get('float_turnover_score', 0),
-                candidate.get('float_score', 0),
-                candidate.get('gap_score', 0),
-                candidate.get('liquidity_score', 0),
-                candidate.get('catalyst_score', 0),
+                stop_price, tp1, tp2, rr1, rr2,
+                candidate.get('dollar_volume', 0), candidate.get('vwap', 0),
+                spread_pct,
+                candidate.get('prev_day_return', 0),
+                candidate.get('building_state', '—'),
                 candidate.get('event_score', 0),
-                candidate.get('setup_grade', 'UNKNOWN'),
-                candidate.get('dilution_risk', 'UNKNOWN'),
-                candidate.get('risk_score', 0),
-                ",".join(candidate.get('red_flags', [])),
-                candidate.get('float_shares', 0),
-                candidate.get('spread_pct', 0),
-                candidate.get('catalyst_type', 'UNKNOWN')
+                candidate.get('grade', '?'),
+                candidate.get('state', 'WATCH'),
+                candidate.get('dilution_risk', 'LOW')
             ))
         conn.commit()
         conn.close()
