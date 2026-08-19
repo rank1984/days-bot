@@ -1,5 +1,5 @@
 """
-Telegram formatter – V2.3 STABLE
+Telegram formatter – V2.3 STABLE (with Float & Catalyst)
 """
 import requests
 from datetime import datetime
@@ -67,7 +67,9 @@ def format_quant_report_v23(candidates: list, date: str) -> str:
         building_state = r.get('building_state', '—')
         prev_day_return = r.get('prev_day_return', 0)
         prev_day_volume = r.get('prev_day_volume', 0)
+        float_shares = r.get('float_shares', None)
 
+        float_str = f"{float_shares/1_000_000:.1f}M" if float_shares and float_shares > 0 else "UNKNOWN"
         dvol_str = f"${dvol/1_000_000:.1f}M" if dvol >= 1_000_000 else f"${dvol/1_000:.0f}K"
         prev_vol_str = f"{prev_day_volume/1_000:.0f}K" if prev_day_volume >= 1_000 else str(prev_day_volume)
 
@@ -78,7 +80,8 @@ def format_quant_report_v23(candidates: list, date: str) -> str:
         if prev_day_return:
             lines.append(f"   📈 Prev Day: {prev_day_return:+.1f}%  |  Vol: {prev_vol_str}")
         lines.append(f"   🏗️ Building: {building_state}")
-        lines.append(f"   💵 DVol: {dvol_str}  |  📰 {catalyst[:30] if catalyst != '—' else '—'}")
+        lines.append(f"   💵 DVol: {dvol_str}  |  🏷️ Float: {float_str}")
+        lines.append(f"   📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
         lines.append(f"   🔵 State: <b>{state}</b>")
 
     lines += [
@@ -90,19 +93,6 @@ def format_quant_report_v23(candidates: list, date: str) -> str:
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
-
-
-def format_no_candidates(date: str, universe_size: int = 0) -> str:
-    time_str = datetime.now(ET).strftime("%H:%M ET")
-    return (
-        f"🎯 <b>DAYS-BOT - מועמדויות לפריצה</b>\n"
-        f"📅 {date}  |  🕐 {time_str}\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🔍 נסרקו: {universe_size} מניות\n"
-        f"😴 אין מועמדויות איכותיות היום\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"⏰ בדיקה חוזרת מחר ב-14:30"
-    )
 
 
 def format_watchlist(watchlist: list, date: str) -> str:
@@ -125,6 +115,9 @@ def format_watchlist(watchlist: list, date: str) -> str:
         event_score = w.get('event_score', 0)
         grade = w.get('grade', '?')
         rvol = w.get('rvol', 0)
+        catalyst = w.get('catalyst', '—')
+        float_shares = w.get('float_shares', None)
+        prev_day_return = w.get('prev_day_return', 0)
 
         if state == 'PRE-RUNNER':
             status_icon = "🟣 PRE-RUNNER"
@@ -139,9 +132,14 @@ def format_watchlist(watchlist: list, date: str) -> str:
         else:
             status_icon = "⚪ REJECT"
 
+        float_str = f"{float_shares/1_000_000:.1f}M" if float_shares and float_shares > 0 else "UNKNOWN"
+
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
         lines.append(f"   🎯 ציון: {event_score}  |  Grade: {grade}  |  RVOL: {rvol:.1f}x")
+        if prev_day_return:
+            lines.append(f"   📈 Prev Day: {prev_day_return:+.1f}%")
+        lines.append(f"   🏷️ Float: {float_str}  |  📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
         lines.append(f"   {status_icon}")
 
     lines += [
@@ -152,3 +150,16 @@ def format_watchlist(watchlist: list, date: str) -> str:
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
+
+
+def format_no_candidates(date: str, universe_size: int = 0) -> str:
+    time_str = datetime.now(ET).strftime("%H:%M ET")
+    return (
+        f"🎯 <b>DAYS-BOT - מועמדויות לפריצה</b>\n"
+        f"📅 {date}  |  🕐 {time_str}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🔍 נסרקו: {universe_size} מניות\n"
+        f"😴 אין מועמדויות איכותיות היום\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"⏰ בדיקה חוזרת מחר ב-14:30"
+    )
