@@ -8,7 +8,7 @@ FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
-# ── FILTERS (V2.3 STABLE) ──────────────────────────────
+# ── FILTERS ──────────────────────────────────────────────
 MIN_PRICE            = 0.1
 MAX_PRICE            = 50.0
 MIN_AVG_VOLUME       = 10_000
@@ -37,13 +37,26 @@ WEEKLY_REPORT_DAY = 4
 
 # ── DISABLE SLOW FEATURES ──────────────────────────────
 ENABLE_FLOAT_LOOKUP = False
-ENABLE_PRE_RUNNER = True   # PRE‑RUNNER פעיל
+ENABLE_PRE_RUNNER = True
 
 # ── ENTRY LIMITS ──────────────────────────────────────────
 MAX_ACTIVE_TRADES = 2
 MAX_TRADES_PER_DAY = 3
 
-# ── PRE-RUNNER THRESHOLDS ────────────────────────────────
+# ── PRE-RUNNER ────────────────────────────────────────────
 PRE_RUNNER_MIN_GAIN = 8.0
 PRE_RUNNER_MIN_VOLUME = 200_000
 PRE_RUNNER_MAX_GAP = 25.0
+
+# ── READY CRITERIA ────────────────────────────────────────
+MIN_READY_RVOL = 5.0
+MIN_READY_EVENT_SCORE = 60
+MAX_READY_SPREAD = 2.0
+MAX_GAP_FOR_READY = 25.0
+PM_HIGH_DISTANCE_WATCH = 2.0   # % below PM High to be considered near trigger
+PM_HIGH_DISTANCE_REJECT = 7.0  # % below PM High to reject
+
+# ── RISK ──────────────────────────────────────────────────
+MAX_RISK_PER_TRADE = 0.02      # 2% of equity
+MAX_POSITION_NOTIONAL = 0.20   # 20% of equity
+MAX_DAILY_LOSS = 0.05          # 5% of equity
