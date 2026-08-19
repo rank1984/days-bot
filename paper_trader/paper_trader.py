@@ -1,5 +1,5 @@
 """
-DAYS-BOT Paper Trader – submits orders, waits for fill, saves to DB
+Paper Trader – with REAL Stop Loss and Take Profit (Bracket Orders)
 """
 import sys
 import time
@@ -63,7 +63,7 @@ class PaperTrader:
         if price <= 0:
             return {"success": False, "filled": False, "order": None, "filled_price": None, "shares": 0}
 
-        # Position sizing – risk-based if stop given
+        # ---- Position sizing ----
         if shares is None or shares <= 0:
             try:
                 account = self.get_account()
@@ -82,7 +82,7 @@ class PaperTrader:
 
         print(f"[PaperTrader] ORDER {symbol} @ ${price:.2f} x {shares}")
 
-        # Submit order
+        # ---- Submit LIMIT order ----
         try:
             order = self.api.submit_order(
                 symbol=symbol,
@@ -97,7 +97,7 @@ class PaperTrader:
             print(f"[PaperTrader] ❌ Order failed {symbol}: {e}")
             return {"success": False, "filled": False, "order": None, "filled_price": None, "shares": shares}
 
-        # Wait for fill
+        # ---- Wait for fill ----
         filled_order = None
         for attempt in range(wait_for_fill):
             time.sleep(1)
@@ -122,11 +122,12 @@ class PaperTrader:
                 pass
             return {"success": False, "filled": False, "order": order, "filled_price": None, "shares": shares}
 
-        # Real fill – save to DB
+        # ---- FILLED ----
         filled_price = float(filled_order.filled_avg_price)
         filled_qty = int(float(filled_order.filled_qty))
         print(f"[PaperTrader] ✅ FILLED {symbol} @ ${filled_price:.2f} x {filled_qty}")
 
+        # ---- SAVE TRADE ----
         try:
             save_trade(
                 ticker=symbol,
@@ -150,6 +151,14 @@ class PaperTrader:
         except Exception as e:
             print(f"[PaperTrader] ❌ DB save failed for {symbol}: {e}")
 
+        # ---- BRACKET ORDERS ----
+        if stop_price is not None and stop_price > 0:
+            self.set_stop_loss(symbol, stop_price, filled_qty)
+        if tp1 is not None and tp1 > 0:
+            self.set_take_profit(symbol, tp1, filled_qty)
+        if tp2 is not None and tp2 > 0:
+            self.set_take_profit(symbol, tp2, filled_qty)
+
         return {
             "success": True,
             "filled": True,
@@ -158,12 +167,54 @@ class PaperTrader:
             "shares": filled_qty
         }
 
-    def set_stop_loss(self, symbol: str, stop_price: float):
+    def set_stop_loss(self, symbol: str, stop_price: float, qty: int = None):
         stop_price = round(float(stop_price), 2)
-        print(f"[PaperTrader] Stop Loss: {symbol} @ ${stop_price:.2f}")
-        return True
+        if qty is None:
+            try:
+                pos = self.api.get_position(symbol)
+                qty = int(float(pos.qty))
+            except:
+                print(f"[PaperTrader] ⚠️ Cannot get position for {symbol}, skipping stop")
+                return None
+        if qty <= 0:
+            return None
+        try:
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="stop",
+                stop_price=stop_price,
+                time_in_force="day"
+            )
+            print(f"[PaperTrader] 🛑 STOP-LOSS set for {symbol} @ ${stop_price:.2f} (Order: {order.id})")
+            return order
+        except Exception as e:
+            print(f"[PaperTrader] ❌ Stop-loss failed for {symbol}: {e}")
+            return None
 
-    def set_take_profit(self, symbol: str, target_price: float):
+    def set_take_profit(self, symbol: str, target_price: float, qty: int = None):
         target_price = round(float(target_price), 2)
-        print(f"[PaperTrader] Take Profit: {symbol} @ ${target_price:.2f}")
-        return True
+        if qty is None:
+            try:
+                pos = self.api.get_position(symbol)
+                qty = int(float(pos.qty))
+            except:
+                print(f"[PaperTrader] ⚠️ Cannot get position for {symbol}, skipping TP")
+                return None
+        if qty <= 0:
+            return None
+        try:
+            order = self.api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side="sell",
+                type="limit",
+                limit_price=target_price,
+                time_in_force="day"
+            )
+            print(f"[PaperTrader] 🎯 TAKE-PROFIT set for {symbol} @ ${target_price:.2f} (Order: {order.id})")
+            return order
+        except Exception as e:
+            print(f"[PaperTrader] ❌ Take-profit failed for {symbol}: {e}")
+            return None
