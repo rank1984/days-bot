@@ -1,8 +1,7 @@
 """
-Premarket scanner – V2.3 STABLE (Volume from daily_bar, PRE-RUNNER)
+Premarket scanner – V2.5 (Spread BLOCK, PM High Dist, PRE-RUNNER)
 """
 import sys
-import os
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any
@@ -72,32 +71,25 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         stats['no_bar'] += 1
                         continue
 
-                    # ============================================================
-                    # REAL DAILY VOLUME – NEVER use latest_trade.size
-                    # latest_trade.size = size of ONE trade, not cumulative volume.
-                    # ============================================================
                     price = float(latest_trade.price)
                     prev_close = float(daily_bar.close)
 
-                    # Current day volume (from daily_bar)
+                    # ---- REAL DAILY VOLUME ----
                     today_volume = int(getattr(daily_bar, 'volume', 0) or 0)
 
-                    # Previous day data (from snapshot.prev_daily_bar if available)
+                    # ---- Previous day ----
                     prev_daily_bar = getattr(snapshot, 'prev_daily_bar', None)
                     prev_volume = 0
                     prev_day_return = 0.0
                     prev_day_volume = 0
-
                     if prev_daily_bar:
                         prev_open = float(getattr(prev_daily_bar, 'open', 0) or 0)
                         prev_close_price = float(getattr(prev_daily_bar, 'close', 0) or 0)
                         prev_volume = int(getattr(prev_daily_bar, 'volume', 0) or 0)
                         prev_day_volume = prev_volume
-
                         if prev_open > 0:
                             prev_day_return = ((prev_close_price - prev_open) / prev_open) * 100
 
-                    # If no prev_daily_bar, use previous close from daily_bar
                     if prev_volume <= 0:
                         prev_volume = int(getattr(daily_bar, 'volume', 0) or 0)
 
@@ -105,7 +97,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         stats['no_bar'] += 1
                         continue
 
-                    # ---- Price filter ----
+                    # ---- Price ----
                     if price < MIN_PRICE or price > MAX_PRICE:
                         continue
                     stats['price_passed'] += 1
@@ -116,19 +108,16 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['gap_passed'] += 1
 
-                    # ---- Volume filter ----
+                    # ---- Volume ----
                     if prev_volume < MIN_AVG_VOLUME:
                         continue
                     stats['volume_passed'] += 1
 
-                    # ---- RVOL (stable daily fallback) ----
-                    if prev_volume > 0:
-                        rvol = today_volume / prev_volume
-                    else:
-                        rvol = 0.0
+                    # ---- RVOL ----
+                    rvol = today_volume / prev_volume if prev_volume > 0 else 0.0
                     rvol_method = "DAILY_FALLBACK"
 
-                    # ---- PRE-RUNNER / BUILDING ----
+                    # ---- PRE-RUNNER ----
                     building = (
                         prev_day_return >= PRE_RUNNER_MIN_GAIN
                         and prev_day_volume >= PRE_RUNNER_MIN_VOLUME
@@ -136,43 +125,39 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     )
                     building_state = "PRE-RUNNER" if building else "—"
 
-                    # ---- Event Score ----
-                    # RVOL Score (capped – extreme RVOL cannot dominate)
-                    if rvol >= 100:
-                        rvol_score = 20
-                    elif rvol >= 50:
-                        rvol_score = 18
-                    elif rvol >= 20:
-                        rvol_score = 15
-                    elif rvol >= 10:
-                        rvol_score = 12
-                    elif rvol >= 5:
-                        rvol_score = 8
-                    elif rvol >= 3:
-                        rvol_score = 5
-                    else:
-                        rvol_score = 0
+                    # ---- PM High Distance ----
+                    pm_high = float(getattr(daily_bar, 'high', price))
+                    pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > 0 else 999.0
 
-                    # Gap Score (diminishing after 20%)
-                    if gap_pct < 1:
-                        gap_score = 0
-                    elif gap_pct < 3:
-                        gap_score = 5
-                    elif gap_pct < 5:
-                        gap_score = 8
-                    elif gap_pct < 10:
-                        gap_score = 12
-                    elif gap_pct < 20:
-                        gap_score = 15
-                    elif gap_pct < 30:
-                        gap_score = 10
+                    # ---- Spread – BLOCK if unknown ----
+                    bid = getattr(snapshot, 'bid_price', None)
+                    ask = getattr(snapshot, 'ask_price', None)
+                    if bid and ask and price > 0:
+                        spread_pct = ((ask - bid) / price) * 100
                     else:
-                        gap_score = 5
+                        spread_pct = None  # UNKNOWN → BLOCK
+
+                    # ---- Event Score ----
+                    if rvol >= 100: rvol_score = 20
+                    elif rvol >= 50: rvol_score = 18
+                    elif rvol >= 20: rvol_score = 15
+                    elif rvol >= 10: rvol_score = 12
+                    elif rvol >= 5: rvol_score = 8
+                    elif rvol >= 3: rvol_score = 5
+                    else: rvol_score = 0
+
+                    if gap_pct < 1: gap_score = 0
+                    elif gap_pct < 3: gap_score = 5
+                    elif gap_pct < 5: gap_score = 8
+                    elif gap_pct < 10: gap_score = 12
+                    elif gap_pct < 20: gap_score = 15
+                    elif gap_pct < 30: gap_score = 10
+                    else: gap_score = 5
 
                     event_score = rvol_score + gap_score
                     event_score = min(100, max(0, event_score))
 
-                    # ---- State Engine ----
+                    # ---- State ----
                     if gap_pct >= 30:
                         state = "EXTENDED"
                     elif prev_day_return >= 25:
@@ -213,14 +198,12 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'prev_day_volume': prev_day_volume,
                         'building': building,
                         'building_state': building_state,
+                        'pm_high': pm_high,
+                        'pm_high_dist': pm_high_dist,
+                        'spread_pct': spread_pct,
                         'float_shares': None,
-                        'float_turnover': None,
-                        'spread_pct': 0,
-                        'pm_high': getattr(daily_bar, 'high', price),
-                        'pm_high_dist': 0,
                         'catalyst': '—',
                         'catalyst_type': 'UNKNOWN',
-                        'catalyst_score': 0,
                         'dilution_risk': 'LOW',
                         'dollar_volume': price * today_volume,
                         'event_score': event_score,
@@ -241,9 +224,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             print(f"[Premarket] Batch error: {e}")
             continue
 
-    # ---- Stats ----
     print("\n" + "="*50)
-    print("📊 PREMARKET SCAN STATISTICS (V2.3 STABLE)")
+    print("📊 PREMARKET SCAN STATISTICS (V2.5)")
     print("="*50)
     print(f"Total Universe:        {stats['total']:,}")
     print(f"No Snapshot:           {stats['no_snapshot']:,}")
