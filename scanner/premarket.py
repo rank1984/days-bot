@@ -1,5 +1,5 @@
 """
-Premarket scanner – FAST version (no yfinance, no float, no PRE-RUNNER)
+Premarket scanner – V2.3 STABLE (Volume from daily_bar, PRE-RUNNER)
 """
 import sys
 import os
@@ -67,16 +67,43 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         stats['no_trade'] += 1
                         continue
 
-                    price = latest_trade.price
-                    volume = latest_trade.size
-
                     daily_bar = snapshot.daily_bar
                     if not daily_bar:
                         stats['no_bar'] += 1
                         continue
 
-                    prev_close = daily_bar.close
-                    prev_volume = daily_bar.volume
+                    # ============================================================
+                    # REAL DAILY VOLUME – NEVER use latest_trade.size
+                    # latest_trade.size = size of ONE trade, not cumulative volume.
+                    # ============================================================
+                    price = float(latest_trade.price)
+                    prev_close = float(daily_bar.close)
+
+                    # Current day volume (from daily_bar)
+                    today_volume = int(getattr(daily_bar, 'volume', 0) or 0)
+
+                    # Previous day data (from snapshot.prev_daily_bar if available)
+                    prev_daily_bar = getattr(snapshot, 'prev_daily_bar', None)
+                    prev_volume = 0
+                    prev_day_return = 0.0
+                    prev_day_volume = 0
+
+                    if prev_daily_bar:
+                        prev_open = float(getattr(prev_daily_bar, 'open', 0) or 0)
+                        prev_close_price = float(getattr(prev_daily_bar, 'close', 0) or 0)
+                        prev_volume = int(getattr(prev_daily_bar, 'volume', 0) or 0)
+                        prev_day_volume = prev_volume
+
+                        if prev_open > 0:
+                            prev_day_return = ((prev_close_price - prev_open) / prev_open) * 100
+
+                    # If no prev_daily_bar, use previous close from daily_bar
+                    if prev_volume <= 0:
+                        prev_volume = int(getattr(daily_bar, 'volume', 0) or 0)
+
+                    if today_volume <= 0:
+                        stats['no_bar'] += 1
+                        continue
 
                     # ---- Price filter ----
                     if price < MIN_PRICE or price > MAX_PRICE:
@@ -89,55 +116,75 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['gap_passed'] += 1
 
-                    # ---- Volume filter (lowered) ----
+                    # ---- Volume filter ----
                     if prev_volume < MIN_AVG_VOLUME:
                         continue
                     stats['volume_passed'] += 1
 
-                    # ---- Simple RVOL (fallback) ----
-                    rvol = volume / prev_volume if prev_volume > 0 else 1.0
+                    # ---- RVOL (stable daily fallback) ----
+                    if prev_volume > 0:
+                        rvol = today_volume / prev_volume
+                    else:
+                        rvol = 0.0
+                    rvol_method = "DAILY_FALLBACK"
 
-                    # ---- Basic candidate (no float, no PRE-RUNNER) ----
-                    candidate = {
-                        'ticker': symbol,
-                        'price': price,
-                        'gap_pct': gap_pct,
-                        'prev_close': prev_close,
-                        'volume': volume,
-                        'avg_volume': prev_volume,
-                        'rvol': rvol,
-                        'rvol_method': 'DAILY_FALLBACK',
-                        'float_shares': None,
-                        'float_turnover': None,
-                        'spread_pct': 0,
-                        'pm_high': daily_bar.high if hasattr(daily_bar, 'high') else price,
-                        'pm_high_dist': 0,
-                        'catalyst': '—',
-                        'catalyst_type': 'UNKNOWN',
-                        'catalyst_score': 0,
-                        'dilution_risk': 'LOW',
-                        'dollar_volume': price * volume,
-                    }
+                    # ---- PRE-RUNNER / BUILDING ----
+                    building = (
+                        prev_day_return >= PRE_RUNNER_MIN_GAIN
+                        and prev_day_volume >= PRE_RUNNER_MIN_VOLUME
+                        and gap_pct < PRE_RUNNER_MAX_GAP
+                    )
+                    building_state = "PRE-RUNNER" if building else "—"
 
-                    # ---- Event Score (simple, based only on gap and rvol) ----
-                    # RVOL score
-                    if rvol >= 20: rvol_score = 30
-                    elif rvol >= 10: rvol_score = 20
-                    elif rvol >= 5: rvol_score = 10
-                    elif rvol >= 2: rvol_score = 5
-                    else: rvol_score = 0
+                    # ---- Event Score ----
+                    # RVOL Score (capped – extreme RVOL cannot dominate)
+                    if rvol >= 100:
+                        rvol_score = 20
+                    elif rvol >= 50:
+                        rvol_score = 18
+                    elif rvol >= 20:
+                        rvol_score = 15
+                    elif rvol >= 10:
+                        rvol_score = 12
+                    elif rvol >= 5:
+                        rvol_score = 8
+                    elif rvol >= 3:
+                        rvol_score = 5
+                    else:
+                        rvol_score = 0
 
-                    # Gap score (diminishing after 20%)
-                    if gap_pct < 1: gap_score = 0
-                    elif gap_pct < 3: gap_score = 5
-                    elif gap_pct < 5: gap_score = 8
-                    elif gap_pct < 10: gap_score = 12
-                    elif gap_pct < 20: gap_score = 15
-                    elif gap_pct < 30: gap_score = 10
-                    else: gap_score = 5
+                    # Gap Score (diminishing after 20%)
+                    if gap_pct < 1:
+                        gap_score = 0
+                    elif gap_pct < 3:
+                        gap_score = 5
+                    elif gap_pct < 5:
+                        gap_score = 8
+                    elif gap_pct < 10:
+                        gap_score = 12
+                    elif gap_pct < 20:
+                        gap_score = 15
+                    elif gap_pct < 30:
+                        gap_score = 10
+                    else:
+                        gap_score = 5
 
                     event_score = rvol_score + gap_score
                     event_score = min(100, max(0, event_score))
+
+                    # ---- State Engine ----
+                    if gap_pct >= 30:
+                        state = "EXTENDED"
+                    elif prev_day_return >= 25:
+                        state = "EXTENDED"
+                    elif building:
+                        state = "PRE-RUNNER"
+                    elif gap_pct >= 6 and rvol >= 4:
+                        state = "EARLY"
+                    elif event_score >= 60:
+                        state = "WATCH"
+                    else:
+                        state = "REJECT"
 
                     # ---- Grade ----
                     if event_score >= 75 and rvol >= 10:
@@ -151,24 +198,36 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     else:
                         grade = "REJECT"
 
-                    # ---- State ----
-                    if gap_pct >= 30:
-                        state = "EXTENDED"
-                    elif event_score >= 70 and rvol >= 10:
-                        state = "PREPARE"
-                    elif event_score >= 50:
-                        state = "WATCH"
-                    elif event_score >= 30:
-                        state = "EARLY"
-                    else:
-                        state = "REJECT"
-
-                    candidate.update({
+                    # ---- Candidate ----
+                    candidate = {
+                        'ticker': symbol,
+                        'price': price,
+                        'gap_pct': gap_pct,
+                        'prev_close': prev_close,
+                        'volume': today_volume,
+                        'avg_volume': prev_volume,
+                        'today_volume': today_volume,
+                        'rvol': rvol,
+                        'rvol_method': rvol_method,
+                        'prev_day_return': prev_day_return,
+                        'prev_day_volume': prev_day_volume,
+                        'building': building,
+                        'building_state': building_state,
+                        'float_shares': None,
+                        'float_turnover': None,
+                        'spread_pct': 0,
+                        'pm_high': getattr(daily_bar, 'high', price),
+                        'pm_high_dist': 0,
+                        'catalyst': '—',
+                        'catalyst_type': 'UNKNOWN',
+                        'catalyst_score': 0,
+                        'dilution_risk': 'LOW',
+                        'dollar_volume': price * today_volume,
                         'event_score': event_score,
                         'grade': grade,
                         'state': state,
-                        'score': event_score,  # for compatibility
-                    })
+                        'score': event_score,
+                    }
 
                     candidates.append(candidate)
                     stats['final_passed'] += 1
@@ -184,7 +243,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
 
     # ---- Stats ----
     print("\n" + "="*50)
-    print("📊 PREMARKET SCAN STATISTICS (FAST)")
+    print("📊 PREMARKET SCAN STATISTICS (V2.3 STABLE)")
     print("="*50)
     print(f"Total Universe:        {stats['total']:,}")
     print(f"No Snapshot:           {stats['no_snapshot']:,}")
