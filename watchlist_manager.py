@@ -1,5 +1,5 @@
 """
-Watchlist Manager – stores candidates with full V2.5 fields
+Watchlist Manager – V2.6 (full fields for READY checks)
 """
 import sqlite3
 import os
@@ -72,6 +72,8 @@ class WatchlistManager:
         trigger_price = round(pm_high * 1.005, 2)
         pm_high_dist = candidate.get('pm_high_dist', 999.0)
         spread_pct = candidate.get('spread_pct')  # may be None
+        vwap = candidate.get('vwap', candidate['price'])
+        dvol = candidate.get('dollar_volume', 0)
         
         stop_price = round(candidate['price'] * 0.95, 2)
         tp1 = round(candidate['price'] * 1.06, 2)
@@ -106,14 +108,14 @@ class WatchlistManager:
                 datetime.now().isoformat(),
                 self._determine_status(candidate),
                 stop_price, tp1, tp2, rr1, rr2,
-                candidate.get('dollar_volume', 0), candidate.get('vwap', 0),
+                dvol, vwap,
                 spread_pct,
                 candidate.get('prev_day_return', 0),
                 candidate.get('building_state', '—'),
                 candidate.get('event_score', 0),
                 candidate.get('grade', '?'),
                 candidate.get('state', 'WATCH'),
-                candidate.get('dilution_risk', 'LOW'),
+                candidate.get('dilution_risk', 'UNKNOWN'),
                 row[0]
             ))
         else:
@@ -141,14 +143,14 @@ class WatchlistManager:
                 self._determine_status(candidate),
                 1,
                 stop_price, tp1, tp2, rr1, rr2,
-                candidate.get('dollar_volume', 0), candidate.get('vwap', 0),
+                dvol, vwap,
                 spread_pct,
                 candidate.get('prev_day_return', 0),
                 candidate.get('building_state', '—'),
                 candidate.get('event_score', 0),
                 candidate.get('grade', '?'),
                 candidate.get('state', 'WATCH'),
-                candidate.get('dilution_risk', 'LOW')
+                candidate.get('dilution_risk', 'UNKNOWN')
             ))
         conn.commit()
         conn.close()
