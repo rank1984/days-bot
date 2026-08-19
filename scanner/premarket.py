@@ -1,5 +1,10 @@
 """
-Premarket scanner – V2.5 (Spread BLOCK, PM High Dist, PRE-RUNNER)
+Premarket scanner – V2.6 LIVE-SAFE
+- REAL Spread (BLOCK if unknown or >1.5%)
+- PM High Distance saved
+- VWAP computed from daily_bar
+- PRE-RUNNER detection
+- Clean candidate structure
 """
 import sys
 from pathlib import Path
@@ -43,6 +48,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         'price_passed': 0,
         'gap_passed': 0,
         'volume_passed': 0,
+        'spread_passed': 0,
         'final_passed': 0,
     }
 
@@ -125,36 +131,69 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     )
                     building_state = "PRE-RUNNER" if building else "—"
 
-                    # ---- PM High Distance ----
+                    # ---- PM High & Distance ----
                     pm_high = float(getattr(daily_bar, 'high', price))
                     pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > 0 else 999.0
 
-                    # ---- Spread – BLOCK if unknown ----
+                    # ---- VWAP (using daily_bar high/low/close approximation) ----
+                    # Alpaca snapshot doesn't give VWAP directly, use typical price
+                    vwap = (pm_high + float(getattr(daily_bar, 'low', price)) + price) / 3 if pm_high > 0 else price
+
+                    # ---- SPREAD – BLOCK if unknown or >1.5% ----
                     bid = getattr(snapshot, 'bid_price', None)
                     ask = getattr(snapshot, 'ask_price', None)
                     if bid and ask and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
                     else:
-                        spread_pct = None  # UNKNOWN → BLOCK
+                        spread_pct = None
 
-                    # ---- Event Score ----
-                    if rvol >= 100: rvol_score = 20
-                    elif rvol >= 50: rvol_score = 18
+                    if spread_pct is None or spread_pct > MAX_READY_SPREAD:
+                        continue
+                    stats['spread_passed'] += 1
+
+                    # ---- Event Score (simple but balanced) ----
+                    if rvol >= 50: rvol_score = 20
                     elif rvol >= 20: rvol_score = 15
                     elif rvol >= 10: rvol_score = 12
                     elif rvol >= 5: rvol_score = 8
-                    elif rvol >= 3: rvol_score = 5
+                    elif rvol >= 2: rvol_score = 5
                     else: rvol_score = 0
 
-                    if gap_pct < 1: gap_score = 0
-                    elif gap_pct < 3: gap_score = 5
+                    if gap_pct < 3: gap_score = 0
                     elif gap_pct < 5: gap_score = 8
                     elif gap_pct < 10: gap_score = 12
-                    elif gap_pct < 20: gap_score = 15
-                    elif gap_pct < 30: gap_score = 10
+                    elif gap_pct < 18: gap_score = 15
+                    elif gap_pct < 25: gap_score = 10
                     else: gap_score = 5
 
-                    event_score = rvol_score + gap_score
+                    # Float unknown → 0
+                    float_score = 0  # no float data available
+
+                    # Dollar Volume score
+                    dvol = price * today_volume
+                    if dvol >= 5_000_000: dvol_score = 15
+                    elif dvol >= 1_000_000: dvol_score = 10
+                    elif dvol >= 500_000: dvol_score = 5
+                    else: dvol_score = 0
+
+                    # PM High distance score (closer = better)
+                    if pm_high_dist <= 1: pm_score = 10
+                    elif pm_high_dist <= 2: pm_score = 8
+                    elif pm_high_dist <= 4: pm_score = 5
+                    else: pm_score = 0
+
+                    # VWAP score
+                    if price > vwap * 1.01: vwap_score = 10
+                    elif price > vwap: vwap_score = 5
+                    else: vwap_score = 0
+
+                    # Catalyst – unknown = 0
+                    catalyst_score = 0  # no catalyst data available
+
+                    event_score = (
+                        rvol_score + gap_score + float_score + dvol_score +
+                        pm_score + vwap_score + catalyst_score
+                    )
                     event_score = min(100, max(0, event_score))
 
                     # ---- State ----
@@ -172,13 +211,13 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         state = "REJECT"
 
                     # ---- Grade ----
-                    if event_score >= 75 and rvol >= 10:
+                    if event_score >= 85 and rvol >= 10 and pm_high_dist <= 2 and spread_pct <= 1.0:
                         grade = "A"
-                    elif event_score >= 60:
+                    elif event_score >= 75 and rvol >= 5:
                         grade = "B"
-                    elif event_score >= 45:
+                    elif event_score >= 60:
                         grade = "C"
-                    elif event_score >= 30:
+                    elif event_score >= 45:
                         grade = "WATCH"
                     else:
                         grade = "REJECT"
@@ -200,12 +239,13 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         'building_state': building_state,
                         'pm_high': pm_high,
                         'pm_high_dist': pm_high_dist,
+                        'vwap': vwap,
                         'spread_pct': spread_pct,
                         'float_shares': None,
                         'catalyst': '—',
                         'catalyst_type': 'UNKNOWN',
-                        'dilution_risk': 'LOW',
-                        'dollar_volume': price * today_volume,
+                        'dilution_risk': 'UNKNOWN',
+                        'dollar_volume': dvol,
                         'event_score': event_score,
                         'grade': grade,
                         'state': state,
@@ -225,7 +265,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             continue
 
     print("\n" + "="*50)
-    print("📊 PREMARKET SCAN STATISTICS (V2.5)")
+    print("📊 PREMARKET SCAN STATISTICS (V2.6 LIVE-SAFE)")
     print("="*50)
     print(f"Total Universe:        {stats['total']:,}")
     print(f"No Snapshot:           {stats['no_snapshot']:,}")
@@ -235,6 +275,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"✅ Price Passed:        {stats['price_passed']:,}")
     print(f"✅ Gap Passed:          {stats['gap_passed']:,}")
     print(f"✅ Volume Passed:       {stats['volume_passed']:,}")
+    print(f"✅ Spread Passed:       {stats['spread_passed']:,}")
     print(f"🎯 FINAL CANDIDATES:    {stats['final_passed']:,}")
     print("="*50 + "\n")
 
