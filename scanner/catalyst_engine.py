@@ -1,12 +1,12 @@
 """
-Catalyst Engine – classifies news headlines and scores catalysts
+Catalyst Engine – fetches and classifies news from Finnhub
 """
-import re
+import requests
+from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 
 # ── CATALYST KEYWORDS & SCORES ──────────────────────────
 CATALYST_MAP = {
-    # Very strong (+20-30)
     'fda approval': 30,
     'fda approves': 30,
     'fda cleared': 25,
@@ -15,7 +15,6 @@ CATALYST_MAP = {
     'acquisition': 20,
     'acquires': 20,
     'merger': 20,
-    # Strong (+15-19)
     'contract': 18,
     'partnership': 16,
     'collaboration': 16,
@@ -23,7 +22,6 @@ CATALYST_MAP = {
     'revenue': 15,
     'eps': 15,
     'beat': 15,
-    # Moderate (+10-14)
     'grant': 12,
     'award': 12,
     'patent': 12,
@@ -31,7 +29,6 @@ CATALYST_MAP = {
     'clearance': 12,
     'trial': 10,
     'phase': 10,
-    # Mild (+5-9)
     'designation': 8,
     'agreement': 8,
     'expansion': 7,
@@ -40,41 +37,27 @@ CATALYST_MAP = {
     'win': 6,
 }
 
-# ── NEGATIVE / RED FLAGS ─────────────────────────────────
 NEGATIVE_MAP = {
     'offering': -20,
     'direct offering': -25,
     'atm': -25,
-    'at-the-market': -25,
     'pipe': -20,
     'resale': -20,
     'warrant': -15,
     'dilution': -30,
     'shelf': -15,
     'follow-on': -20,
-    'registered direct': -20,
     'convertible': -15,
     'reverse split': -25,
-    'reverse stock split': -25,
     'going concern': -20,
     'nasdaq notice': -15,
 }
 
 
 def classify_catalyst(headlines: List[str]) -> Dict[str, Any]:
-    """
-    Classifies catalyst from news headlines.
-    Returns: {type, score, headline, quality, is_negative}
-    """
+    """Classifies catalyst from news headlines."""
     if not headlines:
-        return {
-            'type': 'UNKNOWN',
-            'score': 0,
-            'headline': '',
-            'quality': 'NONE',
-            'is_negative': False,
-            'flags': [],
-        }
+        return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
 
     text = ' '.join(headlines).lower()
     score = 0
@@ -82,7 +65,6 @@ def classify_catalyst(headlines: List[str]) -> Dict[str, Any]:
     matched_type = 'UNKNOWN'
     matched_headline = headlines[0]
 
-    # Check positive catalysts
     for keyword, value in CATALYST_MAP.items():
         if keyword in text:
             score += value
@@ -91,14 +73,12 @@ def classify_catalyst(headlines: List[str]) -> Dict[str, Any]:
             if score > 20:
                 matched_headline = next((h for h in headlines if keyword in h.lower()), headlines[0])
 
-    # Check negative catalysts
     for keyword, value in NEGATIVE_MAP.items():
         if keyword in text:
             score += value
             flags.append(f'NEGATIVE:{keyword}')
             matched_type = 'NEGATIVE'
 
-    # Determine quality
     if score >= 25:
         quality = 'HIGH'
     elif score >= 15:
@@ -120,25 +100,47 @@ def classify_catalyst(headlines: List[str]) -> Dict[str, Any]:
 
 def get_catalyst_from_finnhub(symbol: str, finnhub_key: str) -> Dict[str, Any]:
     """
-    Fetches news from Finnhub and classifies catalyst.
-    Returns catalyst dict or empty if no news / API key missing.
+    Fetches news from Finnhub using the correct endpoint.
+    Falls back to generic news if company-news fails.
     """
     if not finnhub_key:
         return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
 
     try:
-        import requests
-        from datetime import datetime, timedelta
+        # Try company-news first (specific to symbol)
         end = datetime.now()
         start = end - timedelta(days=3)
-        url = f"https://finnhub.io/api/v1/news?symbol={symbol}&from={start.strftime('%Y-%m-%d')}&to={end.strftime('%Y-%m-%d')}&token={finnhub_key}"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code != 200:
-            return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
-        data = resp.json()
-        if not data:
-            return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
-        headlines = [item.get('headline', '') for item in data[:5] if item.get('headline')]
-        return classify_catalyst(headlines)
-    except Exception:
-        return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
+        url = f"https://finnhub.io/api/v1/company-news"
+        params = {
+            'symbol': symbol,
+            'from': start.strftime('%Y-%m-%d'),
+            'to': end.strftime('%Y-%m-%d'),
+            'token': finnhub_key
+        }
+        resp = requests.get(url, params=params, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and len(data) > 0:
+                headlines = [item.get('headline', '') for item in data[:5] if item.get('headline')]
+                if headlines:
+                    return classify_catalyst(headlines)
+
+        # Fallback: generic news (if company-news returned empty)
+        url2 = f"https://finnhub.io/api/v1/news"
+        params2 = {
+            'symbol': symbol,
+            'token': finnhub_key
+        }
+        resp2 = requests.get(url2, params=params2, timeout=5)
+        if resp2.status_code == 200:
+            data2 = resp2.json()
+            if data2 and len(data2) > 0:
+                headlines2 = [item.get('headline', '') for item in data2[:5] if item.get('headline')]
+                if headlines2:
+                    return classify_catalyst(headlines2)
+
+    except Exception as e:
+        print(f"[CatalystEngine] Error for {symbol}: {e}")
+
+    # If no news found, return UNKNOWN (not a blocker)
+    return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
