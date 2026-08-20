@@ -1,5 +1,5 @@
 """
-Premarket scanner – V2.8
+Premarket scanner – V2.8 (Fixed)
 Stages:
 1. Fast Filter (Alpaca snapshot)
 2. PM Quant (minute bars)
@@ -19,6 +19,22 @@ from utils.config import *
 from scanner.universe import load_universe
 from scanner.pm_engine import get_premarket_minute_data
 from scanner.catalyst_engine import get_catalyst_from_finnhub
+
+
+# ── Fallback thresholds if not defined in config ──────────
+if not hasattr(sys.modules['__main__'], 'DISCOVERY_MIN_PRICE'):
+    DISCOVERY_MIN_PRICE = 1.0
+    DISCOVERY_MAX_PRICE = 50.0
+    DISCOVERY_MIN_GAP = 3.0
+    DISCOVERY_MAX_GAP = 25.0
+    MIN_AVG_VOLUME = 50_000
+    MAX_READY_SPREAD = 1.5
+
+if not hasattr(sys.modules['__main__'], 'VALIDATION_MIN_RVOL'):
+    VALIDATION_MIN_RVOL = 2.0
+    VALIDATION_MAX_PM_DIST = 2.0
+    VALIDATION_MIN_VWAP_DIST = 0.01
+    VALIDATION_MIN_CATALYST_SCORE = 0   # 0 = pass, negative = reject
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
@@ -208,11 +224,14 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     for c in top_50:
         symbol = c['ticker']
         catalyst = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
+
+        # Only reject if catalyst score is clearly negative (dilution/offering)
         if catalyst['score'] < VALIDATION_MIN_CATALYST_SCORE:
             continue
-        catalyst_stats['catalyst_pass'] += 1
 
+        catalyst_stats['catalyst_pass'] += 1
         catalyst_stats['final_pass'] += 1
+
         final_candidates.append({
             'ticker': symbol,
             'price': c['price'],
@@ -223,7 +242,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             'pm_volume': c['pm_volume'],
             'rvol_time_adj': c['rvol_time_adj'],
             'pm_high_dist': c['pm_high_dist'],
-            'catalyst': catalyst['headline'][:80],
+            'catalyst': catalyst['headline'][:80] if catalyst['headline'] else '—',
             'catalyst_score': catalyst['score'],
         })
 
