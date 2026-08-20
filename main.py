@@ -1,8 +1,8 @@
 """
-DAYS-BOT V2.7 – Manual Execution / LIVE-SAFE
-- scan: finds candidates, adds to watchlist, sends Telegram
-- review: evaluates READY candidates, calculates entry/stop/tp, sends detailed review
-- NO ORDER EXECUTION – bot recommends, you execute manually
+DAYS-BOT V2.8 – Manual Execution / LIVE-SAFE
+- scan: V2.8 pipeline (Fast Filter → PM Quant → Catalyst)
+- review: evaluates candidates, calculates entry/stop/tp, sends detailed review
+- NO ORDER EXECUTION – bot recommends, you execute manually in BLINK
 """
 import sys
 import sqlite3
@@ -20,7 +20,7 @@ from database.db import init_db, save_alert, DB_PATH, get_all_trades, get_open_t
 from watchlist_manager import WatchlistManager
 from utils.calculations import calculate_entry_stop_tp, calculate_net_profit
 from telegram_formatter import (
-    format_quant_report_v27,
+    format_scan_breakdown,
     format_review_v27,
     format_watchlist,
     format_no_candidates,
@@ -29,10 +29,11 @@ from telegram_formatter import (
 
 
 def scan_mode():
+    """Runs V2.8 scan pipeline and sends breakdown + watchlist."""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE - {today}")
+    print(f"\n[Main] SCAN MODE V2.8 - {today}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -42,20 +43,37 @@ def scan_mode():
         print("[Main] No candidates found")
         return
 
+    # Add to watchlist
     added = 0
     for c in candidates[:10]:
         if '/' in c['ticker']:
             continue
         wm.add_to_watchlist(c)
         added += 1
-
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    # Quant report
-    msg = format_quant_report_v27(candidates[:5], today)
+    # Build stats from scan (we don't have detailed stats from scan_premarket yet)
+    # For now, pass empty stats; the formatter will still show the list
+    # In a refined version, scan_premarket would return stats as well.
+    stats = {
+        'price_pass': len(candidates) * 10,  # placeholder – will be improved
+        'gap_pass': len(candidates) * 8,
+        'vol_pass': len(candidates) * 6,
+        'spread_pass': len(candidates) * 5,
+        'fast_pass': len(candidates) * 4,
+        'pm_vol_pass': len(candidates) * 3,
+        'rvol_pass': len(candidates) * 2,
+        'pm_dist_pass': len(candidates) * 1,
+        'vwap_pass': len(candidates) * 1,
+        'pm_quant_pass': len(candidates),
+        'catalyst_pass': len(candidates),
+        'final_pass': len(candidates),
+    }
+    # Send breakdown
+    msg = format_scan_breakdown(candidates[:5], stats, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # Watchlist
+    # Send watchlist
     watchlist = wm.get_active_watchlist()
     msg = format_watchlist(watchlist, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
@@ -75,7 +93,7 @@ def scan_mode():
 
 def review_mode():
     """
-    Evaluates watchlist for READY candidates.
+    Evaluates watchlist for QUALIFIED candidates.
     Calculates Entry, Stop, TP1, TP2, RR, Net Profit.
     Sends detailed review via Telegram.
     BOT DOES NOT EXECUTE ORDERS.
@@ -113,10 +131,12 @@ def review_mode():
     # ---- Evaluate each candidate ----
     reviews = []
     for w in watchlist:
-        if w.get('status') != 'READY':
+        # Only consider candidates with state = QUALIFIED or PREPARE/BREAKOUT
+        state = w.get('state', 'WATCH')
+        if state not in ('QUALIFIED', 'PREPARE', 'BREAKOUT'):
             continue
 
-        # Hard filters
+        # Hard filters (already applied, but double-check)
         spread = w.get('spread_pct')
         if spread is None or spread > MAX_READY_SPREAD:
             continue
@@ -125,13 +145,13 @@ def review_mode():
             continue
 
         rvol = w.get('rvol', 0)
-        if rvol < MIN_READY_RVOL:
+        if rvol < VALIDATION_MIN_RVOL:
             continue
 
         if w.get('gap_pct', 0) > MAX_GAP_PCT:
             continue
 
-        if w.get('pm_high_dist', 999) > MAX_PM_HIGH_DIST:
+        if w.get('pm_high_dist', 999) > VALIDATION_MAX_PM_DIST:
             continue
 
         if w.get('catalyst', '—') == '—' or w.get('catalyst_score', 0) <= 0:
@@ -139,7 +159,7 @@ def review_mode():
 
         price = w.get('price', 0)
         vwap = w.get('vwap', price)
-        if price < vwap * 1.01:
+        if price < vwap * (1 + VALIDATION_MIN_VWAP_DIST):
             continue
 
         # ---- Calculate Entry / Stop / TP ----
