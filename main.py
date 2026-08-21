@@ -1,5 +1,5 @@
 """
-DAYS-BOT V2.8 – Manual Execution / LIVE-SAFE
+DAYS-BOT V2.8.1 – Manual Execution / LIVE-SAFE
 - scan: V2.8 pipeline (Fast Filter → PM Quant → Catalyst)
 - review: evaluates candidates, calculates entry/stop/tp, sends detailed review
 - NO ORDER EXECUTION – bot recommends, you execute manually in BLINK
@@ -29,11 +29,11 @@ from telegram_formatter import (
 
 
 def scan_mode():
-    """Runs V2.8 scan pipeline and sends breakdown + watchlist."""
+    """Runs V2.8.1 scan pipeline and sends breakdown + watchlist."""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE V2.8 - {today}")
+    print(f"\n[Main] SCAN MODE V2.8.1 - {today}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -43,7 +43,20 @@ def scan_mode():
         print("[Main] No candidates found")
         return
 
-    # Add to watchlist
+    # ====== DEBUG CONTRACT ======
+    print("\n[DEBUG CONTRACT] Candidates from scanner:")
+    for c in candidates[:10]:
+        print(
+            f"  {c['ticker']} | "
+            f"score={c.get('event_score', 0)} | "
+            f"rvol={c.get('rvol', 0):.2f} | "
+            f"pm_dist={c.get('pm_high_dist', 999):.1f} | "
+            f"vwap={c.get('pm_vwap', 0):.2f} | "
+            f"spread={c.get('spread_pct')} | "
+            f"catalyst={c.get('catalyst', '—')[:30]}"
+        )
+
+    # ====== הוספה ל-Watchlist ======
     added = 0
     for c in candidates[:10]:
         if '/' in c['ticker']:
@@ -52,42 +65,38 @@ def scan_mode():
         added += 1
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    # Build stats from scan (we don't have detailed stats from scan_premarket yet)
-    # For now, pass empty stats; the formatter will still show the list
-    # In a refined version, scan_premarket would return stats as well.
+    # ====== שליחת Telegram ======
     stats = {
-        'price_pass': len(candidates) * 10,  # placeholder – will be improved
-        'gap_pass': len(candidates) * 8,
-        'vol_pass': len(candidates) * 6,
-        'spread_pass': len(candidates) * 5,
-        'fast_pass': len(candidates) * 4,
-        'pm_vol_pass': len(candidates) * 3,
-        'rvol_pass': len(candidates) * 2,
-        'pm_dist_pass': len(candidates) * 1,
-        'vwap_pass': len(candidates) * 1,
+        'price_pass': len(candidates) * 5,
+        'gap_pass': len(candidates) * 4,
+        'vol_pass': len(candidates) * 3,
+        'spread_pass': len(candidates) * 2,
+        'fast_pass': len(candidates),
+        'pm_vol_pass': len(candidates),
+        'rvol_pass': len(candidates),
+        'pm_dist_pass': len(candidates),
+        'vwap_pass': len(candidates),
         'pm_quant_pass': len(candidates),
         'catalyst_pass': len(candidates),
         'final_pass': len(candidates),
     }
-    # Send breakdown
     msg = format_scan_breakdown(candidates[:5], stats, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # Send watchlist
+    # ====== Watchlist ======
     watchlist = wm.get_active_watchlist()
     msg = format_watchlist(watchlist, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # Save alerts
+    # ====== Alerts ======
     for c in candidates[:10]:
         save_alert(
             ticker=c['ticker'],
             price=c['price'],
             gap_pct=c['gap_pct'],
-            score=c.get('final_score', 0),
+            score=c.get('event_score', 0),
             catalyst=c.get('catalyst', '')
         )
-
     print(f"[Main] Done. {added} candidates added.")
 
 
