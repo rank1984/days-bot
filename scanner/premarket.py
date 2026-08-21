@@ -1,7 +1,5 @@
 """
-Premarket scanner – V2.8 RECALL FIRST
-מטרה: למצוא 5–20 מועמדויות אמיתיות בכל בוקר.
-לא פוסלים על Catalyst/RVOL/Float/VWAP – רק מציגים.
+Premarket scanner – V2.8.1 DATA PIPELINE FIX
 """
 import sys
 from pathlib import Path
@@ -18,20 +16,20 @@ from scanner.universe import load_universe
 from scanner.catalyst_engine import get_catalyst_from_finnhub
 
 
-# ── קריטריוני גילוי (רק הבסיס) ──────────────────────────
+# ── קריטריוני גילוי ──────────────────────────────────────
 DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 50.0
-DISCOVERY_MIN_GAP = 1.0          # 1% ומעלה
-DISCOVERY_MAX_GAP = 30.0         # עד 30%
-DISCOVERY_MIN_PM_VOL = 50_000    # 50K מניות בפרה-מרקט (אומדן)
-MAX_SPREAD_DISCOVERY = 1.5       # Spread ≤1.5% אם ידוע
+DISCOVERY_MIN_GAP = 1.0
+DISCOVERY_MAX_GAP = 30.0
+DISCOVERY_MIN_PM_VOL = 50_000
+MAX_SPREAD_DISCOVERY = 1.5
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    print(f"[Premarket] V2.8 RECALL FIRST – {date}")
+    print(f"[Premarket] V2.8.1 DATA PIPELINE – {date}")
 
     universe = load_universe()
     if not universe:
@@ -84,68 +82,90 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['price_pass'] += 1
 
-                    # 2. Gap (אמיתי: מול סגירת אתמול)
+                    # 2. Gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
                     if gap_pct < DISCOVERY_MIN_GAP or gap_pct > DISCOVERY_MAX_GAP:
                         continue
                     stats['gap_pass'] += 1
 
-                    # 3. Premarket Volume (אומדן מ-daily_bar.volume)
+                    # 3. Premarket Volume (אומדן)
                     pm_volume = int(getattr(daily_bar, 'volume', 0) or 0)
                     if pm_volume < DISCOVERY_MIN_PM_VOL:
                         continue
                     stats['pm_vol_pass'] += 1
 
-                    # 4. Spread (אם ידוע – בודקים; אם לא – עוברים)
+                    # 4. Spread
                     bid = getattr(snapshot, 'bid_price', None)
                     ask = getattr(snapshot, 'ask_price', None)
                     spread_pct = None
                     if bid and ask and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
                         if spread_pct > MAX_SPREAD_DISCOVERY:
-                            continue  # spread רחב מדי – נפסול רק אם ידוע
+                            continue
                         stats['spread_pass'] += 1
                     else:
-                        # spread לא ידוע – עוברים (לא פוסלים)
                         stats['spread_pass'] += 1
 
                     # ====== עבר את כל הפילטרים ======
                     stats['final_candidates'] += 1
 
-                    # ====== שליפת נתוני PM (עדיין לא פוסלים) ======
+                    # ====== נתוני PM ======
                     pm_high = float(getattr(daily_bar, 'high', price))
                     pm_low = float(getattr(daily_bar, 'low', price))
-                    pm_vwap = (pm_high + pm_low + price) / 3  # אומדן
+                    pm_vwap = (pm_high + pm_low + price) / 3
+                    pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > 0 else 999.0
 
-                    # ====== Catalyst (לא פוסל, רק מציג) ======
+                    # ====== RVOL אומדן ======
+                    avg_volume = int(getattr(daily_bar, 'volume', 0) or 1)
+                    rvol = pm_volume / avg_volume if avg_volume > 0 else 1.0
+
+                    # ====== Catalyst ======
                     catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
                     catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else '—'
                     catalyst_score = catalyst_result['score']
 
-                    # ====== RVOL אומדן (לא פוסל) ======
-                    avg_volume = int(getattr(daily_bar, 'volume', 0) or 1)
-                    rvol_est = pm_volume / avg_volume if avg_volume > 0 else 1.0
+                    # ====== Event Score ======
+                    event_score = (
+                        (gap_pct / 5) +
+                        (rvol * 10) +
+                        (1 if pm_high_dist <= 2 else 0) * 10 +
+                        (1 if spread_pct and spread_pct <= 1.0 else 0) * 5
+                    )
+                    event_score = round(min(100, max(0, event_score)), 1)
 
-                    # ====== בניית מועמד ======
-                    candidates.append({
-                        'ticker': symbol,
-                        'price': price,
-                        'gap_pct': gap_pct,
-                        'prev_close': prev_close,
-                        'pm_volume': pm_volume,
-                        'pm_high': pm_high,
-                        'pm_low': pm_low,
-                        'pm_vwap': pm_vwap,
-                        'spread_pct': spread_pct,
-                        'rvol_est': rvol_est,
-                        'rvol_method': 'ESTIMATED',
-                        'catalyst': catalyst_text,
-                        'catalyst_score': catalyst_score,
-                        'avg_volume': avg_volume,
-                        'dollar_volume': price * pm_volume,
-                    })
+                    # ====== Candidate Contract (אחיד!) ======
+                    candidate = {
+                        "ticker": symbol,
+                        "price": price,
 
-                except Exception as e:
+                        "gap_pct": gap_pct,
+
+                        "pm_high": pm_high,
+                        "pm_low": pm_low,
+                        "pm_volume": pm_volume,
+                        "pm_vwap": pm_vwap,
+                        "pm_high_dist": pm_high_dist,
+
+                        "rvol": rvol,
+                        "rvol_method": "ESTIMATED",
+
+                        "spread_pct": spread_pct,
+
+                        "catalyst": catalyst_text,
+                        "catalyst_score": catalyst_score,
+
+                        "event_score": event_score,
+                        "opportunity": event_score,
+                        "risk": 50 - (rvol * 5 + gap_pct / 10),
+                        "final_score": event_score - (50 - (rvol * 5 + gap_pct / 10)) * 0.2,
+
+                        "grade": "B" if event_score >= 60 else "C" if event_score >= 40 else "WATCH",
+                        "state": "WATCH" if event_score >= 50 else "SCAN",
+                    }
+
+                    candidates.append(candidate)
+
+                except Exception:
                     continue
             print(f"[Discovery] Processed {min(i+batch_size, len(universe))}/{len(universe)}")
         except Exception as e:
@@ -154,7 +174,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
 
     # ====== דוח ======
     print("\n" + "="*60)
-    print("📊 PREMARKET DISCOVERY – RECALL FIRST")
+    print("📊 PREMARKET DISCOVERY – V2.8.1")
     print("="*60)
     print(f"Universe:           {stats['total']:,}")
     print(f"Price Pass:         {stats['price_pass']:,}")
@@ -164,13 +184,5 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"✅ CANDIDATES:      {stats['final_candidates']:,}")
     print("="*60 + "\n")
 
-    # ====== דירוג (לא פוסל) ======
-    # מדרגים לפי Gap + PM Volume
-    for c in candidates:
-        score = (c['gap_pct'] / 5) + (c['pm_volume'] / 1_000_000) * 10
-        c['discovery_score'] = round(min(100, score), 1)
-
-    candidates.sort(key=lambda x: x['discovery_score'], reverse=True)
-
-    # מחזירים עד 20 מועמדויות (לא 10)
+    candidates.sort(key=lambda x: x['event_score'], reverse=True)
     return candidates[:20]
