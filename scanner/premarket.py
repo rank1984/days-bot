@@ -1,6 +1,6 @@
 """
-Premarket scanner – V2.10 REAL PM DATA
-Stage 1: Discovery (fast filters)
+Premarket scanner – V2.10 REAL PM DATA (FIX: no volume filter in Discovery)
+Stage 1: Discovery (fast filters: Price, Gap, Spread – no Volume)
 Stage 2: PM Engine (minute bars) – only for top candidates
 """
 import sys
@@ -24,7 +24,6 @@ DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 50.0
 DISCOVERY_MIN_GAP = 1.0
 DISCOVERY_MAX_GAP = 30.0
-DISCOVERY_MIN_PM_VOL = 50_000  # placeholder – will be replaced by real PM volume after Stage 2
 MAX_SPREAD_DISCOVERY = 1.5
 
 
@@ -32,7 +31,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    print(f"[Premarket] V2.10 REAL PM – {date}")
+    print(f"[Premarket] V2.10 REAL PM (no volume filter in Discovery) – {date}")
 
     universe = load_universe()
     if not universe:
@@ -44,7 +43,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets')
 
     # ============================================================
-    # STAGE 1 – DISCOVERY (Fast filters, no PM data)
+    # STAGE 1 – DISCOVERY (Fast filters: Price, Gap, Spread ONLY)
     # ============================================================
     stats = {
         'total': len(universe),
@@ -53,7 +52,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         'no_bar': 0,
         'price_pass': 0,
         'gap_pass': 0,
-        'vol_pass': 0,
         'spread_pass': 0,
         'discovery_pass': 0,
     }
@@ -94,13 +92,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['gap_pass'] += 1
 
-                    # 3. Volume (placeholder – daily_bar.volume, but we'll use it only for initial filtering)
-                    avg_vol = int(getattr(daily_bar, 'volume', 0) or 0)
-                    if avg_vol < MIN_AVG_VOLUME:
-                        continue
-                    stats['vol_pass'] += 1
-
-                    # 4. Spread – only if known and too wide; unknown = pass
+                    # 3. Spread – only if known and too wide; unknown = pass
                     bid = getattr(snapshot, 'bid_price', None)
                     ask = getattr(snapshot, 'ask_price', None)
                     spread_pct = None
@@ -110,16 +102,16 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                             continue
                         stats['spread_pass'] += 1
                     else:
+                        # Spread unknown – pass (not a blocker at discovery)
                         stats['spread_pass'] += 1
 
-                    # ====== Discovery Pass ======
+                    # ====== Discovery Pass (NO Volume filter) ======
                     stats['discovery_pass'] += 1
                     discovery_candidates.append({
                         'ticker': symbol,
                         'price': price,
                         'gap_pct': gap_pct,
                         'prev_close': prev_close,
-                        'avg_volume': avg_vol,
                         'spread_pct': spread_pct,
                     })
 
@@ -133,26 +125,26 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"[Discovery] Passed: {stats['discovery_pass']} candidates.")
 
     if stats['discovery_pass'] == 0:
+        print("[Discovery] No candidates. Exiting.")
         return []
 
     # ============================================================
-    # STAGE 2 – PM ENGINE (Minute Bars) – only top 100
+    # STAGE 2 – PM ENGINE (Minute Bars) – only top 200
     # ============================================================
     discovery_candidates.sort(key=lambda x: x['gap_pct'], reverse=True)
-    top_100 = discovery_candidates[:100]
+    top_200 = discovery_candidates[:200]
 
     pm_stats = {
-        'total': len(top_100),
+        'total': len(top_200),
         'pm_vol_ok': 0,
         'rvol_ok': 0,
         'pm_dist_ok': 0,
         'vwap_ok': 0,
-        'catalyst_ok': 0,
         'final_pass': 0,
     }
     final_candidates = []
 
-    for c in top_100:
+    for c in top_200:
         symbol = c['ticker']
         price = c['price']
         gap = c['gap_pct']
@@ -162,7 +154,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         pm = get_premarket_minute_data(symbol, api)
         if pm.get('error'):
             continue  # no PM data, skip
-
         pm_volume = pm['pm_volume']
         if pm_volume is None or pm_volume == 0:
             continue
@@ -237,7 +228,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     print(f"RVOL OK:            {pm_stats['rvol_ok']:,}")
     print(f"PM Dist OK:         {pm_stats['pm_dist_ok']:,}")
     print(f"VWAP OK:            {pm_stats['vwap_ok']:,}")
-    print(f"Catalyst OK:        {pm_stats['catalyst_ok']:,}")
     print(f"✅ FINAL:           {pm_stats['final_pass']:,}")
     print("="*60 + "\n")
 
