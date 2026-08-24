@@ -8,19 +8,18 @@ FMP_API_KEY       = os.getenv("FMP_API_KEY")
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
-# ── DISCOVERY FILTERS (ללא חסימה מוקדמת) ──────────────
+# ── DISCOVERY ──────────────────────────────────────────────
 DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 50.0
-DISCOVERY_MIN_GAP = 1.0               # % – גמיש
+DISCOVERY_MIN_GAP = 1.0          # 1-30% (בכוונה)
 DISCOVERY_MAX_GAP = 30.0
-DISCOVERY_MIN_PREMARKET_VOL = 50_000   # נפח ראשוני
 
-# ── VALIDATION FILTERS (רק למועמדים) ──────────────────
+# ── VALIDATION (HARD FILTERS) ────────────────────────────
 VALIDATION_MIN_RVOL = 2.0
-VALIDATION_MAX_SPREAD = 1.5            # % – BLOCK if unknown or >1.5%
-VALIDATION_MAX_PM_DIST = 2.0           # % below PM High
-VALIDATION_MIN_VWAP_DIST = 0.01        # price must be ≥1% above VWAP
+VALIDATION_MAX_PM_DIST = 2.0      # % below PM High
+VALIDATION_MIN_VWAP_DIST = 0.01   # 1% above VWAP
 VALIDATION_MIN_CATALYST_SCORE = 5
+VALIDATION_MAX_SPREAD = 1.5       # % – BLOCK if >1.5% or UNKNOWN
 
 # ── RISK & POSITION ──────────────────────────────────────
 MAX_RISK_PER_TRADE = 0.01
@@ -46,6 +45,15 @@ WEIGHT_CATALYST = 10
 WEIGHT_LIQUIDITY = 5
 
 # ── NEWS ─────────────────────────────────────────────────
-POSITIVE_CATALYSTS = [...]
-NEGATIVE_CATALYSTS = [...]
+POSITIVE_CATALYSTS = [
+    "fda","approval","approved","contract","acquisition",
+    "acquires","merger","patent","earnings","revenue",
+    "partnership","grant","award","breakthrough","positive",
+    "phase","trial","clearance","designation",
+]
+NEGATIVE_CATALYSTS = [
+    "offering","direct offering","shelf","registration",
+    "dilution","warrant","priced offering","atm",
+]
+
 WEEKLY_REPORT_DAY = 4
