@@ -1,5 +1,5 @@
 """
-Watchlist Manager – V2.8.1 (קריאה נכונה של Candidate Contract)
+Watchlist Manager – V2.9 DATA FIX
 """
 import sqlite3
 import os
@@ -54,40 +54,42 @@ class WatchlistManager:
         conn.close()
     
     def _determine_status(self, candidate: Dict) -> str:
+        # Only WATCH or PREPARE in premarket
         price = candidate['price']
         pm_high = candidate.get('pm_high', price * 1.02)
-        rvol = candidate.get('rvol', 1.0)
         trigger_price = round(pm_high * 1.005, 2)
-        if price >= trigger_price and rvol >= 1.5:
-            return 'QUALIFIED'
-        elif price >= pm_high * 0.97 and rvol >= 1.2:
+        if price >= trigger_price:
             return 'PREPARE'
         else:
             return 'WATCH'
     
     def add_to_watchlist(self, candidate: Dict[str, Any]):
-        # ====== Read from Contract (אחיד!) ======
+        # ====== Read from Contract – NO FALLBACKS ======
         ticker = candidate.get('ticker', '???')
         price = float(candidate.get('price', 0))
         gap = float(candidate.get('gap_pct', 0))
-        rvol = float(candidate.get('rvol', 0))
+        rvol = candidate.get('rvol')  # could be None (N/A)
         pm_high = float(candidate.get('pm_high', price * 1.02))
         pm_high_dist = float(candidate.get('pm_high_dist', 999.0))
         vwap = float(candidate.get('pm_vwap', price))
-        spread_pct = candidate.get('spread_pct')  # may be None
-        catalyst = candidate.get('catalyst', '—')
+        spread_pct = candidate.get('spread_pct')
+        catalyst = candidate.get('catalyst')  # could be None (N/A)
         catalyst_score = float(candidate.get('catalyst_score', 0))
         event_score = float(candidate.get('event_score', 0))
         grade = candidate.get('grade', '?')
         state = candidate.get('state', 'WATCH')
-        rvol_method = candidate.get('rvol_method', 'ESTIMATED')
+        rvol_method = candidate.get('rvol_method', 'N/A')
 
         trigger_price = round(pm_high * 1.005, 2)
-        stop_price = round(price * 0.95, 2)
-        tp1 = round(price * 1.06, 2)
-        tp2 = round(price * 1.12, 2)
+
+        # ====== Provisional Stop/TP (NOT a real risk engine) ======
+        # These are just for reference – NOT an entry plan
+        stop_price = round(price * 0.95, 2) if price > 0 else 0
+        tp1 = round(price * 1.06, 2) if price > 0 else 0
+        tp2 = round(price * 1.12, 2) if price > 0 else 0
         rr1 = round((tp1 - price) / (price - stop_price), 2) if (price - stop_price) > 0 else 0
         rr2 = round((tp2 - price) / (price - stop_price), 2) if (price - stop_price) > 0 else 0
+
         dvol = price * candidate.get('pm_volume', 0)
 
         conn = sqlite3.connect(DB_PATH)
@@ -141,7 +143,14 @@ class WatchlistManager:
             ))
         conn.commit()
         conn.close()
-        print(f"[Watchlist] ✅ {ticker} added/updated (Event Score: {event_score:.1f})")
+
+        # ====== Debug log ======
+        print(f"[Watchlist] ✅ {ticker} added")
+        print(f"  price={price:.2f} | gap={gap:.1f}% | rvol={rvol if rvol is not None else 'N/A'} | spread={spread_pct if spread_pct is not None else 'N/A'}")
+        if catalyst:
+            print(f"  catalyst={catalyst[:50]}")
+        else:
+            print(f"  catalyst=N/A")
     
     def get_active_watchlist(self) -> List[Dict]:
         conn = sqlite3.connect(DB_PATH)
