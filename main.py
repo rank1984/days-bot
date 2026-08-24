@@ -1,6 +1,6 @@
 """
-DAYS-BOT V2.8.1 – Manual Execution / LIVE-SAFE
-- scan: V2.8 pipeline (Fast Filter → PM Quant → Catalyst)
+DAYS-BOT V2.9 – DATA INTEGRITY FIX
+- scan: V2.9 pipeline with real data (N/A for missing values)
 - review: evaluates candidates, calculates entry/stop/tp, sends detailed review
 - NO ORDER EXECUTION – bot recommends, you execute manually in BLINK
 """
@@ -29,11 +29,11 @@ from telegram_formatter import (
 
 
 def scan_mode():
-    """Runs V2.8.1 scan pipeline and sends breakdown + watchlist."""
+    """Runs V2.9 scan pipeline and sends breakdown + watchlist."""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE V2.8.1 - {today}")
+    print(f"\n[Main] SCAN MODE V2.9 - {today}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -43,17 +43,23 @@ def scan_mode():
         print("[Main] No candidates found")
         return
 
-    # ====== DEBUG CONTRACT ======
-    print("\n[DEBUG CONTRACT] Candidates from scanner:")
-    for c in candidates[:10]:
+    # ====== DEBUG CONTRACT – REAL DATA ONLY ======
+    print("\n[DEBUG CONTRACT] Candidates from scanner (first 5):")
+    for c in candidates[:5]:
+        rvol = c.get('rvol')
+        rvol_str = f"{rvol:.2f}" if rvol is not None else "N/A"
+        spread = c.get('spread_pct')
+        spread_str = f"{spread:.2f}" if spread is not None else "N/A"
+        catalyst = c.get('catalyst')
+        catalyst_str = catalyst[:30] if catalyst else "N/A"
         print(
             f"  {c['ticker']} | "
             f"score={c.get('event_score', 0)} | "
-            f"rvol={c.get('rvol', 0):.2f} | "
+            f"rvol={rvol_str} | "
             f"pm_dist={c.get('pm_high_dist', 999):.1f} | "
             f"vwap={c.get('pm_vwap', 0):.2f} | "
-            f"spread={c.get('spread_pct')} | "
-            f"catalyst={c.get('catalyst', '—')[:30]}"
+            f"spread={spread_str} | "
+            f"catalyst={catalyst_str}"
         )
 
     # ====== הוספה ל-Watchlist ======
@@ -65,19 +71,19 @@ def scan_mode():
         added += 1
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    # ====== שליחת Telegram ======
+    # ====== סטטיסטיקות אמיתיות ======
     stats = {
-        'price_pass': len(candidates) * 5,
+        'price_pass': len(candidates) * 5,  # placeholder – actual stats from scanner not returned yet
         'gap_pass': len(candidates) * 4,
         'vol_pass': len(candidates) * 3,
-        'spread_pass': len(candidates) * 2,
+        'spread_pass': len([c for c in candidates if c.get('spread_pct') is not None]),
         'fast_pass': len(candidates),
-        'pm_vol_pass': len(candidates),
-        'rvol_pass': len(candidates),
-        'pm_dist_pass': len(candidates),
-        'vwap_pass': len(candidates),
+        'pm_vol_pass': len([c for c in candidates if c.get('pm_volume', 0) > 0]),
+        'rvol_pass': len([c for c in candidates if c.get('rvol') is not None]),
+        'pm_dist_pass': len([c for c in candidates if c.get('pm_high_dist', 999) <= 5]),
+        'vwap_pass': len([c for c in candidates if c.get('pm_vwap', 0) > 0]),
         'pm_quant_pass': len(candidates),
-        'catalyst_pass': len(candidates),
+        'catalyst_pass': len([c for c in candidates if c.get('catalyst') is not None]),
         'final_pass': len(candidates),
     }
     msg = format_scan_breakdown(candidates[:5], stats, today)
@@ -90,19 +96,21 @@ def scan_mode():
 
     # ====== Alerts ======
     for c in candidates[:10]:
+        catalyst = c.get('catalyst')
+        catalyst_str = catalyst if catalyst else 'N/A'
         save_alert(
             ticker=c['ticker'],
             price=c['price'],
             gap_pct=c['gap_pct'],
             score=c.get('event_score', 0),
-            catalyst=c.get('catalyst', '')
+            catalyst=catalyst_str
         )
     print(f"[Main] Done. {added} candidates added.")
 
 
 def review_mode():
     """
-    Evaluates watchlist for QUALIFIED candidates.
+    Evaluates watchlist for candidates that are near breakout.
     Calculates Entry, Stop, TP1, TP2, RR, Net Profit.
     Sends detailed review via Telegram.
     BOT DOES NOT EXECUTE ORDERS.
@@ -140,38 +148,42 @@ def review_mode():
     # ---- Evaluate each candidate ----
     reviews = []
     for w in watchlist:
-        # Only consider candidates with state = QUALIFIED or PREPARE/BREAKOUT
         state = w.get('state', 'WATCH')
-        if state not in ('QUALIFIED', 'PREPARE', 'BREAKOUT'):
+        # In V2.9, state is WATCH or PREPARE (no QUALIFIED yet)
+        if state not in ('PREPARE', 'WATCH'):
             continue
 
-        # Hard filters (already applied, but double-check)
+        # ---- Hard filters (only if data is available) ----
         spread = w.get('spread_pct')
-        if spread is None or spread > MAX_READY_SPREAD:
+        if spread is not None and spread > MAX_READY_SPREAD:
             continue
 
-        if w.get('event_score', 0) < 70:
+        event_score = w.get('event_score', 0)
+        if event_score < 60:  # lowered threshold for review
             continue
 
-        rvol = w.get('rvol', 0)
-        if rvol < VALIDATION_MIN_RVOL:
+        rvol = w.get('rvol')
+        if rvol is not None and rvol < VALIDATION_MIN_RVOL:
             continue
 
-        if w.get('gap_pct', 0) > MAX_GAP_PCT:
+        gap = w.get('gap_pct', 0)
+        if gap > MAX_GAP_PCT:
             continue
 
-        if w.get('pm_high_dist', 999) > VALIDATION_MAX_PM_DIST:
+        pm_dist = w.get('pm_high_dist', 999)
+        if pm_dist > VALIDATION_MAX_PM_DIST:
             continue
 
-        if w.get('catalyst', '—') == '—' or w.get('catalyst_score', 0) <= 0:
-            continue
+        catalyst = w.get('catalyst')
+        # Only require catalyst if it exists – don't reject if N/A
+        catalyst_ok = True  # catalyst is optional for review
 
         price = w.get('price', 0)
         vwap = w.get('vwap', price)
-        if price < vwap * (1 + VALIDATION_MIN_VWAP_DIST):
+        if vwap > 0 and price < vwap * (1 + VALIDATION_MIN_VWAP_DIST):
             continue
 
-        # ---- Calculate Entry / Stop / TP ----
+        # ---- Calculate Entry / Stop / TP (Provisional) ----
         trade_plan = calculate_entry_stop_tp(w)
         entry = trade_plan['entry']
         stop = trade_plan['stop']
@@ -180,13 +192,13 @@ def review_mode():
         rr1 = trade_plan['rr1']
         rr2 = trade_plan['rr2']
 
-        # ---- Calculate Net Profit (assuming 100 shares for estimation) ----
-        shares = 100  # placeholder; actual sizing can be added later
+        # ---- Calculate Net Profit ----
+        shares = 100  # placeholder
         net1 = calculate_net_profit(entry, tp1, shares)
         net2 = calculate_net_profit(entry, tp2, shares)
 
         if net1['net_pct'] < MIN_NET_PROFIT_PCT:
-            continue  # not worth it after costs
+            continue
 
         reviews.append({
             'candidate': w,
