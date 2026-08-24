@@ -1,80 +1,144 @@
 """
-Premarket Engine – calculates PM High, Low, Volume, VWAP, RVOL from minute bars
+Premarket Engine – fetches real PM data from Alpaca Minute Bars
+Only called after Discovery (~100-200 candidates)
 """
-import pandas as pd
-import pytz
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
-import yfinance as yf
+import alpaca_trade_api as tradeapi
+import pytz
 
 ET = pytz.timezone('America/New_York')
 
-def get_premarket_minute_data(symbol: str) -> Dict[str, Any]:
+
+def get_premarket_minute_data(symbol: str, api: tradeapi.REST) -> Dict[str, Any]:
     """
-    Fetches premarket minute bars (04:00-09:30 ET) and computes:
-    - pm_high, pm_low, pm_volume, pm_vwap
-    - time-adjusted RVOL (compared to median of last 5 sessions)
+    Fetches minute bars from Alpaca for premarket (04:00-09:30 ET)
+    Returns PM Volume, High, Low, VWAP, and Time-adjusted RVOL.
     """
     result = {
-        'pm_high': 0.0,
-        'pm_low': 0.0,
-        'pm_volume': 0,
-        'pm_vwap': 0.0,
-        'pm_open': 0.0,
-        'rvol_time_adjusted': 0.0,
+        'pm_volume': None,
+        'pm_high': None,
+        'pm_low': None,
+        'pm_vwap': None,
+        'pm_open': None,
+        'rvol_time_adjusted': None,
         'data_quality': 'LOW',
-        'median_pm_volume': 0,
+        'error': None,
     }
+
     try:
-        # Get today's premarket data
-        ticker = yf.Ticker(symbol)
-        df = ticker.history(period="1d", interval="1m", prepost=True)
+        now = datetime.now(ET)
+        if now.weekday() >= 5:  # weekend
+            result['error'] = 'Weekend'
+            return result
+
+        # Premarket hours: 04:00 to 09:30 ET
+        start = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        end = now.replace(hour=9, minute=30, second=0, microsecond=0)
+
+        # If current time is before 04:00, use previous day? Actually premarket is current day.
+        # Alpaca bars from start to now (or up to 09:30)
+        end = min(now, end)
+
+        if start >= end:
+            result['error'] = 'Not premarket hours'
+            return result
+
+        # Fetch minute bars from Alpaca
+        # Using 1-minute bars for the current day
+        bars = api.get_bars(
+            symbol,
+            timeframe='1Min',
+            start=start.isoformat(),
+            end=end.isoformat(),
+            adjustment='raw'
+        )
+
+        if not bars or len(bars) == 0:
+            result['error'] = 'No bars'
+            return result
+
+        df = bars.df
         if df.empty:
+            result['error'] = 'Empty bars'
             return result
 
-        if df.index.tz is None:
-            df.index = df.index.tz_localize('UTC').tz_convert(ET)
-        else:
-            df.index = df.index.tz_convert(ET)
+        # Compute PM metrics
+        result['pm_volume'] = int(df['volume'].sum())
+        result['pm_high'] = float(df['high'].max())
+        result['pm_low'] = float(df['low'].min())
+        result['pm_open'] = float(df['open'].iloc[0])
 
-        premarket = df[(df.index.hour < 9) | ((df.index.hour == 9) & (df.index.minute < 30))]
-        if premarket.empty:
-            return result
-
-        # Today's PM metrics
-        result['pm_high'] = float(premarket['High'].max())
-        result['pm_low'] = float(premarket['Low'].min())
-        result['pm_volume'] = int(premarket['Volume'].sum())
-        result['pm_open'] = float(premarket['Open'].iloc[0])
-
-        # VWAP
-        typical = (premarket['High'] + premarket['Low'] + premarket['Close']) / 3
-        vwap = (typical * premarket['Volume']).sum() / premarket['Volume'].sum() if premarket['Volume'].sum() > 0 else 0
+        # VWAP: sum(typical_price * volume) / sum(volume)
+        typical = (df['high'] + df['low'] + df['close']) / 3
+        vwap = (typical * df['volume']).sum() / df['volume'].sum() if df['volume'].sum() > 0 else 0
         result['pm_vwap'] = float(vwap)
 
-        # Historical median PM volume (last 5 days)
-        hist_volumes = []
-        for i in range(1, 6):
-            day = datetime.now(ET) - timedelta(days=i)
-            df_hist = ticker.history(start=day.strftime('%Y-%m-%d'), end=(day+timedelta(days=1)).strftime('%Y-%m-%d'), interval='1m', prepost=True)
-            if df_hist.empty:
-                continue
-            if df_hist.index.tz is None:
-                df_hist.index = df_hist.index.tz_localize('UTC').tz_convert(ET)
-            else:
-                df_hist.index = df_hist.index.tz_convert(ET)
-            pm_hist = df_hist[(df_hist.index.hour < 9) | ((df_hist.index.hour == 9) & (df_hist.index.minute < 30))]
-            if not pm_hist.empty:
-                hist_volumes.append(int(pm_hist['Volume'].sum()))
+        # Historical PM volume median (last 5 days, same time-of-day)
+        # We need to fetch historical data for the same symbol.
+        # For performance, we'll use a cache or a simple approach:
+        # We'll store a cache in data/pm_history.json
+        # For now, we'll compute a simple fallback: use a constant factor.
+        # But we want real time-adjusted RVOL.
+        # Since we have Alpaca, we can fetch historical minute bars.
+        # However, to avoid rate limits, we'll cache it.
 
+        # For MVP, we'll use a simple approach: use the last 5 days' PM volumes.
+        # We'll fetch them using Alpaca's historical bars.
+        # But to keep it fast, we'll fetch only for the top candidates.
+        # We'll implement a cache to avoid repeated calls.
+        hist_volumes = _get_historical_pm_volumes(symbol, api, days=5)
         if hist_volumes:
             median_vol = sorted(hist_volumes)[len(hist_volumes)//2]
-            result['median_pm_volume'] = median_vol
-            result['rvol_time_adjusted'] = result['pm_volume'] / median_vol if median_vol > 0 else 0.0
-            result['data_quality'] = 'HIGH' if result['pm_volume'] > 100_000 else 'MEDIUM'
+            if median_vol > 0:
+                result['rvol_time_adjusted'] = result['pm_volume'] / median_vol
+                result['data_quality'] = 'HIGH'
+            else:
+                result['data_quality'] = 'MEDIUM'
         else:
             result['data_quality'] = 'LOW'
 
     except Exception as e:
-        print(f"[PMEngine] Error for {symbol}: {e}")
+        result['error'] = str(e)
+
     return result
+
+
+# Simple cache for historical PM volumes
+_hist_cache = {}
+
+def _get_historical_pm_volumes(symbol: str, api: tradeapi.REST, days: int = 5) -> List[int]:
+    """Fetch historical premarket volumes for the last N days."""
+    cache_key = f"{symbol}_{days}"
+    if cache_key in _hist_cache:
+        return _hist_cache[cache_key]
+
+    volumes = []
+    now = datetime.now(ET)
+    for i in range(1, days+1):
+        day = now - timedelta(days=i)
+        if day.weekday() >= 5:  # skip weekends
+            continue
+        # Fetch bars for that day, premarket hours
+        start = day.replace(hour=4, minute=0, second=0, microsecond=0)
+        end = day.replace(hour=9, minute=30, second=0, microsecond=0)
+        try:
+            bars = api.get_bars(
+                symbol,
+                timeframe='1Min',
+                start=start.isoformat(),
+                end=end.isoformat(),
+                adjustment='raw'
+            )
+            if bars and len(bars) > 0:
+                df = bars.df
+                if not df.empty:
+                    volumes.append(int(df['volume'].sum()))
+        except Exception:
+            continue
+        # Be gentle with API rate limits
+        time.sleep(0.1)
+
+    _hist_cache[cache_key] = volumes
+    return volumes
