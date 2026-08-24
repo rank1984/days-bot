@@ -1,10 +1,12 @@
 """
-Premarket scanner – V2.9.1 (Spread UNKNOWN = PASS)
+Premarket scanner – V2.10 REAL PM DATA
+Stage 1: Discovery (fast filters)
+Stage 2: PM Engine (minute bars) – only for top candidates
 """
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -13,15 +15,16 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 import alpaca_trade_api as tradeapi
 from utils.config import *
 from scanner.universe import load_universe
+from scanner.pm_engine import get_premarket_minute_data
 from scanner.catalyst_engine import get_catalyst_from_finnhub
 
 
-# ── קריטריוני גילוי ──────────────────────────────────────
+# ── Discovery thresholds ──────────────────────────────────
 DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 50.0
 DISCOVERY_MIN_GAP = 1.0
 DISCOVERY_MAX_GAP = 30.0
-DISCOVERY_MIN_PM_VOL = 50_000
+DISCOVERY_MIN_PM_VOL = 50_000  # placeholder – will be replaced by real PM volume after Stage 2
 MAX_SPREAD_DISCOVERY = 1.5
 
 
@@ -29,7 +32,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    print(f"[Premarket] V2.9.1 SPREAD FIX – {date}")
+    print(f"[Premarket] V2.10 REAL PM – {date}")
 
     universe = load_universe()
     if not universe:
@@ -40,7 +43,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
 
     api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, base_url='https://paper-api.alpaca.markets')
 
-    candidates = []
+    # ============================================================
+    # STAGE 1 – DISCOVERY (Fast filters, no PM data)
+    # ============================================================
     stats = {
         'total': len(universe),
         'no_snapshot': 0,
@@ -48,10 +53,11 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         'no_bar': 0,
         'price_pass': 0,
         'gap_pass': 0,
-        'pm_vol_pass': 0,
+        'vol_pass': 0,
         'spread_pass': 0,
-        'final_candidates': 0,
+        'discovery_pass': 0,
     }
+    discovery_candidates = []
 
     batch_size = 100
     for i in range(0, len(universe), batch_size):
@@ -88,90 +94,34 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['gap_pass'] += 1
 
-                    # 3. Premarket Volume
-                    pm_volume = int(getattr(daily_bar, 'volume', 0) or 0)
-                    if pm_volume < DISCOVERY_MIN_PM_VOL:
+                    # 3. Volume (placeholder – daily_bar.volume, but we'll use it only for initial filtering)
+                    avg_vol = int(getattr(daily_bar, 'volume', 0) or 0)
+                    if avg_vol < MIN_AVG_VOLUME:
                         continue
-                    stats['pm_vol_pass'] += 1
+                    stats['vol_pass'] += 1
 
-                    # 4. Spread – UNKNOWN = PASS, only reject if known and too wide
+                    # 4. Spread – only if known and too wide; unknown = pass
                     bid = getattr(snapshot, 'bid_price', None)
                     ask = getattr(snapshot, 'ask_price', None)
                     spread_pct = None
                     if bid and ask and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
                         if spread_pct > MAX_SPREAD_DISCOVERY:
-                            continue  # spread ידוע ורחב מדי
+                            continue
                         stats['spread_pass'] += 1
                     else:
-                        # Spread UNKNOWN – עובר (לא פוסלים)
                         stats['spread_pass'] += 1
 
-                    # ====== עבר את כל הפילטרים ======
-                    stats['final_candidates'] += 1
-
-                    # ====== נתוני PM ======
-                    pm_high = float(getattr(daily_bar, 'high', price))
-                    pm_low = float(getattr(daily_bar, 'low', price))
-                    pm_vwap = (pm_high + pm_low + price) / 3
-                    pm_high_dist = max(0.0, ((pm_high - price) / pm_high) * 100 if pm_high > 0 else 999.0)
-
-                    # ====== RVOL ======
-                    avg_volume = int(getattr(daily_bar, 'volume', 0) or 1)
-                    if avg_volume > 0:
-                        rvol = round(pm_volume / avg_volume, 2)
-                        rvol_method = 'ESTIMATED'
-                    else:
-                        rvol = None
-                        rvol_method = 'N/A'
-
-                    # ====== Catalyst ======
-                    try:
-                        catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
-                        catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else None
-                        catalyst_score = catalyst_result['score']
-                        if catalyst_text is None or catalyst_text == '':
-                            catalyst_text = None
-                            catalyst_score = 0
-                    except Exception as e:
-                        catalyst_text = None
-                        catalyst_score = 0
-                        print(f"[Catalyst] Error for {symbol}: {e}")
-
-                    # ====== Event Score ======
-                    event_score = 0
-                    if gap_pct > 0:
-                        event_score += gap_pct / 5
-                    if rvol is not None and rvol > 0:
-                        event_score += rvol * 10
-                    if pm_high_dist <= 2:
-                        event_score += 10
-                    if spread_pct is not None and spread_pct <= 1.0:
-                        event_score += 5
-
-                    event_score = round(min(100, max(0, event_score)), 1)
-
-                    # ====== Candidate ======
-                    candidate = {
-                        "ticker": symbol,
-                        "price": price,
-                        "gap_pct": gap_pct,
-                        "pm_high": pm_high,
-                        "pm_low": pm_low,
-                        "pm_volume": pm_volume,
-                        "pm_vwap": pm_vwap,
-                        "pm_high_dist": pm_high_dist,
-                        "rvol": rvol,
-                        "rvol_method": rvol_method,
-                        "spread_pct": spread_pct,
-                        "catalyst": catalyst_text,
-                        "catalyst_score": catalyst_score,
-                        "event_score": event_score,
-                        "grade": "B" if event_score >= 60 else "C" if event_score >= 40 else "WATCH",
-                        "state": "WATCH",
-                    }
-
-                    candidates.append(candidate)
+                    # ====== Discovery Pass ======
+                    stats['discovery_pass'] += 1
+                    discovery_candidates.append({
+                        'ticker': symbol,
+                        'price': price,
+                        'gap_pct': gap_pct,
+                        'prev_close': prev_close,
+                        'avg_volume': avg_vol,
+                        'spread_pct': spread_pct,
+                    })
 
                 except Exception:
                     continue
@@ -180,17 +130,116 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             print(f"[Discovery] Batch error: {e}")
             continue
 
+    print(f"[Discovery] Passed: {stats['discovery_pass']} candidates.")
+
+    if stats['discovery_pass'] == 0:
+        return []
+
+    # ============================================================
+    # STAGE 2 – PM ENGINE (Minute Bars) – only top 100
+    # ============================================================
+    discovery_candidates.sort(key=lambda x: x['gap_pct'], reverse=True)
+    top_100 = discovery_candidates[:100]
+
+    pm_stats = {
+        'total': len(top_100),
+        'pm_vol_ok': 0,
+        'rvol_ok': 0,
+        'pm_dist_ok': 0,
+        'vwap_ok': 0,
+        'catalyst_ok': 0,
+        'final_pass': 0,
+    }
+    final_candidates = []
+
+    for c in top_100:
+        symbol = c['ticker']
+        price = c['price']
+        gap = c['gap_pct']
+        spread = c['spread_pct']
+
+        # ---- Fetch real PM data ----
+        pm = get_premarket_minute_data(symbol, api)
+        if pm.get('error'):
+            continue  # no PM data, skip
+
+        pm_volume = pm['pm_volume']
+        if pm_volume is None or pm_volume == 0:
+            continue
+        pm_stats['pm_vol_ok'] += 1
+
+        rvol = pm.get('rvol_time_adjusted')
+        if rvol is None:
+            continue
+        pm_stats['rvol_ok'] += 1
+
+        pm_high = pm['pm_high']
+        pm_vwap = pm['pm_vwap']
+        pm_dist = ((pm_high - price) / pm_high) * 100 if pm_high else 999
+        pm_high_dist = max(0.0, pm_dist)  # no negative
+
+        # ---- Filters with real PM data ----
+        if pm_high_dist > 5:  # too far from PMH
+            continue
+        pm_stats['pm_dist_ok'] += 1
+
+        if pm_vwap and price < pm_vwap * 1.01:  # must be above VWAP
+            continue
+        pm_stats['vwap_ok'] += 1
+
+        # ---- Catalyst ----
+        catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
+        catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else None
+        catalyst_score = catalyst_result['score']
+        # Catalyst is optional – not a blocker
+
+        # ---- Event Score ----
+        event_score = 0
+        if gap > 0:
+            event_score += gap / 5
+        if rvol is not None and rvol > 0:
+            event_score += min(rvol * 10, 40)
+        if pm_high_dist <= 2:
+            event_score += 15
+        if spread is not None and spread <= 1.0:
+            event_score += 5
+        event_score = round(min(100, max(0, event_score)), 1)
+
+        # ---- Candidate ----
+        final_candidates.append({
+            'ticker': symbol,
+            'price': price,
+            'gap_pct': gap,
+            'pm_high': pm_high,
+            'pm_low': pm['pm_low'],
+            'pm_volume': pm_volume,
+            'pm_vwap': pm_vwap,
+            'pm_high_dist': pm_high_dist,
+            'rvol': rvol,
+            'rvol_method': 'TIME_ADJUSTED' if rvol is not None else 'N/A',
+            'spread_pct': spread,
+            'catalyst': catalyst_text,
+            'catalyst_score': catalyst_score,
+            'event_score': event_score,
+            'grade': 'B' if event_score >= 60 else 'C' if event_score >= 40 else 'WATCH',
+            'state': 'WATCH',
+        })
+        pm_stats['final_pass'] += 1
+
     # ====== סיכום ======
     print("\n" + "="*60)
-    print("📊 PREMARKET DISCOVERY – V2.9.1 SPREAD FIX")
+    print("📊 PREMARKET SCAN V2.10 – REAL PM DATA")
     print("="*60)
     print(f"Universe:           {stats['total']:,}")
-    print(f"Price Pass:         {stats['price_pass']:,}")
-    print(f"Gap Pass:           {stats['gap_pass']:,}")
-    print(f"PM Vol Pass:        {stats['pm_vol_pass']:,}")
-    print(f"Spread Pass:        {stats['spread_pass']:,}")
-    print(f"✅ CANDIDATES:      {stats['final_candidates']:,}")
+    print(f"Discovery Pass:     {stats['discovery_pass']:,}")
+    print("-"*60)
+    print(f"PM Volume OK:       {pm_stats['pm_vol_ok']:,}")
+    print(f"RVOL OK:            {pm_stats['rvol_ok']:,}")
+    print(f"PM Dist OK:         {pm_stats['pm_dist_ok']:,}")
+    print(f"VWAP OK:            {pm_stats['vwap_ok']:,}")
+    print(f"Catalyst OK:        {pm_stats['catalyst_ok']:,}")
+    print(f"✅ FINAL:           {pm_stats['final_pass']:,}")
     print("="*60 + "\n")
 
-    candidates.sort(key=lambda x: x['event_score'], reverse=True)
-    return candidates[:20]
+    final_candidates.sort(key=lambda x: x['event_score'], reverse=True)
+    return final_candidates[:20]
