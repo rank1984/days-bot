@@ -1,5 +1,5 @@
 """
-Telegram formatter – V2.8 (Scan Breakdown + Review)
+Telegram formatter – V2.9.1 (with None-safe handling)
 """
 import requests
 from datetime import datetime
@@ -34,12 +34,9 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 
 
 def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
-    """
-    Displays discovery and validation breakdown + top candidates.
-    """
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🎯 <b>DAYS-BOT V2.8 — PREMARKET SCAN</b>",
+        "🎯 <b>DAYS-BOT V2.9 — PREMARKET SCAN</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
         "🔎 <b>DISCOVERY</b>",
@@ -67,14 +64,15 @@ def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
         ticker = c.get('ticker', '???')
         price = c.get('price', 0)
         gap = c.get('gap_pct', 0)
-        rvol = c.get('rvol_time_adj', 0)
-        lines.append(f"{i}. <b>{ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%  RVOL: {rvol:.1f}x")
+        rvol = c.get('rvol')
+        rvol_str = f"{rvol:.1f}x" if rvol is not None else "N/A"
+        lines.append(f"{i}. <b>{ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%  RVOL: {rvol_str}")
 
     lines += [
         "━━━━━━━━━━━━━━━━━━",
-        f"🟢 QUALIFIED: {len([c for c in candidates if c.get('state')=='QUALIFIED'])}",
-        f"🟡 PREPARE:   {len([c for c in candidates if c.get('state')=='PREPARE'])}",
-        f"🔵 WATCH:     {len([c for c in candidates if c.get('state')=='WATCH'])}",
+        f"🟢 QUALIFIED: {stats.get('qualified', 0)}",
+        f"🟡 PREPARE:   {stats.get('prepare', 0)}",
+        f"🔵 WATCH:     {stats.get('watch', 0)}",
         "━━━━━━━━━━━━━━━━━━",
         "⚠️ <b>MANUAL REVIEW IN BLINK</b>",
         "🚫 BOT DOES NOT EXECUTE",
@@ -83,73 +81,7 @@ def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
     return "\n".join(lines)
 
 
-def format_quant_report_v27(candidates: list, date: str) -> str:
-    """Legacy quant report – kept for compatibility."""
-    return format_scan_breakdown(candidates, {}, date)
-
-
-def format_review_v27(reviews: list, date: str) -> str:
-    """Detailed review for READY candidates."""
-    time_str = datetime.now(ET).strftime("%H:%M ET")
-    lines = [
-        "🔥 <b>DAYS-BOT V2.8 — READY FOR REVIEW</b>",
-        f"📅 {date}  |  🕐 {time_str}",
-        "━━━━━━━━━━━━━━━━━━",
-        f"📊 {len(reviews)} candidates passed all filters",
-        "━━━━━━━━━━━━━━━━━━",
-    ]
-
-    for i, r in enumerate(reviews[:3], 1):
-        c = r.get('candidate', {})
-        ticker = c.get('ticker', '???')
-        price = c.get('price', 0)
-        gap = c.get('gap_pct', 0)
-        rvol = c.get('rvol_time_adj', 0)
-        spread = c.get('spread_pct')
-        spread_str = f"{spread:.2f}%" if spread is not None else "UNKNOWN"
-        catalyst = c.get('catalyst', '—')
-        pm_high = c.get('pm_high', 0)
-        pm_dist = c.get('pm_high_dist', 999)
-        vwap = c.get('pm_vwap', 0)
-
-        entry = r.get('entry', 0)
-        stop = r.get('stop', 0)
-        tp1 = r.get('tp1', 0)
-        tp2 = r.get('tp2', 0)
-        rr1 = r.get('rr1', 0)
-        rr2 = r.get('rr2', 0)
-        net1 = r.get('net1', {})
-        net2 = r.get('net2', {})
-
-        lines.append("")
-        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
-        lines.append(f"   📊 RVOL: {rvol:.1f}x  |  Spread: {spread_str}")
-        lines.append(f"   📏 PM High: ${pm_high:.2f}  |  PM Dist: {pm_dist:.1f}%")
-        lines.append(f"   💵 VWAP: ${vwap:.2f}  |  📰 Catalyst: {catalyst[:40] if catalyst != '—' else '—'}")
-        lines.append("")
-        lines.append(f"   🎯 ENTRY: ${entry:.2f}")
-        lines.append(f"   🛑 STOP:  ${stop:.2f}  (-{((entry-stop)/entry)*100:.1f}%)")
-        lines.append(f"   🎯 TP1:   ${tp1:.2f}  (+{((tp1-entry)/entry)*100:.1f}%)  RR: {rr1:.2f}")
-        lines.append(f"   🎯 TP2:   ${tp2:.2f}  (+{((tp2-entry)/entry)*100:.1f}%)  RR: {rr2:.2f}")
-        lines.append("")
-        if net1:
-            lines.append(f"   📊 Net TP1: {net1.get('net_pct', 0):.1f}%  |  Net TP2: {net2.get('net_pct', 0):.1f}%")
-        lines.append("   ───────────────────")
-        lines.append(f"   ✅ All hard filters passed")
-        lines.append(f"   ⚠️ <b>MANUAL EXECUTION REQUIRED</b>")
-
-    lines += [
-        "",
-        "━━━━━━━━━━━━━━━━━━",
-        "⚠️ BOT DOES NOT EXECUTE – YOU MUST BUY/SELL MANUALLY",
-        "🚫 NO CHASE – verify price, volume, spread in BLINK",
-        "🚫 לא המלצת השקעה"
-    ]
-    return "\n".join(lines)
-
-
 def format_watchlist(watchlist: list, date: str) -> str:
-    """Standard watchlist display."""
     time_str = datetime.now(ET).strftime("%H:%M ET")
     if not watchlist:
         return f"📋 <b>DAYS-BOT - רשימת מעקב</b>\n📅 {date}  |  🕐 {time_str}\n━━━━━━━━━━━━━━━━━━\n😴 אין מועמדויות פעילות."
@@ -166,30 +98,30 @@ def format_watchlist(watchlist: list, date: str) -> str:
         price = w.get('price', 0)
         gap = w.get('gap_pct', 0)
         state = w.get('state', 'WATCH')
-        final_score = w.get('final_score', 0)
+        event_score = w.get('event_score', 0)
         grade = w.get('grade', '?')
-        rvol = w.get('rvol', 0)
-        catalyst = w.get('catalyst', '—')
+        rvol = w.get('rvol')
+        rvol_str = f"{rvol:.1f}x" if rvol is not None else "N/A"
+        catalyst = w.get('catalyst')
+        catalyst_str = catalyst[:30] if catalyst else "N/A"
         pm_high_dist = w.get('pm_high_dist', 999)
         spread = w.get('spread_pct')
-        spread_str = f"{spread:.2f}%" if spread is not None else "UNKNOWN"
+        spread_str = f"{spread:.2f}%" if spread is not None else "N/A"
 
-        if state == 'QUALIFIED':
-            status_icon = "🟢 QUALIFIED"
-        elif state == 'PREPARE':
+        if state == 'PREPARE':
             status_icon = "🟡 PREPARE"
+        elif state == 'QUALIFIED':
+            status_icon = "🟢 QUALIFIED"
         elif state == 'BREAKOUT':
             status_icon = "🔴 BREAKOUT"
-        elif state == 'WATCH':
-            status_icon = "🔵 WATCH"
         else:
-            status_icon = "⚪ REJECT"
+            status_icon = "🔵 WATCH"
 
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
-        lines.append(f"   🎯 ציון: {final_score:.0f}  |  Grade: {grade}  |  RVOL: {rvol:.1f}x")
+        lines.append(f"   🎯 ציון: {event_score:.0f}  |  Grade: {grade}  |  RVOL: {rvol_str}")
         lines.append(f"   📏 PM Dist: {pm_high_dist:.1f}%  |  Spread: {spread_str}")
-        lines.append(f"   📰 Catalyst: {catalyst[:30] if catalyst != '—' else '—'}")
+        lines.append(f"   📰 Catalyst: {catalyst_str}")
         lines.append(f"   {status_icon}")
 
     lines += [
@@ -197,6 +129,65 @@ def format_watchlist(watchlist: list, date: str) -> str:
         "━━━━━━━━━━━━━━━━━━",
         "🟢 QUALIFIED = SETUP WORTH YOUR MANUAL REVIEW",
         "⚠️ MANUAL CONFIRMATION REQUIRED",
+        "🚫 לא המלצת השקעה"
+    ]
+    return "\n".join(lines)
+
+
+def format_review_v27(reviews: list, date: str) -> str:
+    time_str = datetime.now(ET).strftime("%H:%M ET")
+    lines = [
+        "🔥 <b>DAYS-BOT V2.9 — READY FOR REVIEW</b>",
+        f"📅 {date}  |  🕐 {time_str}",
+        "━━━━━━━━━━━━━━━━━━",
+        f"📊 {len(reviews)} candidates passed all filters",
+        "━━━━━━━━━━━━━━━━━━",
+    ]
+
+    for i, r in enumerate(reviews[:3], 1):
+        c = r.get('candidate', {})
+        ticker = c.get('ticker', '???')
+        price = c.get('price', 0)
+        gap = c.get('gap_pct', 0)
+        rvol = c.get('rvol')
+        rvol_str = f"{rvol:.1f}x" if rvol is not None else "N/A"
+        spread = c.get('spread_pct')
+        spread_str = f"{spread:.2f}%" if spread is not None else "N/A"
+        catalyst = c.get('catalyst')
+        catalyst_str = catalyst[:40] if catalyst else "N/A"
+        pm_high = c.get('pm_high', 0)
+        pm_dist = c.get('pm_high_dist', 999)
+        vwap = c.get('pm_vwap', 0)
+        entry = r.get('entry', 0)
+        stop = r.get('stop', 0)
+        tp1 = r.get('tp1', 0)
+        tp2 = r.get('tp2', 0)
+        rr1 = r.get('rr1', 0)
+        rr2 = r.get('rr2', 0)
+        net1 = r.get('net1', {})
+        net2 = r.get('net2', {})
+
+        lines.append("")
+        lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
+        lines.append(f"   📊 RVOL: {rvol_str}  |  Spread: {spread_str}")
+        lines.append(f"   📏 PM High: ${pm_high:.2f}  |  PM Dist: {pm_dist:.1f}%")
+        lines.append(f"   💵 VWAP: ${vwap:.2f}  |  📰 Catalyst: {catalyst_str}")
+        lines.append("")
+        lines.append(f"   🎯 ENTRY: ${entry:.2f}")
+        lines.append(f"   🛑 STOP:  ${stop:.2f}  (-{((entry-stop)/entry)*100:.1f}%)")
+        lines.append(f"   🎯 TP1:   ${tp1:.2f}  (+{((tp1-entry)/entry)*100:.1f}%)  RR: {rr1:.2f}")
+        lines.append(f"   🎯 TP2:   ${tp2:.2f}  (+{((tp2-entry)/entry)*100:.1f}%)  RR: {rr2:.2f}")
+        lines.append("")
+        lines.append(f"   📊 Net TP1: {net1.get('net_pct', 0):.1f}%  |  Net TP2: {net2.get('net_pct', 0):.1f}%")
+        lines.append("   ───────────────────")
+        lines.append(f"   ✅ All hard filters passed")
+        lines.append(f"   ⚠️ <b>MANUAL EXECUTION REQUIRED</b>")
+
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "⚠️ BOT DOES NOT EXECUTE – YOU MUST BUY/SELL MANUALLY",
+        "🚫 NO CHASE – verify price, volume, spread in BLINK",
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
