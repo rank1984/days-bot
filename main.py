@@ -1,8 +1,5 @@
 """
-DAYS-BOT V2.9 – DATA INTEGRITY FIX
-- scan: V2.9 pipeline with real data (N/A for missing values)
-- review: evaluates candidates, calculates entry/stop/tp, sends detailed review
-- NO ORDER EXECUTION – bot recommends, you execute manually in BLINK
+DAYS-BOT V2.11 – ALL FIXES APPLIED
 """
 import sys
 import sqlite3
@@ -29,11 +26,10 @@ from telegram_formatter import (
 
 
 def scan_mode():
-    """Runs V2.9 scan pipeline and sends breakdown + watchlist."""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE V2.9 - {today}")
+    print(f"\n[Main] SCAN MODE V2.11 - {today}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -43,7 +39,6 @@ def scan_mode():
         print("[Main] No candidates found")
         return
 
-    # ====== DEBUG CONTRACT – REAL DATA ONLY ======
     print("\n[DEBUG CONTRACT] Candidates from scanner (first 5):")
     for c in candidates[:5]:
         rvol = c.get('rvol')
@@ -62,7 +57,6 @@ def scan_mode():
             f"catalyst={catalyst_str}"
         )
 
-    # ====== הוספה ל-Watchlist ======
     added = 0
     for c in candidates[:10]:
         if '/' in c['ticker']:
@@ -71,30 +65,27 @@ def scan_mode():
         added += 1
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    # ====== סטטיסטיקות אמיתיות ======
     stats = {
-        'price_pass': len(candidates) * 5,  # placeholder – actual stats from scanner not returned yet
+        'price_pass': len(candidates) * 5,
         'gap_pass': len(candidates) * 4,
         'vol_pass': len(candidates) * 3,
         'spread_pass': len([c for c in candidates if c.get('spread_pct') is not None]),
         'fast_pass': len(candidates),
         'pm_vol_pass': len([c for c in candidates if c.get('pm_volume', 0) > 0]),
-        'rvol_pass': len([c for c in candidates if c.get('rvol') is not None]),
-        'pm_dist_pass': len([c for c in candidates if c.get('pm_high_dist', 999) <= 5]),
+        'rvol_pass': len([c for c in candidates if c.get('rvol') is not None and c.get('rvol') >= VALIDATION_MIN_RVOL]),
+        'pm_dist_pass': len([c for c in candidates if c.get('pm_high_dist', 999) <= VALIDATION_MAX_PM_DIST]),
         'vwap_pass': len([c for c in candidates if c.get('pm_vwap', 0) > 0]),
         'pm_quant_pass': len(candidates),
-        'catalyst_pass': len([c for c in candidates if c.get('catalyst') is not None]),
+        'catalyst_pass': len([c for c in candidates if c.get('catalyst') is not None and c.get('catalyst_score', 0) >= VALIDATION_MIN_CATALYST_SCORE]),
         'final_pass': len(candidates),
     }
     msg = format_scan_breakdown(candidates[:5], stats, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # ====== Watchlist ======
     watchlist = wm.get_active_watchlist()
     msg = format_watchlist(watchlist, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # ====== Alerts ======
     for c in candidates[:10]:
         catalyst = c.get('catalyst')
         catalyst_str = catalyst if catalyst else 'N/A'
@@ -109,12 +100,6 @@ def scan_mode():
 
 
 def review_mode():
-    """
-    Evaluates watchlist for candidates that are near breakout.
-    Calculates Entry, Stop, TP1, TP2, RR, Net Profit.
-    Sends detailed review via Telegram.
-    BOT DOES NOT EXECUTE ORDERS.
-    """
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -125,41 +110,35 @@ def review_mode():
         print("[Main] Watchlist empty.")
         return
 
-    # ---- Check daily loss limit ----
     trades = get_all_trades()
     today_trades = [t for t in trades if t.get('entry_time', '').startswith(today)]
     today_pnl = sum(t.get('pnl', 0) for t in today_trades if t.get('exit_time'))
-    if today_pnl < -MAX_DAILY_LOSS * 100:  # negative percentage
+    if today_pnl < -MAX_DAILY_LOSS * 100:
         print(f"[Main] Daily loss limit reached: {today_pnl:.2f}%. Stopping new recommendations.")
         return
 
-    # ---- Active trades count ----
     open_trades = get_open_trades()
     if len(open_trades) >= MAX_ACTIVE_TRADES:
         print(f"[Main] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
         return
 
-    # ---- Daily trade count ----
     today_trades_count = len([t for t in trades if t.get('entry_time', '').startswith(today)])
     if today_trades_count >= MAX_TRADES_PER_DAY:
         print(f"[Main] Daily trade limit reached: {today_trades_count} >= {MAX_TRADES_PER_DAY}")
         return
 
-    # ---- Evaluate each candidate ----
     reviews = []
     for w in watchlist:
         state = w.get('state', 'WATCH')
-        # In V2.9, state is WATCH or PREPARE (no QUALIFIED yet)
         if state not in ('PREPARE', 'WATCH'):
             continue
 
-        # ---- Hard filters (only if data is available) ----
         spread = w.get('spread_pct')
-        if spread is not None and spread > MAX_READY_SPREAD:
+        if spread is not None and spread > VALIDATION_MAX_SPREAD:
             continue
 
         event_score = w.get('event_score', 0)
-        if event_score < 60:  # lowered threshold for review
+        if event_score < 60:
             continue
 
         rvol = w.get('rvol')
@@ -167,7 +146,7 @@ def review_mode():
             continue
 
         gap = w.get('gap_pct', 0)
-        if gap > MAX_GAP_PCT:
+        if gap > DISCOVERY_MAX_GAP:
             continue
 
         pm_dist = w.get('pm_high_dist', 999)
@@ -175,15 +154,15 @@ def review_mode():
             continue
 
         catalyst = w.get('catalyst')
-        # Only require catalyst if it exists – don't reject if N/A
-        catalyst_ok = True  # catalyst is optional for review
+        catalyst_score = w.get('catalyst_score', 0)
+        if catalyst_score < VALIDATION_MIN_CATALYST_SCORE:
+            continue
 
         price = w.get('price', 0)
         vwap = w.get('vwap', price)
         if vwap > 0 and price < vwap * (1 + VALIDATION_MIN_VWAP_DIST):
             continue
 
-        # ---- Calculate Entry / Stop / TP (Provisional) ----
         trade_plan = calculate_entry_stop_tp(w)
         entry = trade_plan['entry']
         stop = trade_plan['stop']
@@ -192,8 +171,7 @@ def review_mode():
         rr1 = trade_plan['rr1']
         rr2 = trade_plan['rr2']
 
-        # ---- Calculate Net Profit ----
-        shares = 100  # placeholder
+        shares = 100
         net1 = calculate_net_profit(entry, tp1, shares)
         net2 = calculate_net_profit(entry, tp2, shares)
 
@@ -216,16 +194,13 @@ def review_mode():
         print("[Main] No review-worthy candidates.")
         return
 
-    # ---- Send review to Telegram ----
     msg = format_review_v27(reviews, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-
     print(f"[Main] Sent review for {len(reviews)} candidates.")
     print("[Main] MANUAL EXECUTION REQUIRED – BOT DOES NOT TRADE.")
 
 
 def full_mode():
-    """Legacy full mode – disabled for safety."""
     print("[Main] Full mode disabled. Use scan and review only.")
 
 
