@@ -4,35 +4,31 @@ Calculations – Entry, Stop, TP, Net Profit (FIXED)
 from typing import Dict, Any
 
 # ── BROKER FEES (BLINK) ──────────────────────────────────
-# נניח עמלה per-side (קנייה + מכירה)
 def calculate_fee(trade_value: float, fee_pct: float = 0.018, fee_min: float = 1.50) -> float:
-    """מחשב עמלה לעסקה בודדת (buy OR sell)"""
+    """
+    מחשב עמלת עסקה בודדת (buy OR sell).
+    העמלה היא המקסימום בין: fee_min לבין trade_value * fee_pct.
+    """
     if trade_value <= 0:
         return 0.0
-    fee = max(fee_min, trade_value * fee_pct)
-    return min(fee, trade_value * 0.018)  # capped at 1.8%
+    # ====== FIX: הסרנו את ה-cap המיותר ======
+    return max(fee_min, trade_value * fee_pct)
 
 
 def calculate_entry_stop_tp(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """
     Calculates entry, stop, tp1, tp2 based on PM High and current price.
-    Entry = max(trigger_price, current_price) – same as watchlist_manager.
+    Entry = max(trigger_price, current_price).
     """
     price = candidate.get('price', 0)
     pm_high = candidate.get('pm_high', price * 1.02)
     trigger_price = round(pm_high * 1.005, 2)
 
-    # ====== FIX: Same logic as watchlist_manager ======
     entry = trigger_price if trigger_price > price else price
     entry = round(entry, 2)
 
-    # Stop = 5% below entry
     stop = round(entry * 0.95, 2)
-
-    # TP1 = entry + 6%
     tp1 = round(entry * 1.06, 2)
-
-    # TP2 = entry + 12%
     tp2 = round(entry * 1.12, 2)
 
     risk_share = entry - stop
@@ -66,12 +62,10 @@ def calculate_net_profit(
     gross_profit = exit_value - entry_value
     gross_pct = ((target - entry) / entry) * 100 if entry > 0 else 0
 
-    # ====== FIX: Entry fee + Exit fee ======
     entry_fee = calculate_fee(entry_value, fee_pct, fee_min)
     exit_fee = calculate_fee(exit_value, fee_pct, fee_min)
     total_fee = entry_fee + exit_fee
 
-    # ====== FIX: Tax on net profit (profit - fees) ======
     net_profit_before_tax = gross_profit - total_fee
     tax = net_profit_before_tax * tax_rate if net_profit_before_tax > 0 else 0
     net_profit = net_profit_before_tax - tax
@@ -87,3 +81,15 @@ def calculate_net_profit(
         'net_profit': round(net_profit, 2),
         'net_pct': round(net_pct, 2),
     }
+
+
+def calculate_position_size(entry: float, stop: float, equity: float, risk_pct: float = 0.01) -> int:
+    """
+    מחשב גודל פוזיציה לפי סיכון קבוע (1% מההון).
+    """
+    risk_per_share = entry - stop
+    if risk_per_share <= 0:
+        return 0
+    risk_amount = equity * risk_pct
+    shares = int(risk_amount / risk_per_share)
+    return max(1, shares)
