@@ -1,10 +1,10 @@
 """
-Premarket scanner – V2.8.1 DATA PIPELINE FIX
+Premarket scanner – V2.9 DATA INTEGRITY FIX
 """
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -22,14 +22,14 @@ DISCOVERY_MAX_PRICE = 50.0
 DISCOVERY_MIN_GAP = 1.0
 DISCOVERY_MAX_GAP = 30.0
 DISCOVERY_MIN_PM_VOL = 50_000
-MAX_SPREAD_DISCOVERY = 1.5
+VALIDATION_MAX_SPREAD = 1.5
 
 
 def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    print(f"[Premarket] V2.8.1 DATA PIPELINE – {date}")
+    print(f"[Premarket] V2.9 DATA FIX – {date}")
 
     universe = load_universe()
     if not universe:
@@ -88,23 +88,23 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         continue
                     stats['gap_pass'] += 1
 
-                    # 3. Premarket Volume (אומדן)
+                    # 3. Premarket Volume (אומדן מ-daily_bar.volume)
                     pm_volume = int(getattr(daily_bar, 'volume', 0) or 0)
                     if pm_volume < DISCOVERY_MIN_PM_VOL:
                         continue
                     stats['pm_vol_pass'] += 1
 
-                    # 4. Spread
+                    # 4. Spread – אם UNKNOWN → REJECT
                     bid = getattr(snapshot, 'bid_price', None)
                     ask = getattr(snapshot, 'ask_price', None)
-                    spread_pct = None
                     if bid and ask and price > 0:
                         spread_pct = ((ask - bid) / price) * 100
-                        if spread_pct > MAX_SPREAD_DISCOVERY:
-                            continue
+                        if spread_pct > VALIDATION_MAX_SPREAD:
+                            continue  # spread רחב מדי
                         stats['spread_pass'] += 1
                     else:
-                        stats['spread_pass'] += 1
+                        # Spread UNKNOWN – לא נכנס לרשימה
+                        continue
 
                     # ====== עבר את כל הפילטרים ======
                     stats['final_candidates'] += 1
@@ -113,27 +113,45 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     pm_high = float(getattr(daily_bar, 'high', price))
                     pm_low = float(getattr(daily_bar, 'low', price))
                     pm_vwap = (pm_high + pm_low + price) / 3
-                    pm_high_dist = ((pm_high - price) / pm_high) * 100 if pm_high > 0 else 999.0
+                    # PM Dist – לא יכול להיות שלילי (מעל PMH = 0)
+                    pm_high_dist = max(0.0, ((pm_high - price) / pm_high) * 100 if pm_high > 0 else 999.0)
 
-                    # ====== RVOL אומדן ======
+                    # ====== RVOL – אמיתי או N/A ======
                     avg_volume = int(getattr(daily_bar, 'volume', 0) or 1)
-                    rvol = pm_volume / avg_volume if avg_volume > 0 else 1.0
+                    if avg_volume > 0:
+                        rvol = round(pm_volume / avg_volume, 2)
+                        rvol_method = 'ESTIMATED'
+                    else:
+                        rvol = None  # N/A
+                        rvol_method = 'N/A'
 
-                    # ====== Catalyst ======
-                    catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
-                    catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else '—'
-                    catalyst_score = catalyst_result['score']
+                    # ====== Catalyst – עם טיפול בשגיאות ======
+                    try:
+                        catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
+                        catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else None
+                        catalyst_score = catalyst_result['score']
+                        if catalyst_text is None or catalyst_text == '':
+                            catalyst_text = None
+                            catalyst_score = 0
+                    except Exception as e:
+                        catalyst_text = None
+                        catalyst_score = 0
+                        print(f"[Catalyst] Error for {symbol}: {e}")
 
-                    # ====== Event Score ======
-                    event_score = (
-                        (gap_pct / 5) +
-                        (rvol * 10) +
-                        (1 if pm_high_dist <= 2 else 0) * 10 +
-                        (1 if spread_pct and spread_pct <= 1.0 else 0) * 5
-                    )
+                    # ====== Event Score (רק עם נתונים אמיתיים) ======
+                    event_score = 0
+                    if gap_pct > 0:
+                        event_score += gap_pct / 5
+                    if rvol is not None and rvol > 0:
+                        event_score += rvol * 10
+                    if pm_high_dist <= 2:
+                        event_score += 10
+                    if spread_pct <= 1.0:
+                        event_score += 5
+
                     event_score = round(min(100, max(0, event_score)), 1)
 
-                    # ====== Candidate Contract (אחיד!) ======
+                    # ====== Candidate Contract ======
                     candidate = {
                         "ticker": symbol,
                         "price": price,
@@ -144,23 +162,20 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                         "pm_low": pm_low,
                         "pm_volume": pm_volume,
                         "pm_vwap": pm_vwap,
-                        "pm_high_dist": pm_high_dist,
+                        "pm_high_dist": pm_high_dist,   # 0 = at or above PMH
 
-                        "rvol": rvol,
-                        "rvol_method": "ESTIMATED",
+                        "rvol": rvol,                     # None = N/A
+                        "rvol_method": rvol_method,
 
                         "spread_pct": spread_pct,
 
-                        "catalyst": catalyst_text,
+                        "catalyst": catalyst_text,        # None = N/A
                         "catalyst_score": catalyst_score,
 
                         "event_score": event_score,
-                        "opportunity": event_score,
-                        "risk": 50 - (rvol * 5 + gap_pct / 10),
-                        "final_score": event_score - (50 - (rvol * 5 + gap_pct / 10)) * 0.2,
 
                         "grade": "B" if event_score >= 60 else "C" if event_score >= 40 else "WATCH",
-                        "state": "WATCH" if event_score >= 50 else "SCAN",
+                        "state": "WATCH",  # עדיין לא breakout
                     }
 
                     candidates.append(candidate)
@@ -172,9 +187,9 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             print(f"[Discovery] Batch error: {e}")
             continue
 
-    # ====== דוח ======
+    # ====== סיכום ======
     print("\n" + "="*60)
-    print("📊 PREMARKET DISCOVERY – V2.8.1")
+    print("📊 PREMARKET DISCOVERY – V2.9 DATA FIX")
     print("="*60)
     print(f"Universe:           {stats['total']:,}")
     print(f"Price Pass:         {stats['price_pass']:,}")
