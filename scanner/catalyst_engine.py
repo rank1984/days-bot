@@ -1,6 +1,8 @@
 """
 Catalyst Engine – fetches and classifies news from Finnhub (FIXED endpoint)
 """
+print("🔥 LOADED CATALYST_ENGINE V2.12.1")
+
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
@@ -106,7 +108,6 @@ def get_catalyst_from_finnhub(symbol: str, finnhub_key: str) -> Dict[str, Any]:
     try:
         end = datetime.now()
         start = end - timedelta(days=3)
-        # ====== FIX #5: Correct endpoint ======
         url = f"https://finnhub.io/api/v1/company-news"
         params = {
             'symbol': symbol,
@@ -126,7 +127,6 @@ def get_catalyst_from_finnhub(symbol: str, finnhub_key: str) -> Dict[str, Any]:
             if headlines:
                 return classify_catalyst(headlines)
 
-        # No news found
         return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
 
     except Exception as e:
