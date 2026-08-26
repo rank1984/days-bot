@@ -1,8 +1,5 @@
 """
-DAYS-BOT V2.12 – FULL FIXED
-- Scan: V2.12 with Near-Miss Debug
-- Review: Unified Entry, Double Fees, Net Tax, Position Sizing
-- NO ORDER EXECUTION – bot recommends, you execute manually in BLINK
+DAYS-BOT V2.12.1 – PM DIAGNOSTICS
 """
 import sys
 import sqlite3
@@ -32,22 +29,15 @@ from telegram_formatter import (
 )
 
 
-# ── Helper for position sizing (placeholder equity until real account) ──
 def get_equity() -> float:
-    """
-    Placeholder: return a fixed equity for now.
-    Later, replace with actual account equity from Alpaca Paper API.
-    """
-    # You can set your paper trading starting equity here, e.g., 10,000 USD
     return 10_000.0
 
 
 def scan_mode():
-    """Runs V2.12 scan pipeline and sends breakdown + watchlist."""
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE V2.12 - {today}")
+    print(f"\n[Main] SCAN MODE V2.12.1 - {today}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -57,7 +47,6 @@ def scan_mode():
         print("[Main] No candidates found")
         return
 
-    # Debug Contract
     print("\n[DEBUG CONTRACT] Candidates from scanner (first 5):")
     for c in candidates[:5]:
         rvol = c.get('rvol')
@@ -76,7 +65,6 @@ def scan_mode():
             f"catalyst={catalyst_str}"
         )
 
-    # Add to watchlist
     added = 0
     for c in candidates[:10]:
         if '/' in c['ticker']:
@@ -85,7 +73,6 @@ def scan_mode():
         added += 1
     print(f"[Main] Added {added} candidates to Watchlist")
 
-    # Statistics for Telegram
     stats = {
         'price_pass': len(candidates) * 5,
         'gap_pass': len(candidates) * 4,
@@ -103,12 +90,10 @@ def scan_mode():
     msg = format_scan_breakdown(candidates[:5], stats, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # Watchlist
     watchlist = wm.get_active_watchlist()
     msg = format_watchlist(watchlist, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # Save alerts
     for c in candidates[:10]:
         catalyst = c.get('catalyst')
         catalyst_str = catalyst if catalyst else 'N/A'
@@ -123,13 +108,6 @@ def scan_mode():
 
 
 def review_mode():
-    """
-    Evaluates watchlist candidates against all hard filters,
-    calculates Entry/Stop/TP/RR with unified Entry logic,
-    computes Net Profit using real position sizing and double fees,
-    sends detailed review via Telegram.
-    BOT DOES NOT EXECUTE ORDERS.
-    """
     init_db()
     wm = WatchlistManager()
     today = datetime.now().strftime("%Y-%m-%d")
@@ -140,7 +118,6 @@ def review_mode():
         print("[Main] Watchlist empty.")
         return
 
-    # ---- Check daily loss limit ----
     trades = get_all_trades()
     today_trades = [t for t in trades if t.get('entry_time', '').startswith(today)]
     today_pnl = sum(t.get('pnl', 0) for t in today_trades if t.get('exit_time'))
@@ -148,28 +125,24 @@ def review_mode():
         print(f"[Main] Daily loss limit reached: {today_pnl:.2f}%. Stopping new recommendations.")
         return
 
-    # ---- Active trades count ----
     open_trades = get_open_trades()
     if len(open_trades) >= MAX_ACTIVE_TRADES:
         print(f"[Main] {len(open_trades)} active trades. Max={MAX_ACTIVE_TRADES}")
         return
 
-    # ---- Daily trade count ----
     today_trades_count = len([t for t in trades if t.get('entry_time', '').startswith(today)])
     if today_trades_count >= MAX_TRADES_PER_DAY:
         print(f"[Main] Daily trade limit reached: {today_trades_count} >= {MAX_TRADES_PER_DAY}")
         return
 
-    # ---- Equity for position sizing ----
-    equity = get_equity()   # placeholder; replace with real account later
-
+    equity = get_equity()
     reviews = []
+
     for w in watchlist:
         state = w.get('state', 'WATCH')
         if state not in ('PREPARE', 'WATCH'):
             continue
 
-        # ---- Hard Filters ----
         spread = w.get('spread_pct')
         if spread is not None and spread > VALIDATION_MAX_SPREAD:
             continue
@@ -199,7 +172,6 @@ def review_mode():
         if vwap > 0 and price < vwap * (1 + VALIDATION_MIN_VWAP_DIST):
             continue
 
-        # ---- Unified Entry Calculation ----
         trade_plan = calculate_entry_stop_tp(w)
         entry = trade_plan['entry']
         stop = trade_plan['stop']
@@ -208,21 +180,16 @@ def review_mode():
         rr1 = trade_plan['rr1']
         rr2 = trade_plan['rr2']
 
-        # ---- Position Sizing ----
         shares = calculate_position_size(entry, stop, equity, MAX_RISK_PER_TRADE)
         if shares <= 0:
-            continue   # not enough capital for this trade
+            continue
 
-        # ---- Net Profit Calculations (using correct fees, tax) ----
         net1 = calculate_net_profit(entry, tp1, shares)
         net2 = calculate_net_profit(entry, tp2, shares)
 
-        # ---- Minimum net profit gate ----
         if net1['net_pct'] < MIN_NET_PROFIT_PCT:
-            # If even TP1 doesn't meet the net profit threshold, skip
             continue
 
-        # ---- Candidate passed all ----
         reviews.append({
             'candidate': w,
             'entry': entry,
@@ -240,16 +207,13 @@ def review_mode():
         print("[Main] No review-worthy candidates.")
         return
 
-    # ---- Send review to Telegram ----
     msg = format_review_v27(reviews, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-
     print(f"[Main] Sent review for {len(reviews)} candidates.")
     print("[Main] MANUAL EXECUTION REQUIRED – BOT DOES NOT TRADE.")
 
 
 def full_mode():
-    """Legacy full mode – disabled for safety."""
     print("[Main] Full mode disabled. Use scan and review only.")
 
 
