@@ -11,20 +11,16 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 # ── DISCOVERY ──────────────────────────────────────────────
 DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 50.0
-DISCOVERY_MIN_GAP = 1.0
+DISCOVERY_MIN_GAP = 1.0          # 1%–30% (נשאר)
 DISCOVERY_MAX_GAP = 30.0
 
 # ── VALIDATION (HARD FILTERS) ────────────────────────────
-# TEMPORARY DIAGNOSTIC MODE:
-# RVOL is currently based on a placeholder baseline and must NOT
-# be used as a hard filter until historical time-adjusted PM volume
-# is implemented.
-VALIDATION_MIN_RVOL = 0.0          # DISABLED – placeholder only
-
+VALIDATION_MIN_RVOL = 2.0         # לא בשימוש כ-Hard Gate – רק אינפורמטיבי
 VALIDATION_MAX_PM_DIST = 2.0
 VALIDATION_MIN_VWAP_DIST = 0.01
-VALIDATION_MIN_CATALYST_SCORE = 0  # DISABLED – not blocking
+VALIDATION_MIN_CATALYST_SCORE = 5 # Catalyst Hard Gate (N/A → BLOCK)
 VALIDATION_MAX_SPREAD = 1.5
+VALIDATION_MIN_PM_BARS = 5        # 🆕 מינימום נרות דקה לפרה-מרקט
 
 # ── RISK & POSITION ──────────────────────────────────────
 MAX_RISK_PER_TRADE = 0.01
