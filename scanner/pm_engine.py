@@ -1,7 +1,8 @@
 """
 Premarket Engine – fetches real PM data from Alpaca Minute Bars
-Only called after Discovery (~100-200 candidates)
 """
+print("🔥 LOADED PM_ENGINE V2.12.1")
+
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
@@ -24,7 +25,10 @@ def get_premarket_minute_data(symbol: str, api: tradeapi.REST) -> Dict[str, Any]
         'pm_open': None,
         'rvol_time_adjusted': None,
         'data_quality': 'LOW',
+        'pm_bars_count': 0,
+        'pm_volume_raw': 0,
         'error': None,
+        'debug': {},
     }
 
     try:
@@ -36,17 +40,13 @@ def get_premarket_minute_data(symbol: str, api: tradeapi.REST) -> Dict[str, Any]
         # Premarket hours: 04:00 to 09:30 ET
         start = now.replace(hour=4, minute=0, second=0, microsecond=0)
         end = now.replace(hour=9, minute=30, second=0, microsecond=0)
-
-        # If current time is before 04:00, use previous day? Actually premarket is current day.
-        # Alpaca bars from start to now (or up to 09:30)
-        end = min(now, end)
+        end = min(now, end)  # only up to current time
 
         if start >= end:
             result['error'] = 'Not premarket hours'
             return result
 
         # Fetch minute bars from Alpaca
-        # Using 1-minute bars for the current day
         bars = api.get_bars(
             symbol,
             timeframe='1Min',
@@ -55,90 +55,49 @@ def get_premarket_minute_data(symbol: str, api: tradeapi.REST) -> Dict[str, Any]
             adjustment='raw'
         )
 
-        if not bars or len(bars) == 0:
-            result['error'] = 'No bars'
+        if bars is None:
+            result['error'] = 'No bars returned (None)'
             return result
 
         df = bars.df
-        if df.empty:
+        result['debug']['bars_raw_count'] = len(df) if df is not None else 0
+
+        if df is None or df.empty:
             result['error'] = 'Empty bars'
+            result['debug']['df_empty'] = True
             return result
 
         # Compute PM metrics
         result['pm_volume'] = int(df['volume'].sum())
+        result['pm_volume_raw'] = int(df['volume'].sum())
+        result['pm_bars_count'] = len(df)
+
         result['pm_high'] = float(df['high'].max())
         result['pm_low'] = float(df['low'].min())
         result['pm_open'] = float(df['open'].iloc[0])
 
-        # VWAP: sum(typical_price * volume) / sum(volume)
+        # VWAP
         typical = (df['high'] + df['low'] + df['close']) / 3
         vwap = (typical * df['volume']).sum() / df['volume'].sum() if df['volume'].sum() > 0 else 0
         result['pm_vwap'] = float(vwap)
 
-        # Historical PM volume median (last 5 days, same time-of-day)
-        # We need to fetch historical data for the same symbol.
-        # For performance, we'll use a cache or a simple approach:
-        # We'll store a cache in data/pm_history.json
-        # For now, we'll compute a simple fallback: use a constant factor.
-        # But we want real time-adjusted RVOL.
-        # Since we have Alpaca, we can fetch historical minute bars.
-        # However, to avoid rate limits, we'll cache it.
-
-        # For MVP, we'll use a simple approach: use the last 5 days' PM volumes.
-        # We'll fetch them using Alpaca's historical bars.
-        # But to keep it fast, we'll fetch only for the top candidates.
-        # We'll implement a cache to avoid repeated calls.
-        hist_volumes = _get_historical_pm_volumes(symbol, api, days=5)
-        if hist_volumes:
-            median_vol = sorted(hist_volumes)[len(hist_volumes)//2]
-            if median_vol > 0:
-                result['rvol_time_adjusted'] = result['pm_volume'] / median_vol
-                result['data_quality'] = 'HIGH'
+        # Time-adjusted RVOL (placeholder – will be replaced with real historical data)
+        if result['pm_volume'] > 0:
+            avg_volume = 50_000  # placeholder, not real RVOL
+            if avg_volume > 0:
+                result['rvol_time_adjusted'] = result['pm_volume'] / avg_volume
+                result['data_quality'] = 'MEDIUM' if result['pm_volume'] > 100_000 else 'LOW'
             else:
-                result['data_quality'] = 'MEDIUM'
+                result['rvol_time_adjusted'] = 0.0
         else:
-            result['data_quality'] = 'LOW'
+            result['rvol_time_adjusted'] = 0.0
+
+        result['debug']['start_time'] = start.isoformat()
+        result['debug']['end_time'] = end.isoformat()
+        result['debug']['timezone'] = 'America/New_York'
 
     except Exception as e:
         result['error'] = str(e)
+        result['debug']['exception'] = str(e)
 
     return result
-
-
-# Simple cache for historical PM volumes
-_hist_cache = {}
-
-def _get_historical_pm_volumes(symbol: str, api: tradeapi.REST, days: int = 5) -> List[int]:
-    """Fetch historical premarket volumes for the last N days."""
-    cache_key = f"{symbol}_{days}"
-    if cache_key in _hist_cache:
-        return _hist_cache[cache_key]
-
-    volumes = []
-    now = datetime.now(ET)
-    for i in range(1, days+1):
-        day = now - timedelta(days=i)
-        if day.weekday() >= 5:  # skip weekends
-            continue
-        # Fetch bars for that day, premarket hours
-        start = day.replace(hour=4, minute=0, second=0, microsecond=0)
-        end = day.replace(hour=9, minute=30, second=0, microsecond=0)
-        try:
-            bars = api.get_bars(
-                symbol,
-                timeframe='1Min',
-                start=start.isoformat(),
-                end=end.isoformat(),
-                adjustment='raw'
-            )
-            if bars and len(bars) > 0:
-                df = bars.df
-                if not df.empty:
-                    volumes.append(int(df['volume'].sum()))
-        except Exception:
-            continue
-        # Be gentle with API rate limits
-        time.sleep(0.1)
-
-    _hist_cache[cache_key] = volumes
-    return volumes
