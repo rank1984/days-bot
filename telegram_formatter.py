@@ -1,5 +1,5 @@
 """
-Telegram formatter – V2.12.2 (RVOL UNAVAILABLE, Diagnostic Mode)
+Telegram Formatter – V2.13 (RVOL N/A display, Catalyst Hard Gate notice)
 """
 import requests
 from datetime import datetime
@@ -36,25 +36,25 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🎯 <b>DAYS-BOT V2.12.2 — PREMARKET SCAN</b>",
+        "🎯 <b>DAYS-BOT V2.13 — PREMARKET SCAN</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
         "🔎 <b>DISCOVERY</b>",
-        f"Price passed:       {stats.get('price_pass', 0):,}",
-        f"Gap passed:         {stats.get('gap_pass', 0):,}",
-        f"Volume passed:      {stats.get('vol_pass', 0):,}",
-        f"Spread known:       {stats.get('spread_pass', 0):,}",
-        f"Fast Filter Pass:   {stats.get('fast_pass', 0):,}",
+        f"Price passed:        {stats.get('price_pass', 0):,}",
+        f"Gap passed:          {stats.get('gap_pass', 0):,}",
+        f"Volume passed:       {stats.get('vol_pass', 0):,}",
+        f"Spread known:        {stats.get('spread_pass', 0):,}",
+        f"Fast Filter Pass:    {stats.get('fast_pass', 0):,}",
         "━━━━━━━━━━━━━━━━━━",
         "🔬 <b>VALIDATION</b>",
-        f"PM Volume Pass:     {stats.get('pm_vol_pass', 0):,}",
-        f"RVOL Pass:          {stats.get('rvol_pass', 0):,} (DIAGNOSTIC DISABLED)",
-        f"PM Dist Pass:       {stats.get('pm_dist_pass', 0):,}",
-        f"VWAP Pass:          {stats.get('vwap_pass', 0):,}",
-        f"PM Quant Pass:      {stats.get('pm_quant_pass', 0):,}",
+        f"PM Volume Pass:      {stats.get('pm_vol_pass', 0):,}",
+        f"RVOL Pass:           {stats.get('rvol_pass', 0):,} (DIAGNOSTIC DISABLED)",
+        f"PM Dist Pass:        {stats.get('pm_dist_pass', 0):,}",
+        f"VWAP Pass:           {stats.get('vwap_pass', 0):,}",
+        f"PM Quant Pass:       {stats.get('pm_quant_pass', 0):,}",
         "━━━━━━━━━━━━━━━━━━",
         "📰 <b>CATALYST</b>",
-        f"Catalyst Pass:      {stats.get('catalyst_pass', 0):,}",
+        f"Catalyst Pass:       {stats.get('catalyst_pass', 0):,}",
         f"✅ FINAL CANDIDATES: {stats.get('final_pass', 0):,}",
         "━━━━━━━━━━━━━━━━━━",
         "🏆 <b>TOP CANDIDATES</b>",
@@ -91,7 +91,7 @@ def format_watchlist(watchlist: list, date: str) -> str:
         return f"📋 <b>DAYS-BOT - רשימת מעקב</b>\n📅 {date}  |  🕐 {time_str}\n━━━━━━━━━━━━━━━━━━\n😴 אין מועמדויות פעילות."
 
     lines = [
-        "📋 <b>DAYS-BOT - רשימת מעקב</b>",
+        "📋 <b>DAYS-BOT V2.13 - רשימת מעקב</b>",
         f"📅 {date}  |  🕐 {time_str}",
         f"📊 {len(watchlist)} מועמדויות",
         "━━━━━━━━━━━━━━━━━━",
@@ -107,7 +107,7 @@ def format_watchlist(watchlist: list, date: str) -> str:
         rvol = w.get('rvol')
         rvol_method = w.get('rvol_method', 'UNAVAILABLE')
         if rvol is None:
-            rvol_str = "UNAVAILABLE"
+            rvol_str = "N/A"
         else:
             rvol_str = f"{rvol:.1f}x"
         catalyst = w.get('catalyst')
@@ -115,25 +115,25 @@ def format_watchlist(watchlist: list, date: str) -> str:
         pm_high_dist = w.get('pm_high_dist', 999)
         spread = w.get('spread_pct')
         spread_str = f"{spread:.2f}%" if spread is not None else "N/A"
+        pm_bars = w.get('pm_bars_count', 0)
 
         if state == 'PREPARE':
             status_icon = "🟡 PREPARE"
-        elif state == 'QUALIFIED':
-            status_icon = "🟢 QUALIFIED"
         else:
             status_icon = "🔵 WATCH"
 
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
         lines.append(f"   🎯 ציון: {event_score:.0f}  |  Grade: {grade}  |  RVOL: {rvol_str} ({rvol_method})")
-        lines.append(f"   📏 PM Dist: {pm_high_dist:.1f}%  |  Spread: {spread_str}")
+        lines.append(f"   📏 PM Dist: {pm_high_dist:.1f}%  |  PM Bars: {pm_bars}  |  Spread: {spread_str}")
         lines.append(f"   📰 Catalyst: {catalyst_str}")
         lines.append(f"   {status_icon}")
 
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "⚡ RVOL UNAVAILABLE – placeholder disabled (diagnostic mode)",
+        "⚡ RVOL = N/A (informational – placeholder disabled)",
+        "🚫 Catalyst N/A → BLOCK (Hard Gate)",
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
@@ -142,7 +142,7 @@ def format_watchlist(watchlist: list, date: str) -> str:
 def format_review_v27(reviews: list, date: str) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🔥 <b>DAYS-BOT V2.12.2 — READY FOR REVIEW</b>",
+        "🔥 <b>DAYS-BOT V2.13 — READY FOR REVIEW</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
         f"📊 {len(reviews)} candidates passed all filters",
