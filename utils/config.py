@@ -11,15 +11,20 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 # ── DISCOVERY ──────────────────────────────────────────────
 DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 50.0
-DISCOVERY_MIN_GAP = 1.0          # 1-30% (בכוונה)
+DISCOVERY_MIN_GAP = 1.0
 DISCOVERY_MAX_GAP = 30.0
 
 # ── VALIDATION (HARD FILTERS) ────────────────────────────
-VALIDATION_MIN_RVOL = 2.0
-VALIDATION_MAX_PM_DIST = 2.0      # % below PM High
-VALIDATION_MIN_VWAP_DIST = 0.01   # 1% above VWAP
-VALIDATION_MIN_CATALYST_SCORE = 0
-VALIDATION_MAX_SPREAD = 1.5       # % – BLOCK if >1.5% or UNKNOWN
+# TEMPORARY DIAGNOSTIC MODE:
+# RVOL is currently based on a placeholder baseline and must NOT
+# be used as a hard filter until historical time-adjusted PM volume
+# is implemented.
+VALIDATION_MIN_RVOL = 0.0          # DISABLED – placeholder only
+
+VALIDATION_MAX_PM_DIST = 2.0
+VALIDATION_MIN_VWAP_DIST = 0.01
+VALIDATION_MIN_CATALYST_SCORE = 0  # DISABLED – not blocking
+VALIDATION_MAX_SPREAD = 1.5
 
 # ── RISK & POSITION ──────────────────────────────────────
 MAX_RISK_PER_TRADE = 0.01
@@ -43,17 +48,5 @@ WEIGHT_PM_HIGH_DISTANCE = 10
 WEIGHT_VWAP = 10
 WEIGHT_CATALYST = 10
 WEIGHT_LIQUIDITY = 5
-
-# ── NEWS ─────────────────────────────────────────────────
-POSITIVE_CATALYSTS = [
-    "fda","approval","approved","contract","acquisition",
-    "acquires","merger","patent","earnings","revenue",
-    "partnership","grant","award","breakthrough","positive",
-    "phase","trial","clearance","designation",
-]
-NEGATIVE_CATALYSTS = [
-    "offering","direct offering","shelf","registration",
-    "dilution","warrant","priced offering","atm",
-]
 
 WEEKLY_REPORT_DAY = 4
