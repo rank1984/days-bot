@@ -1,5 +1,5 @@
 """
-Watchlist Manager – V2.11 (FIXED: Stop/TP from trigger_price, filter by last_seen)
+Watchlist Manager – V2.13 (FIXED: Entry strictly based on PM High * 1.005)
 """
 import sqlite3
 import os
@@ -69,6 +69,7 @@ class WatchlistManager:
         rvol = candidate.get('rvol')
         pm_high = float(candidate.get('pm_high', price * 1.02))
         pm_high_dist = float(candidate.get('pm_high_dist', 999.0))
+        pm_bars_count = candidate.get('pm_bars_count', 0)
         vwap = float(candidate.get('pm_vwap', price))
         spread_pct = candidate.get('spread_pct')
         catalyst = candidate.get('catalyst')
@@ -78,9 +79,9 @@ class WatchlistManager:
         state = candidate.get('state', 'WATCH')
         rvol_method = candidate.get('rvol_method', 'N/A')
 
-        # ====== FIX #6: Stop/TP from trigger_price (Entry) ======
+        # ====== FIX: Entry = PM High * 1.005 ======
         trigger_price = round(pm_high * 1.005, 2)
-        entry = trigger_price if trigger_price > price else price  # Entry = trigger (breakout) or current if above
+        entry = trigger_price   # Entry תמיד לפי PM High, לא לפי מחיר נוכחי
 
         stop_price = round(entry * 0.95, 2)
         tp1 = round(entry * 1.06, 2)
@@ -146,13 +147,12 @@ class WatchlistManager:
 
         print(f"[Watchlist] ✅ {ticker} added")
         print(f"  price={price:.2f} | gap={gap:.1f}% | rvol={rvol if rvol is not None else 'N/A'} | spread={spread_pct if spread_pct is not None else 'N/A'}")
-        print(f"  entry={entry:.2f} | stop={stop_price:.2f} | tp1={tp1:.2f} | tp2={tp2:.2f}")
+        print(f"  entry={entry:.2f} (trigger) | stop={stop_price:.2f} | tp1={tp1:.2f} | tp2={tp2:.2f}")
         if catalyst:
             print(f"  catalyst={catalyst[:50]}")
         else:
             print(f"  catalyst=N/A")
-    
-    # ====== FIX #7: Filter by last_seen (not added_time) ======
+
     def get_active_watchlist(self) -> List[Dict]:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
@@ -166,7 +166,7 @@ class WatchlistManager:
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
-    
+
     def mark_ready(self, ticker: str, breakout_price: float):
         conn = sqlite3.connect(DB_PATH)
         conn.execute("""
