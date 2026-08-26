@@ -1,7 +1,7 @@
 """
-Premarket scanner – V2.12.1 (PM Volume Diagnostics)
+Premarket scanner – V2.12.2 (RVOL DISABLED, DIAGNOSTIC MODE)
 """
-print("🔥 LOADED PREMARKET V2.12.1 - PM DIAGNOSTICS")
+print("🔥 LOADED PREMARKET V2.12.2 - RVOL DISABLED")
 
 import sys
 from pathlib import Path
@@ -23,7 +23,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    print(f"[Premarket] V2.12.1 PM DIAGNOSTICS – {date}")
+    print(f"[Premarket] V2.12.2 DIAGNOSTIC – {date}")
 
     universe = load_universe()
     if not universe:
@@ -116,7 +116,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         return []
 
     # ============================================================
-    # STAGE 2 – PM ENGINE + DIAGNOSTICS
+    # STAGE 2 – PM ENGINE + DIAGNOSTICS (RVOL DISABLED)
     # ============================================================
     discovery_candidates.sort(key=lambda x: x['gap_pct'], reverse=True)
     top_200 = discovery_candidates[:200]
@@ -124,7 +124,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     pm_stats = {
         'total': len(top_200),
         'pm_vol_ok': 0,
-        'rvol_ok': 0,
+        'rvol_ok': 0,          # will stay 0 (disabled)
         'pm_dist_ok': 0,
         'vwap_ok': 0,
         'catalyst_ok': 0,
@@ -132,9 +132,8 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     }
     final_candidates = []
 
-    # ====== PM DEBUG ======
     print("\n" + "="*60)
-    print("📌 PM VOLUME DIAGNOSTICS")
+    print("📌 PM DIAGNOSTICS (RVOL DISABLED)")
     print("="*60)
 
     for c in top_200:
@@ -145,15 +144,14 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
 
         pm = get_premarket_minute_data(symbol, api)
 
-        # ====== DEBUG PRINT ======
-        print(f"[PM DEBUG] {symbol}")
+        print(f"[PM RESULT] {symbol}")
         print(f"  price={price:.2f} | gap={gap:.1f}%")
         print(f"  pm_volume={pm.get('pm_volume', 'N/A')}")
         print(f"  pm_bars_count={pm.get('pm_bars_count', 0)}")
         print(f"  pm_high={pm.get('pm_high', 'N/A')}")
         print(f"  pm_vwap={pm.get('pm_vwap', 'N/A')}")
+        print(f"  rvol=UNAVAILABLE (placeholder disabled)")
         print(f"  error={pm.get('error', 'None')}")
-        print(f"  debug={pm.get('debug', {})}")
 
         if pm.get('error'):
             continue
@@ -163,10 +161,10 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             continue
         pm_stats['pm_vol_ok'] += 1
 
-        rvol = pm.get('rvol_time_adjusted')
-        if rvol is None or rvol < VALIDATION_MIN_RVOL:
-            continue
-        pm_stats['rvol_ok'] += 1
+        # ---- RVOL DISABLED ----
+        # We do NOT check RVOL. We mark it as UNAVAILABLE.
+        rvol = None
+        rvol_method = "UNAVAILABLE"
 
         pm_high = pm['pm_high']
         pm_vwap = pm['pm_vwap']
@@ -180,25 +178,24 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             continue
         pm_stats['vwap_ok'] += 1
 
+        # ---- Catalyst (not blocking, score only) ----
         catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
         catalyst_score = catalyst_result['score']
-        if catalyst_score < VALIDATION_MIN_CATALYST_SCORE:
-            continue
-        pm_stats['catalyst_ok'] += 1
-
         catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else None
 
+        # ---- Event Score (RVOL removed) ----
         event_score = 0
         if gap > 0:
             event_score += gap / 5
-        if rvol is not None and rvol > 0:
-            event_score += min(rvol * 10, 40)
         if pm_high_dist <= 2:
             event_score += 15
         if spread is not None and spread <= 1.0:
             event_score += 5
+        if catalyst_score >= 5:
+            event_score += catalyst_score
         event_score = round(min(100, max(0, event_score)), 1)
 
+        pm_stats['final_pass'] += 1
         final_candidates.append({
             'ticker': symbol,
             'price': price,
@@ -209,7 +206,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             'pm_vwap': pm_vwap,
             'pm_high_dist': pm_high_dist,
             'rvol': rvol,
-            'rvol_method': 'TIME_ADJUSTED' if rvol is not None else 'N/A',
+            'rvol_method': rvol_method,
             'spread_pct': spread,
             'catalyst': catalyst_text,
             'catalyst_score': catalyst_score,
@@ -217,17 +214,16 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             'grade': 'B' if event_score >= 60 else 'C' if event_score >= 40 else 'WATCH',
             'state': 'WATCH',
         })
-        pm_stats['final_pass'] += 1
 
     # ====== REPORT ======
     print("\n" + "="*60)
-    print("📊 PREMARKET SCAN V2.12.1 – PM DIAGNOSTICS")
+    print("📊 PREMARKET SCAN V2.12.2 – DIAGNOSTIC (RVOL DISABLED)")
     print("="*60)
     print(f"Universe:           {stats['total']:,}")
     print(f"Discovery Pass:     {stats['discovery_pass']:,}")
     print("-"*60)
     print(f"PM Volume OK:       {pm_stats['pm_vol_ok']:,}")
-    print(f"RVOL OK:            {pm_stats['rvol_ok']:,}")
+    print(f"RVOL FILTER:        DISABLED")
     print(f"PM Dist OK:         {pm_stats['pm_dist_ok']:,}")
     print(f"VWAP OK:            {pm_stats['vwap_ok']:,}")
     print(f"Catalyst OK:        {pm_stats['catalyst_ok']:,}")
