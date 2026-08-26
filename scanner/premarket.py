@@ -1,10 +1,8 @@
 """
-Premarket scanner – V2.11 (ALL BUGS FIXED)
-- RVOL actually checked against VALIDATION_MIN_RVOL
-- Bid/Ask from snapshot.latest_quote (not snapshot directly)
-- Catalyst actually checked against VALIDATION_MIN_CATALYST_SCORE
-- PM Dist threshold from config (VALIDATION_MAX_PM_DIST)
+Premarket scanner – V2.12.1 (PM Volume Diagnostics)
 """
+print("🔥 LOADED PREMARKET V2.12.1 - PM DIAGNOSTICS")
+
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -25,7 +23,7 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    print(f"[Premarket] V2.11 FIXED – {date}")
+    print(f"[Premarket] V2.12.1 PM DIAGNOSTICS – {date}")
 
     universe = load_universe()
     if not universe:
@@ -75,34 +73,27 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
                     price = float(latest_trade.price)
                     prev_close = float(daily_bar.close)
 
-                    # Price
                     if price < DISCOVERY_MIN_PRICE or price > DISCOVERY_MAX_PRICE:
                         continue
                     stats['price_pass'] += 1
 
-                    # Gap
                     gap_pct = ((price - prev_close) / prev_close) * 100 if prev_close else 0
                     if gap_pct < DISCOVERY_MIN_GAP or gap_pct > DISCOVERY_MAX_GAP:
                         continue
                     stats['gap_pass'] += 1
 
-                    # ====== FIX #2: Spread from latest_quote ======
-                    spread_pct = None
+                    # Spread from latest_quote
                     latest_quote = getattr(snapshot, 'latest_quote', None)
-                    if latest_quote:
-                        bid = getattr(latest_quote, 'bid_price', None)
-                        ask = getattr(latest_quote, 'ask_price', None)
-                        if bid and ask and price > 0:
-                            spread_pct = ((ask - bid) / price) * 100
-                            if spread_pct > VALIDATION_MAX_SPREAD:
-                                continue
-                            stats['spread_pass'] += 1
-                        else:
-                            # Spread UNKNOWN – block (per decision)
-                            continue
-                    else:
-                        # No latest_quote – block
+                    if not latest_quote:
                         continue
+                    bid = getattr(latest_quote, 'bid_price', None)
+                    ask = getattr(latest_quote, 'ask_price', None)
+                    if not bid or not ask or price <= 0:
+                        continue
+                    spread_pct = ((ask - bid) / price) * 100
+                    if spread_pct > VALIDATION_MAX_SPREAD:
+                        continue
+                    stats['spread_pass'] += 1
 
                     stats['discovery_pass'] += 1
                     discovery_candidates.append({
@@ -121,12 +112,11 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             continue
 
     print(f"[Discovery] Passed: {stats['discovery_pass']} candidates.")
-
     if stats['discovery_pass'] == 0:
         return []
 
     # ============================================================
-    # STAGE 2 – PM ENGINE (Minute Bars)
+    # STAGE 2 – PM ENGINE + DIAGNOSTICS
     # ============================================================
     discovery_candidates.sort(key=lambda x: x['gap_pct'], reverse=True)
     top_200 = discovery_candidates[:200]
@@ -142,22 +132,37 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
     }
     final_candidates = []
 
+    # ====== PM DEBUG ======
+    print("\n" + "="*60)
+    print("📌 PM VOLUME DIAGNOSTICS")
+    print("="*60)
+
     for c in top_200:
         symbol = c['ticker']
         price = c['price']
         gap = c['gap_pct']
         spread = c['spread_pct']
 
-        # ---- PM Data ----
         pm = get_premarket_minute_data(symbol, api)
+
+        # ====== DEBUG PRINT ======
+        print(f"[PM DEBUG] {symbol}")
+        print(f"  price={price:.2f} | gap={gap:.1f}%")
+        print(f"  pm_volume={pm.get('pm_volume', 'N/A')}")
+        print(f"  pm_bars_count={pm.get('pm_bars_count', 0)}")
+        print(f"  pm_high={pm.get('pm_high', 'N/A')}")
+        print(f"  pm_vwap={pm.get('pm_vwap', 'N/A')}")
+        print(f"  error={pm.get('error', 'None')}")
+        print(f"  debug={pm.get('debug', {})}")
+
         if pm.get('error'):
             continue
+
         pm_volume = pm['pm_volume']
         if pm_volume is None or pm_volume == 0:
             continue
         pm_stats['pm_vol_ok'] += 1
 
-        # ====== FIX #1: RVOL Check ======
         rvol = pm.get('rvol_time_adjusted')
         if rvol is None or rvol < VALIDATION_MIN_RVOL:
             continue
@@ -167,8 +172,6 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         pm_vwap = pm['pm_vwap']
         pm_dist = ((pm_high - price) / pm_high) * 100 if pm_high else 999
         pm_high_dist = max(0.0, pm_dist)
-
-        # ====== FIX #4: PM Dist threshold from config ======
         if pm_high_dist > VALIDATION_MAX_PM_DIST:
             continue
         pm_stats['pm_dist_ok'] += 1
@@ -177,16 +180,14 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
             continue
         pm_stats['vwap_ok'] += 1
 
-        # ====== FIX #3: Catalyst Check ======
         catalyst_result = get_catalyst_from_finnhub(symbol, FINNHUB_API_KEY)
-        catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else None
         catalyst_score = catalyst_result['score']
-
         if catalyst_score < VALIDATION_MIN_CATALYST_SCORE:
             continue
         pm_stats['catalyst_ok'] += 1
 
-        # ---- Event Score ----
+        catalyst_text = catalyst_result['headline'][:80] if catalyst_result['headline'] else None
+
         event_score = 0
         if gap > 0:
             event_score += gap / 5
@@ -218,18 +219,18 @@ def scan_premarket(date: str = None) -> List[Dict[str, Any]]:
         })
         pm_stats['final_pass'] += 1
 
-    # ====== Report ======
+    # ====== REPORT ======
     print("\n" + "="*60)
-    print("📊 PREMARKET SCAN V2.11 – ALL FIXES")
+    print("📊 PREMARKET SCAN V2.12.1 – PM DIAGNOSTICS")
     print("="*60)
     print(f"Universe:           {stats['total']:,}")
     print(f"Discovery Pass:     {stats['discovery_pass']:,}")
     print("-"*60)
     print(f"PM Volume OK:       {pm_stats['pm_vol_ok']:,}")
-    print(f"RVOL OK (≥{VALIDATION_MIN_RVOL}): {pm_stats['rvol_ok']:,}")
-    print(f"PM Dist OK (≤{VALIDATION_MAX_PM_DIST}%): {pm_stats['pm_dist_ok']:,}")
+    print(f"RVOL OK:            {pm_stats['rvol_ok']:,}")
+    print(f"PM Dist OK:         {pm_stats['pm_dist_ok']:,}")
     print(f"VWAP OK:            {pm_stats['vwap_ok']:,}")
-    print(f"Catalyst OK (≥{VALIDATION_MIN_CATALYST_SCORE}): {pm_stats['catalyst_ok']:,}")
+    print(f"Catalyst OK:        {pm_stats['catalyst_ok']:,}")
     print(f"✅ FINAL:           {pm_stats['final_pass']:,}")
     print("="*60 + "\n")
 
