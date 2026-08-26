@@ -30,7 +30,7 @@ jobs:
       - name: Create data directory
         run: mkdir -p data
       - name: Run scan (watchlist mode)
-        python main.py scan
+        run:  python main.py scan
       - name: Upload DB artifact
         uses: actions/upload-artifact@v4
         with:
