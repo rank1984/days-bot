@@ -1,5 +1,5 @@
 """
-Telegram formatter – V2.9.1 (with None-safe handling)
+Telegram formatter – V2.12.2 (RVOL UNAVAILABLE, Diagnostic Mode)
 """
 import requests
 from datetime import datetime
@@ -36,7 +36,7 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🎯 <b>DAYS-BOT V2.9 — PREMARKET SCAN</b>",
+        "🎯 <b>DAYS-BOT V2.12.2 — PREMARKET SCAN</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
         "🔎 <b>DISCOVERY</b>",
@@ -48,7 +48,7 @@ def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
         "━━━━━━━━━━━━━━━━━━",
         "🔬 <b>VALIDATION</b>",
         f"PM Volume Pass:     {stats.get('pm_vol_pass', 0):,}",
-        f"RVOL Pass:          {stats.get('rvol_pass', 0):,}",
+        f"RVOL Pass:          {stats.get('rvol_pass', 0):,} (DIAGNOSTIC DISABLED)",
         f"PM Dist Pass:       {stats.get('pm_dist_pass', 0):,}",
         f"VWAP Pass:          {stats.get('vwap_pass', 0):,}",
         f"PM Quant Pass:      {stats.get('pm_quant_pass', 0):,}",
@@ -65,8 +65,12 @@ def format_scan_breakdown(candidates: list, stats: dict, date: str) -> str:
         price = c.get('price', 0)
         gap = c.get('gap_pct', 0)
         rvol = c.get('rvol')
-        rvol_str = f"{rvol:.1f}x" if rvol is not None else "N/A"
-        lines.append(f"{i}. <b>{ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%  RVOL: {rvol_str}")
+        rvol_method = c.get('rvol_method', 'UNAVAILABLE')
+        if rvol is None:
+            rvol_str = "UNAVAILABLE"
+        else:
+            rvol_str = f"{rvol:.1f}x"
+        lines.append(f"{i}. <b>{ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%  RVOL: {rvol_str} ({rvol_method})")
 
     lines += [
         "━━━━━━━━━━━━━━━━━━",
@@ -101,7 +105,11 @@ def format_watchlist(watchlist: list, date: str) -> str:
         event_score = w.get('event_score', 0)
         grade = w.get('grade', '?')
         rvol = w.get('rvol')
-        rvol_str = f"{rvol:.1f}x" if rvol is not None else "N/A"
+        rvol_method = w.get('rvol_method', 'UNAVAILABLE')
+        if rvol is None:
+            rvol_str = "UNAVAILABLE"
+        else:
+            rvol_str = f"{rvol:.1f}x"
         catalyst = w.get('catalyst')
         catalyst_str = catalyst[:30] if catalyst else "N/A"
         pm_high_dist = w.get('pm_high_dist', 999)
@@ -112,14 +120,12 @@ def format_watchlist(watchlist: list, date: str) -> str:
             status_icon = "🟡 PREPARE"
         elif state == 'QUALIFIED':
             status_icon = "🟢 QUALIFIED"
-        elif state == 'BREAKOUT':
-            status_icon = "🔴 BREAKOUT"
         else:
             status_icon = "🔵 WATCH"
 
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
-        lines.append(f"   🎯 ציון: {event_score:.0f}  |  Grade: {grade}  |  RVOL: {rvol_str}")
+        lines.append(f"   🎯 ציון: {event_score:.0f}  |  Grade: {grade}  |  RVOL: {rvol_str} ({rvol_method})")
         lines.append(f"   📏 PM Dist: {pm_high_dist:.1f}%  |  Spread: {spread_str}")
         lines.append(f"   📰 Catalyst: {catalyst_str}")
         lines.append(f"   {status_icon}")
@@ -127,8 +133,7 @@ def format_watchlist(watchlist: list, date: str) -> str:
     lines += [
         "",
         "━━━━━━━━━━━━━━━━━━",
-        "🟢 QUALIFIED = SETUP WORTH YOUR MANUAL REVIEW",
-        "⚠️ MANUAL CONFIRMATION REQUIRED",
+        "⚡ RVOL UNAVAILABLE – placeholder disabled (diagnostic mode)",
         "🚫 לא המלצת השקעה"
     ]
     return "\n".join(lines)
@@ -137,7 +142,7 @@ def format_watchlist(watchlist: list, date: str) -> str:
 def format_review_v27(reviews: list, date: str) -> str:
     time_str = datetime.now(ET).strftime("%H:%M ET")
     lines = [
-        "🔥 <b>DAYS-BOT V2.9 — READY FOR REVIEW</b>",
+        "🔥 <b>DAYS-BOT V2.12.2 — READY FOR REVIEW</b>",
         f"📅 {date}  |  🕐 {time_str}",
         "━━━━━━━━━━━━━━━━━━",
         f"📊 {len(reviews)} candidates passed all filters",
@@ -150,7 +155,11 @@ def format_review_v27(reviews: list, date: str) -> str:
         price = c.get('price', 0)
         gap = c.get('gap_pct', 0)
         rvol = c.get('rvol')
-        rvol_str = f"{rvol:.1f}x" if rvol is not None else "N/A"
+        rvol_method = c.get('rvol_method', 'UNAVAILABLE')
+        if rvol is None:
+            rvol_str = "UNAVAILABLE"
+        else:
+            rvol_str = f"{rvol:.1f}x"
         spread = c.get('spread_pct')
         spread_str = f"{spread:.2f}%" if spread is not None else "N/A"
         catalyst = c.get('catalyst')
@@ -166,10 +175,11 @@ def format_review_v27(reviews: list, date: str) -> str:
         rr2 = r.get('rr2', 0)
         net1 = r.get('net1', {})
         net2 = r.get('net2', {})
+        shares = r.get('shares', 0)
 
         lines.append("")
         lines.append(f"<b>{i}. {ticker}</b>  💰 ${price:.2f}  Gap: {gap:+.1f}%")
-        lines.append(f"   📊 RVOL: {rvol_str}  |  Spread: {spread_str}")
+        lines.append(f"   📊 RVOL: {rvol_str} ({rvol_method})  |  Spread: {spread_str}")
         lines.append(f"   📏 PM High: ${pm_high:.2f}  |  PM Dist: {pm_dist:.1f}%")
         lines.append(f"   💵 VWAP: ${vwap:.2f}  |  📰 Catalyst: {catalyst_str}")
         lines.append("")
@@ -179,6 +189,7 @@ def format_review_v27(reviews: list, date: str) -> str:
         lines.append(f"   🎯 TP2:   ${tp2:.2f}  (+{((tp2-entry)/entry)*100:.1f}%)  RR: {rr2:.2f}")
         lines.append("")
         lines.append(f"   📊 Net TP1: {net1.get('net_pct', 0):.1f}%  |  Net TP2: {net2.get('net_pct', 0):.1f}%")
+        lines.append(f"   📦 Shares: {shares}")
         lines.append("   ───────────────────")
         lines.append(f"   ✅ All hard filters passed")
         lines.append(f"   ⚠️ <b>MANUAL EXECUTION REQUIRED</b>")
