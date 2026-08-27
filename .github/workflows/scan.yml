@@ -1,169 +1,27 @@
-name: DAYS-BOT
+name: Run IEX Test Script
 
 on:
-  schedule:
-    - cron: '0 12 * * 1-5'   # 08:00 ET
-    - cron: '15 12 * * 1-5'  # 08:15 ET
-    - cron: '30 12 * * 1-5'  # 08:30 ET
-    - cron: '45 12 * * 1-5'  # 08:45 ET
-  workflow_dispatch:
+  workflow_dispatch: # מאפשר הרצה ידנית בלחיצת כפתור
 
 jobs:
-  # ============================================================
-  # 1. SCAN – 4 סריקות (Watchlist)
-  # ============================================================
-  scan:
+  run-test:
     runs-on: ubuntu-latest
-    env:
-      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Create data directory
-        run: mkdir -p data
-      - name: Run scan (watchlist mode)
-        run:  python main.py scan
-      - name: Upload DB artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: alerts-db-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          path: data/alerts.db
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-  # ============================================================
-  # 2. TRIGGER MONITOR – כל 5 דקות 08:00–09:00 ET
-  #    בודק Breakouts ומעדכן status ל-READY
-  # ============================================================
-  trigger_monitor:
-    runs-on: ubuntu-latest
-    needs: scan
-    if: github.event.schedule == '*/5 12-13 * * 1-5' || github.event_name == 'workflow_dispatch'
-    env:
-      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Download latest DB
-        uses: actions/download-artifact@v4
-        with:
-          pattern: alerts-db-${{ github.run_id }}-*
-          path: data/
-          merge-multiple: true
-      - name: Run trigger monitor
-        run: python trigger_monitor.py
-      - name: Upload updated DB
-        uses: actions/upload-artifact@v4
-        with:
-          name: alerts-db-${{ github.run_id }}-trigger
-          path: data/alerts.db
+          python-version: '3.10'
 
-  # ============================================================
-  # 3. ENTRY – 09:30 ET
-  #    מבצע PaperTrades על מועמדים עם status = READY
-  # ============================================================
-  entry:
-    runs-on: ubuntu-latest
-    needs: trigger_monitor
-    if: github.event.schedule == '30 13 * * 1-5' || github.event_name == 'workflow_dispatch'   # 09:30 ET
-    env:
-      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Download latest DB
-        uses: actions/download-artifact@v4
-        with:
-          pattern: alerts-db-${{ github.run_id }}-trigger
-          path: data/
-          merge-multiple: true
-      - name: Run entry (trades)
-        run: python main.py entry
-      - name: Upload final DB
-        uses: actions/upload-artifact@v4
-        with:
-          name: final-trades-db-${{ github.run_id }}
-          path: data/alerts.db
+      - name: Install Dependencies
+        run: |
+          pip install -r requirements.txt
 
-  # ============================================================
-  # 4. MONITOR – כל 5 דקות 09:30–16:00 ET
-  #    מעקב אחרי Trades, MFE/MAE, TP/Stop
-  # ============================================================
-  monitor:
-    runs-on: ubuntu-latest
-    needs: entry
-    if: github.event.schedule == '*/5 13-20 * * 1-5' || github.event_name == 'workflow_dispatch'   # 09:30-16:00 ET
-    env:
-      ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-      ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Download latest DB
-        uses: actions/download-artifact@v4
-        with:
-          pattern: final-trades-db-${{ github.run_id }}
-          path: data/
-          merge-multiple: true
-      - name: Run monitor
-        run: python trade_monitor.py
-      - name: Upload updated DB
-        uses: actions/upload-artifact@v4
-        with:
-          name: updated-trades-db-${{ github.run_id }}
-          path: data/alerts.db
-
-  # ============================================================
-  # 5. EDGE REPORT – 16:00 ET
-  #    מנתח Win Rate, Profit Factor, Expectancy
-  # ============================================================
-  edge_report:
-    runs-on: ubuntu-latest
-    needs: monitor
-    if: github.event.schedule == '0 20 * * 1-5' || github.event_name == 'workflow_dispatch'   # 16:00 ET
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Download latest DB
-        uses: actions/download-artifact@v4
-        with:
-          pattern: updated-trades-db-${{ github.run_id }}
-          path: data/
-          merge-multiple: true
-      - name: Run Edge Report
-        run: python edge_report.py > edge_report_output.txt
-      - name: Upload Edge Report
-        uses: actions/upload-artifact@v4
-        with:
-          name: edge-report-${{ github.run_id }}
-          path: edge_report_output.txt
+      - name: Run Test
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          python test_iex.py
