@@ -1,10 +1,10 @@
 """
-DAYS-BOT V2.12.1 – PM DIAGNOSTICS
+DAYS-BOT V2.12.1 – PM DIAGNOSTICS & PRODUCTION MAIN
 """
 import sys
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time
 import pytz
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -46,8 +46,15 @@ def get_equity() -> float:
 def scan_mode():
     init_db()
     wm = WatchlistManager()
-    today = datetime.now(ET).strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE V2.12.1 - {today} (ET)")
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    
+    # Market Open Guardrail: Do not run premarket scan after 09:30 ET
+    if now_et.time() >= time(9, 30):
+        print(f"\n[Main] Current time is {now_et.strftime('%H:%M:%S')} ET. Market already open (>= 09:30 ET) - Premarket scan aborted.")
+        return
+
+    print(f"\n[Main] SCAN MODE V2.12.1 - {today} {now_et.strftime('%H:%M:%S')} (ET)")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -65,11 +72,15 @@ def scan_mode():
         spread_str = f"{spread:.2f}" if spread is not None else "N/A"
         catalyst = c.get('catalyst')
         catalyst_str = catalyst[:30] if catalyst else "N/A"
+        
+        pm_dist = c.get('pm_high_dist')
+        pm_dist_str = f"{pm_dist:.1f}" if pm_dist is not None else "N/A"
+        
         print(
             f"  {c['ticker']} | "
             f"score={c.get('event_score', 0)} | "
             f"rvol={rvol_str} | "
-            f"pm_dist={c.get('pm_high_dist', 999):.1f} | "
+            f"pm_dist={pm_dist_str} | "
             f"vwap={c.get('pm_vwap', 0):.2f} | "
             f"spread={spread_str} | "
             f"catalyst={catalyst_str}"
@@ -91,10 +102,10 @@ def scan_mode():
         'fast_pass': len(candidates),
         'pm_vol_pass': len([c for c in candidates if c.get('pm_volume', 0) > 0]),
         'rvol_pass': len([c for c in candidates if c.get('rvol') is not None and c.get('rvol') >= VALIDATION_MIN_RVOL]),
-        'pm_dist_pass': len([c for c in candidates if c.get('pm_high_dist', 999) <= VALIDATION_MAX_PM_DIST]),
+        'pm_dist_pass': len([c for c in candidates if c.get('pm_high_dist') is not None and c.get('pm_high_dist') <= VALIDATION_MAX_PM_DIST]),
         'vwap_pass': len([c for c in candidates if c.get('pm_vwap', 0) > 0]),
         'pm_quant_pass': len(candidates),
-        'catalyst_pass': len([c for c in candidates if c.get('catalyst') is not None and c.get('catalyst_score', 0) >= VALIDATION_MIN_CATALYST_SCORE]),
+        'catalyst_pass': len([c for c in candidates if c.get('catalyst_score', 0) >= VALIDATION_MIN_CATALYST_SCORE]),
         'final_pass': len(candidates),
     }
     msg = format_scan_breakdown(candidates[:5], stats, today)
@@ -114,14 +125,15 @@ def scan_mode():
             score=c.get('event_score', 0),
             catalyst=catalyst_str
         )
-    print(f"[Main] Done. {added} candidates added.")
+    print(f"[Main] Done. {added} candidates added to DB & Watchlist.")
 
 
 def review_mode():
     init_db()
     wm = WatchlistManager()
-    today = datetime.now(ET).strftime("%Y-%m-%d")
-    print(f"\n[Main] REVIEW MODE - {today} (ET)")
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+    print(f"\n[Main] REVIEW MODE - {today} {now_et.strftime('%H:%M:%S')} (ET)")
 
     monthly_ops, monthly_shares = get_monthly_usage()
     print(f"[Main] Current Monthly Usage (ET): {monthly_ops} ops | {monthly_shares} shares")
@@ -172,8 +184,8 @@ def review_mode():
         if gap > DISCOVERY_MAX_GAP:
             continue
 
-        pm_dist = w.get('pm_high_dist', 999)
-        if pm_dist > VALIDATION_MAX_PM_DIST:
+        pm_dist = w.get('pm_high_dist')
+        if pm_dist is not None and pm_dist > VALIDATION_MAX_PM_DIST:
             continue
 
         catalyst_score = w.get('catalyst_score', 0)
