@@ -1,5 +1,5 @@
 """
-DAYS-BOT DATABASE MODULE (WITH TRADE MONITOR SUPPORT)
+DAYS-BOT DATABASE MODULE (WITH LEGS COUNTING FIX)
 """
 import sqlite3
 from pathlib import Path
@@ -108,10 +108,6 @@ def log_sell_trade(ticker: str, exit_price: float, exit_time: str = None) -> boo
 
 
 def update_trade_monitor(trade_id: int = None, ticker: str = None, exit_price: float = None, pnl: float = None, status: str = None, exit_time: str = None, **kwargs):
-    """
-    Updates dynamic trade metrics monitored by trade_monitor.py.
-    Supports updates by trade_id or active ticker.
-    """
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -174,6 +170,11 @@ def get_open_trades():
 
 
 def get_monthly_usage():
+    """
+    Calculates operational legs and shares traded in current ET month.
+    Leg 1: Buy (Entry)
+    Leg 2: Sell (Exit - counted only if exit_time is set)
+    """
     init_db()
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -181,14 +182,27 @@ def get_monthly_usage():
     current_month_et = datetime.now(ET).strftime("%Y-%m")
     
     cursor.execute("""
-        SELECT COUNT(*), COALESCE(SUM(shares), 0)
+        SELECT shares, exit_time
         FROM trades
         WHERE substr(entry_time, 1, 7) = ?
     """, (current_month_et,))
     
-    row = cursor.fetchone()
+    rows = cursor.fetchall()
     conn.close()
     
-    monthly_ops = row[0] if row else 0
-    monthly_shares = row[1] if row else 0
-    return monthly_ops, monthly_shares
+    total_ops = 0
+    total_shares = 0
+    
+    for shares, exit_time in rows:
+        shares_cnt = shares if shares else 0
+        
+        # Leg 1: Entry
+        total_ops += 1
+        total_shares += shares_cnt
+        
+        # Leg 2: Exit (if completed)
+        if exit_time is not None:
+            total_ops += 1
+            total_shares += shares_cnt
+            
+    return total_ops, total_shares
