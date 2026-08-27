@@ -43,18 +43,18 @@ def get_equity() -> float:
     return 10_000.0
 
 
-def scan_mode():
+def scan_mode(force: bool = False):
     init_db()
     wm = WatchlistManager()
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
     
-    # Market Open Guardrail: Do not run premarket scan after 09:30 ET
-    if now_et.time() >= time(9, 30):
+    # Market Open Guardrail: Do not run premarket scan after 09:30 ET unless forced
+    if not force and now_et.time() >= time(9, 30):
         print(f"\n[Main] Current time is {now_et.strftime('%H:%M:%S')} ET. Market already open (>= 09:30 ET) - Premarket scan aborted.")
         return
 
-    print(f"\n[Main] SCAN MODE V2.12.1 - {today} {now_et.strftime('%H:%M:%S')} (ET)")
+    print(f"\n[Main] SCAN MODE V2.12.1 - {today} {now_et.strftime('%H:%M:%S')} (ET) {'[FORCED]' if force else ''}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -258,12 +258,14 @@ def full_mode():
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py [scan|review|full]")
+        print("Usage: python main.py [scan|review|full] [--force]")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
+    force_run = "--force" in sys.argv
+
     if mode == "scan":
-        scan_mode()
+        scan_mode(force=force_run)
     elif mode == "review":
         review_mode()
     elif mode == "full":
