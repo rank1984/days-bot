@@ -27,9 +27,16 @@ MAX_TRADES_PER_DAY = 2
 MAX_ACTIVE_TRADES = 2
 MIN_NET_PROFIT_PCT = 0.04       # 4% minimum net return requirement
 
-# BLINK Broker Fee Model (Exact Specification)
+# BLINK Broker Fee Model & Conservative Buffers
 FEE_PER_SHARE = 0.01            # $0.01 per share
 FEE_MIN = 1.50                  # $1.50 minimum execution floor
 FEE_MAX_PCT = 0.01              # 1% maximum cap of total trade value
+
 FREE_OPS_QUOTA = 10             # 10 free operations per month
 FREE_SHARES_QUOTA = 1000        # 1,000 free shares per month
+
+FREE_OPS_BUFFER = 2             # Bot applies fee at 8 ops
+FREE_SHARES_BUFFER = 200        # Bot applies fee at 800 shares
+
+MANUAL_OPS_OFFSET = 0
+MANUAL_SHARES_OFFSET = 0
