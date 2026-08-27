@@ -37,4 +37,5 @@ MIN_NET_PROFIT_PCT = 0.01   # 1% minimum net target
 FEE_PER_SHARE = 0.005       # Execution fee per share ($0.005)
 FEE_PER_ORDER = 0.0         # Flat fee per order
 FEE_MIN = 1.0               # Minimum total fee per order ($1.00)
+FEE_MAX_PCT = 0.01          # Maximum fee cap (1.0% of trade value)
 SLIPPAGE_PCT = 0.001        # Estimated slippage allowance (0.1%)
