@@ -2,8 +2,9 @@ name: Market Scanner Workflow
 
 on:
   schedule:
-    # Runs during Pre-Market and Market hours
-    - cron: '*/15 8-16 * * 1-5'
+    # Runs during Premarket window (04:00 ET - 09:15 ET)
+    # 08:00 UTC = 04:00 ET | 13:15 UTC = 09:15 ET
+    - cron: '*/15 8-13 * * 1-5'
   workflow_dispatch:
 
 jobs:
