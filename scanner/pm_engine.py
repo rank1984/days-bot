@@ -1,7 +1,7 @@
 """
-PM_ENGINE V2.12.1 – PREMARKET DATA ENGINE (IEX FEED FIX)
+PM_ENGINE V2.12.2 – PREMARKET DATA ENGINE (FULL CALCULATIONS INTACT)
 """
-from datetime import datetime, time
+from datetime import datetime
 import pytz
 
 ET = pytz.timezone('America/New_York')
@@ -10,23 +10,21 @@ ET = pytz.timezone('America/New_York')
 def get_premarket_minute_data(symbol: str, api) -> dict:
     """
     Fetches premarket minute bars for symbol using Alpaca REST API (feed='iex').
-    Returns calculated PM metrics expected by scanner/premarket.py.
+    Returns fully computed PM metrics expected by scanner modules.
     """
     try:
         now_et = datetime.now(ET)
         today_str = now_et.strftime("%Y-%m-%d")
 
-        # Premarket range: 04:00 ET to current time / 09:30 ET
         start_dt = f"{today_str}T04:00:00-04:00"
         end_dt = now_et.isoformat()
 
-        # Fetch 1-minute bars with explicit IEX feed override
+        # Clean 1Min call without parameter duplication
         bars = api.get_bars(
             symbol,
             "1Min",
             start=start_dt,
             end=end_dt,
-            timeframe="1Min",
             feed='iex'
         )
 
@@ -42,10 +40,11 @@ def get_premarket_minute_data(symbol: str, api) -> dict:
                 'rvol_time_adjusted': None
             }
 
+        # Full PM metrics calculations
         pm_volume = sum(b.v for b in bar_list)
         pm_high = max(b.h for b in bar_list)
         
-        # Calculate VWAP
+        # Weighted VWAP calculation
         sum_pv = sum(b.v * ((b.h + b.l + b.c) / 3.0) for b in bar_list)
         pm_vwap = (sum_pv / pm_volume) if pm_volume > 0 else 0.0
 
