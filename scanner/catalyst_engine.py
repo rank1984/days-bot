@@ -1,7 +1,8 @@
 import os
+from datetime import datetime, timedelta
 import requests
 
-def get_catalyst_score(symbol: str) -> dict:
+def get_catalyst_from_finnhub(symbol: str) -> dict:
     """
     Fetches news/catalyst data from Finnhub API for a given symbol.
     Provides explicit status tracking: CATALYST_OK, CATALYST_NOT_FOUND, 
@@ -13,13 +14,18 @@ def get_catalyst_score(symbol: str) -> dict:
         print(f"[Catalyst ERROR] {symbol}: FINNHUB_API_KEY missing from environment variables")
         return {
             "score": 0.0,
+            "catalyst": None,
             "headline": None,
             "status": "CATALYST_DATA_UNAVAILABLE",
             "error": "FINNHUB_API_KEY_MISSING",
         }
 
     try:
-        url = f"https://finnhub.io/api/v1/company-news?symbol={symbol.upper()}&from=2026-08-01&to=2026-08-27&token={api_key}"
+        today = datetime.now()
+        from_date = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+        to_date = today.strftime("%Y-%m-%d")
+
+        url = f"https://finnhub.io/api/v1/company-news?symbol={symbol.upper()}&from={from_date}&to={to_date}&token={api_key}"
         
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -29,6 +35,7 @@ def get_catalyst_score(symbol: str) -> dict:
             print(f"[Catalyst INFO] {symbol}: No news found on Finnhub")
             return {
                 "score": 0.0,
+                "catalyst": None,
                 "headline": None,
                 "status": "CATALYST_NOT_FOUND",
                 "error": None,
@@ -49,6 +56,7 @@ def get_catalyst_score(symbol: str) -> dict:
         print(f"[Catalyst SUCCESS] {symbol} | Score: {score} | Status: CATALYST_OK")
         return {
             "score": score,
+            "catalyst": headline,
             "headline": headline,
             "status": "CATALYST_OK",
             "error": None,
@@ -58,7 +66,11 @@ def get_catalyst_score(symbol: str) -> dict:
         print(f"[Catalyst ERROR] {symbol}: {e}")
         return {
             "score": 0.0,
+            "catalyst": None,
             "headline": None,
             "status": "CATALYST_API_ERROR",
             "error": str(e),
         }
+
+# Alias for compatibility across all imports
+get_catalyst_score = get_catalyst_from_finnhub
