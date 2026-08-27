@@ -1,81 +1,44 @@
-from typing import Dict, Any
-from utils.config import (
-    FEE_PER_SHARE,
-    FEE_MIN,
-    FEE_MAX_PCT,
-    FREE_OPS_QUOTA,
-    FREE_SHARES_QUOTA,
-    FREE_OPS_BUFFER,
-    FREE_SHARES_BUFFER,
-    MANUAL_OPS_OFFSET,
-    MANUAL_SHARES_OFFSET,
-)
+import math
+import utils.config as cfg
 
-def calculate_fee(
-    shares: int,
-    price: float,
-    monthly_ops_used: int = 0,
-    monthly_shares_used: int = 0,
-    fee_per_share: float = FEE_PER_SHARE,
-    fee_min: float = FEE_MIN,
-    max_pct_cap: float = FEE_MAX_PCT
-) -> float:
-    """
-    Calculates exact BLINK broker execution fee with strict AND safety buffer checks.
-    """
-    if shares <= 0 or price <= 0:
-        return 0.0
+# Safe getter helper to guarantee no ImportError ever stops execution
+def _get_cfg(attr_name, default_val):
+    return getattr(cfg, attr_name, default_val)
 
-    effective_ops_used = monthly_ops_used + MANUAL_OPS_OFFSET
-    effective_shares_used = monthly_shares_used + MANUAL_SHARES_OFFSET
 
-    effective_ops_limit = FREE_OPS_QUOTA - FREE_OPS_BUFFER       # 8 ops
-    effective_shares_limit = FREE_SHARES_QUOTA - FREE_SHARES_BUFFER # 800 shares
-
-    is_ops_within_buffer = effective_ops_used < effective_ops_limit
-    is_shares_within_buffer = (effective_shares_used + shares) <= effective_shares_limit
-
-    # Strict AND logic against conservative buffers
-    if is_ops_within_buffer and is_shares_within_buffer:
-        return 0.0
-
-    trade_value = shares * price
-    raw_fee = shares * fee_per_share
-    capped_fee = min(raw_fee, trade_value * max_pct_cap)
-
-    return round(max(fee_min, capped_fee), 4)
+def calculate_entry_stop_tp(candidate: dict) -> dict:
+    price = candidate.get('price', 0.0)
+    pm_high = candidate.get('pm_high', price)
+    
+    entry = max(price, pm_high) if pm_high else price
+    stop = entry * 0.96  # 4% stop loss default
+    
+    risk = entry - stop
+    tp1 = entry + (risk * 1.5)  # 1:1.5 RR
+    tp2 = entry + (risk * 2.5)  # 1:2.5 RR
+    
+    rr1 = (tp1 - entry) / risk if risk > 0 else 0
+    rr2 = (tp2 - entry) / risk if risk > 0 else 0
+    
+    return {
+        'entry': round(entry, 2),
+        'stop': round(stop, 2),
+        'tp1': round(tp1, 2),
+        'tp2': round(tp2, 2),
+        'rr1': round(rr1, 2),
+        'rr2': round(rr2, 2)
+    }
 
 
 def calculate_position_size(entry: float, stop: float, equity: float, max_risk_pct: float) -> int:
-    risk_per_share = abs(entry - stop)
-    if risk_per_share <= 0 or equity <= 0:
+    if entry <= 0 or stop >= entry or equity <= 0:
         return 0
+    
+    risk_per_share = entry - stop
     max_risk_amount = equity * max_risk_pct
-    return int(max_risk_amount / risk_per_share)
-
-
-def calculate_entry_stop_tp(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    price = candidate.get('price', 0.0)
-    pm_low = candidate.get('pm_low', price * 0.95)
-
-    entry = round(price, 2)
-    stop = round(pm_low, 2) if pm_low < entry else round(entry * 0.95, 2)
-    risk = entry - stop
-
-    tp1 = round(entry + (risk * 1.5), 2)
-    tp2 = round(entry + (risk * 3.0), 2)
-
-    rr1 = round((tp1 - entry) / risk, 2) if risk > 0 else 0.0
-    rr2 = round((tp2 - entry) / risk, 2) if risk > 0 else 0.0
-
-    return {
-        'entry': entry,
-        'stop': stop,
-        'tp1': tp1,
-        'tp2': tp2,
-        'rr1': rr1,
-        'rr2': rr2,
-    }
+    shares = math.floor(max_risk_amount / risk_per_share)
+    
+    return max(shares, 0)
 
 
 def calculate_net_profit(
@@ -84,27 +47,32 @@ def calculate_net_profit(
     shares: int,
     monthly_ops_used: int = 0,
     monthly_shares_used: int = 0
-) -> Dict[str, float]:
+) -> dict:
     if shares <= 0 or entry <= 0:
-        return {'gross_profit': 0.0, 'fees': 0.0, 'net_profit': 0.0, 'net_pct': 0.0}
+        return {'gross_pnl': 0.0, 'net_pnl': 0.0, 'net_pct': 0.0, 'fees': 0.0}
 
-    buy_value = entry * shares
-    sell_value = exit_price * shares
-    gross_profit = sell_value - buy_value
+    fee_per_share = _get_cfg('FEE_PER_SHARE', 0.005)
+    fee_min = _get_cfg('FEE_MIN', 1.0)
+    fee_max_pct = _get_cfg('FEE_MAX_PCT', 0.01)
+    slippage_pct = _get_cfg('SLIPPAGE_PCT', 0.001)
 
-    buy_fee = calculate_fee(shares, entry, monthly_ops_used, monthly_shares_used)
-    
-    updated_ops = monthly_ops_used + 1
-    updated_shares = monthly_shares_used + shares
-    sell_fee = calculate_fee(shares, exit_price, updated_ops, updated_shares)
+    position_value = entry * shares
+    gross_pnl = (exit_price - entry) * shares
 
-    total_fees = buy_fee + sell_fee
-    net_profit = gross_profit - total_fees
-    net_pct = (net_profit / buy_value) * 100 if buy_value > 0 else 0.0
+    # Calculate Fees for both Entry and Exit
+    raw_fee = max(shares * fee_per_share, fee_min)
+    capped_fee = min(raw_fee, position_value * fee_max_pct)
+    total_fees = capped_fee * 2  # Entry + Exit
+
+    # Slippage
+    total_slippage = position_value * slippage_pct * 2
+
+    net_pnl = gross_pnl - total_fees - total_slippage
+    net_pct = (net_pnl / position_value) * 100.0 if position_value > 0 else 0.0
 
     return {
-        'gross_profit': round(gross_profit, 2),
-        'fees': round(total_fees, 2),
-        'net_profit': round(net_profit, 2),
-        'net_pct': round(net_pct, 2)
+        'gross_pnl': round(gross_pnl, 2),
+        'net_pnl': round(net_pnl, 2),
+        'net_pct': round(net_pct, 2),
+        'fees': round(total_fees + total_slippage, 2)
     }
