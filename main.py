@@ -1,19 +1,29 @@
 """
-DAYS-BOT V2.12.1 – PM DIAGNOSTICS
+DAYS-BOT V2.12.1 – PM DIAGNOSTICS (UPDATED WITH BLINK FEE MODEL)
 """
 import sys
 import sqlite3
 from pathlib import Path
 from datetime import datetime
+import pytz
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 sys.path.insert(0, str(BASE_DIR / "utils"))
 
+ET = pytz.timezone('America/New_York')
+
 from utils.config import *
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
-from database.db import init_db, save_alert, DB_PATH, get_all_trades, get_open_trades
+from database.db import (
+    init_db,
+    save_alert,
+    DB_PATH,
+    get_all_trades,
+    get_open_trades,
+    get_monthly_usage
+)
 from watchlist_manager import WatchlistManager
 from utils.calculations import (
     calculate_entry_stop_tp,
@@ -36,8 +46,8 @@ def get_equity() -> float:
 def scan_mode():
     init_db()
     wm = WatchlistManager()
-    today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] SCAN MODE V2.12.1 - {today}")
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    print(f"\n[Main] SCAN MODE V2.12.1 - {today} (ET)")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -110,8 +120,12 @@ def scan_mode():
 def review_mode():
     init_db()
     wm = WatchlistManager()
-    today = datetime.now().strftime("%Y-%m-%d")
-    print(f"\n[Main] REVIEW MODE - {today}")
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    print(f"\n[Main] REVIEW MODE - {today} (ET)")
+
+    # 1. Pull real-time BLINK usage for accurate fee modeling
+    monthly_ops, monthly_shares = get_monthly_usage()
+    print(f"[Main] Current Monthly Usage (ET): {monthly_ops} ops | {monthly_shares} shares")
 
     watchlist = wm.get_active_watchlist()
     if not watchlist:
@@ -184,10 +198,26 @@ def review_mode():
         if shares <= 0:
             continue
 
-        net1 = calculate_net_profit(entry, tp1, shares)
-        net2 = calculate_net_profit(entry, tp2, shares)
+        # 2. Pass monthly usage to fee calculations
+        net1 = calculate_net_profit(
+            entry=entry,
+            exit_price=tp1,
+            shares=shares,
+            monthly_ops_used=monthly_ops,
+            monthly_shares_used=monthly_shares
+        )
+        net2 = calculate_net_profit(
+            entry=entry,
+            exit_price=tp2,
+            shares=shares,
+            monthly_ops_used=monthly_ops,
+            monthly_shares_used=monthly_shares
+        )
 
-        if net1['net_pct'] < MIN_NET_PROFIT_PCT:
+        # Handle percentage scaling (4.0 vs 0.04)
+        target_min_pct = MIN_NET_PROFIT_PCT * 100 if MIN_NET_PROFIT_PCT < 1.0 else MIN_NET_PROFIT_PCT
+        if net1['net_pct'] < target_min_pct:
+            print(f"[{w['ticker']}] Rejected: Net return ({net1['net_pct']}%) below minimum target ({target_min_pct}%).")
             continue
 
         reviews.append({
