@@ -4,10 +4,10 @@ import pytz
 import pandas as pd
 from alpaca_trade_api.rest import REST, TimeFrame
 
-def get_pm_data(symbol: str, current_price: float) -> dict:
+def get_premarket_minute_data(symbol: str, current_price: float = None) -> dict:
     """
     Retrieves Pre-Market (04:00 - 09:30 ET) 1-minute bars using Alpaca SIP Feed.
-    Calculates Typical-Price VWAP, signed/absolute distance from PM High, and excludes fake RVOL.
+    Calculates Typical-Price VWAP, signed/absolute distance from PM High, and PM metrics.
     """
     api_key = os.getenv("ALPACA_API_KEY")
     secret_key = os.getenv("ALPACA_SECRET_KEY")
@@ -81,11 +81,12 @@ def get_pm_data(symbol: str, current_price: float) -> dict:
         else:
             pm_vwap = float(bars['close'].mean())
 
-        # Signed distance and absolute distance calculation
-        pm_dist_signed = (((current_price - pm_high) / pm_high) * 100.0) if pm_high else None
+        # Distance calculation
+        price_for_dist = current_price if (current_price is not None and current_price > 0) else float(bars['close'].iloc[-1])
+        pm_dist_signed = (((price_for_dist - pm_high) / pm_high) * 100.0) if pm_high else None
         pm_high_dist = abs(pm_dist_signed) if pm_dist_signed is not None else None
 
-        print(f"[PM RESULT] {symbol} | Bars: {pm_bars_count} | Vol: {pm_volume} | PM High: {pm_high:.2f} | PM VWAP: {pm_vwap:.2f} | Dist Signed: {pm_dist_signed:.2f}% | Abs Dist: {pm_high_dist:.2f}%")
+        print(f"[PM RESULT] {symbol} | Bars: {pm_bars_count} | Vol: {pm_volume} | PM High: {pm_high:.2f} | PM VWAP: {pm_vwap:.2f} | Abs Dist: {pm_high_dist:.2f}%")
 
         return {
             "pm_volume": pm_volume,
@@ -112,3 +113,6 @@ def get_pm_data(symbol: str, current_price: float) -> dict:
             "rvol_method": "UNAVAILABLE",
             "error": f"SIP_FEED_ERROR: {e}"
         }
+
+# Alias for compatibility across all imports
+get_pm_data = get_premarket_minute_data
