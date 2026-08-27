@@ -10,7 +10,7 @@ on:
 
 jobs:
   # ============================================================
-  # 1. SCAN – 4 סריקות (Watchlist)
+  # 1. SCAN – הרצת הבדיקה המהירה (quick_test.py)
   # ============================================================
   scan:
     runs-on: ubuntu-latest
@@ -29,8 +29,8 @@ jobs:
         run: pip install -r requirements.txt
       - name: Create data directory
         run: mkdir -p data
-      - name: Run scan (watchlist mode)
-        run: python main.py scan
+      - name: Run quick test
+        run: python quick_test.py
       - name: Upload DB artifact
         uses: actions/upload-artifact@v4
         with:
