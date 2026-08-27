@@ -1,103 +1,74 @@
 """
-Premarket Engine – fetches real PM data from Alpaca Minute Bars
+PM_ENGINE V2.12.1 – PREMARKET DATA ENGINE (IEX FEED FIX)
 """
-print("🔥 LOADED PM_ENGINE V2.12.1")
-
-import time
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
-import alpaca_trade_api as tradeapi
+from datetime import datetime, time
 import pytz
 
 ET = pytz.timezone('America/New_York')
 
 
-def get_premarket_minute_data(symbol: str, api: tradeapi.REST) -> Dict[str, Any]:
+def get_premarket_minute_data(symbol: str, api) -> dict:
     """
-    Fetches minute bars from Alpaca for premarket (04:00-09:30 ET)
-    Returns PM Volume, High, Low, VWAP, and Time-adjusted RVOL.
+    Fetches premarket minute bars for symbol using Alpaca REST API (feed='iex').
+    Returns calculated PM metrics expected by scanner/premarket.py.
     """
-    result = {
-        'pm_volume': None,
-        'pm_high': None,
-        'pm_low': None,
-        'pm_vwap': None,
-        'pm_open': None,
-        'rvol_time_adjusted': None,
-        'data_quality': 'LOW',
-        'pm_bars_count': 0,
-        'pm_volume_raw': 0,
-        'error': None,
-        'debug': {},
-    }
-
     try:
-        now = datetime.now(ET)
-        if now.weekday() >= 5:  # weekend
-            result['error'] = 'Weekend'
-            return result
+        now_et = datetime.now(ET)
+        today_str = now_et.strftime("%Y-%m-%d")
 
-        # Premarket hours: 04:00 to 09:30 ET
-        start = now.replace(hour=4, minute=0, second=0, microsecond=0)
-        end = now.replace(hour=9, minute=30, second=0, microsecond=0)
-        end = min(now, end)  # only up to current time
+        # Premarket range: 04:00 ET to current time / 09:30 ET
+        start_dt = f"{today_str}T04:00:00-04:00"
+        end_dt = now_et.isoformat()
 
-        if start >= end:
-            result['error'] = 'Not premarket hours'
-            return result
-
-        # Fetch minute bars from Alpaca
+        # Fetch 1-minute bars with explicit IEX feed override
         bars = api.get_bars(
             symbol,
-            timeframe='1Min',
-            start=start.isoformat(),
-            end=end.isoformat(),
-            adjustment='raw'
+            "1Min",
+            start=start_dt,
+            end=end_dt,
+            timeframe="1Min",
+            feed='iex'
         )
 
-        if bars is None:
-            result['error'] = 'No bars returned (None)'
-            return result
+        bar_list = list(bars)
+        if not bar_list:
+            return {
+                'error': None,
+                'pm_volume': 0,
+                'pm_high': 0.0,
+                'pm_vwap': 0.0,
+                'pm_bars_count': 0,
+                'pm_high_dist': 999.0,
+                'rvol_time_adjusted': None
+            }
 
-        df = bars.df
-        result['debug']['bars_raw_count'] = len(df) if df is not None else 0
+        pm_volume = sum(b.v for b in bar_list)
+        pm_high = max(b.h for b in bar_list)
+        
+        # Calculate VWAP
+        sum_pv = sum(b.v * ((b.h + b.l + b.c) / 3.0) for b in bar_list)
+        pm_vwap = (sum_pv / pm_volume) if pm_volume > 0 else 0.0
 
-        if df is None or df.empty:
-            result['error'] = 'Empty bars'
-            result['debug']['df_empty'] = True
-            return result
+        current_price = bar_list[-1].c
+        pm_high_dist = ((pm_high - current_price) / current_price) * 100.0 if current_price > 0 else 999.0
 
-        # Compute PM metrics
-        result['pm_volume'] = int(df['volume'].sum())
-        result['pm_volume_raw'] = int(df['volume'].sum())
-        result['pm_bars_count'] = len(df)
-
-        result['pm_high'] = float(df['high'].max())
-        result['pm_low'] = float(df['low'].min())
-        result['pm_open'] = float(df['open'].iloc[0])
-
-        # VWAP
-        typical = (df['high'] + df['low'] + df['close']) / 3
-        vwap = (typical * df['volume']).sum() / df['volume'].sum() if df['volume'].sum() > 0 else 0
-        result['pm_vwap'] = float(vwap)
-
-        # Time-adjusted RVOL (placeholder – will be replaced with real historical data)
-        if result['pm_volume'] > 0:
-            avg_volume = 50_000  # placeholder, not real RVOL
-            if avg_volume > 0:
-                result['rvol_time_adjusted'] = result['pm_volume'] / avg_volume
-                result['data_quality'] = 'MEDIUM' if result['pm_volume'] > 100_000 else 'LOW'
-            else:
-                result['rvol_time_adjusted'] = 0.0
-        else:
-            result['rvol_time_adjusted'] = 0.0
-
-        result['debug']['start_time'] = start.isoformat()
-        result['debug']['end_time'] = end.isoformat()
-        result['debug']['timezone'] = 'America/New_York'
+        return {
+            'error': None,
+            'pm_volume': pm_volume,
+            'pm_high': pm_high,
+            'pm_vwap': pm_vwap,
+            'pm_bars_count': len(bar_list),
+            'pm_high_dist': pm_high_dist,
+            'rvol_time_adjusted': None
+        }
 
     except Exception as e:
-        result['error'] = str(e)
-        result['debug']['exception'] = str(e)
-
-    return result
+        return {
+            'error': str(e),
+            'pm_volume': 0,
+            'pm_high': 0.0,
+            'pm_vwap': 0.0,
+            'pm_bars_count': 0,
+            'pm_high_dist': 999.0,
+            'rvol_time_adjusted': None
+        }
