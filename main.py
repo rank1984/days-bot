@@ -1,5 +1,5 @@
 """
-DAYS-BOT V2.12.1 – PM DIAGNOSTICS (UPDATED WITH BLINK FEE MODEL)
+DAYS-BOT V2.12.1 – PM DIAGNOSTICS
 """
 import sys
 import sqlite3
@@ -123,7 +123,6 @@ def review_mode():
     today = datetime.now(ET).strftime("%Y-%m-%d")
     print(f"\n[Main] REVIEW MODE - {today} (ET)")
 
-    # 1. Pull real-time BLINK usage for accurate fee modeling
     monthly_ops, monthly_shares = get_monthly_usage()
     print(f"[Main] Current Monthly Usage (ET): {monthly_ops} ops | {monthly_shares} shares")
 
@@ -198,7 +197,6 @@ def review_mode():
         if shares <= 0:
             continue
 
-        # 2. Pass monthly usage to fee calculations
         net1 = calculate_net_profit(
             entry=entry,
             exit_price=tp1,
@@ -214,7 +212,6 @@ def review_mode():
             monthly_shares_used=monthly_shares
         )
 
-        # Handle percentage scaling (4.0 vs 0.04)
         target_min_pct = MIN_NET_PROFIT_PCT * 100 if MIN_NET_PROFIT_PCT < 1.0 else MIN_NET_PROFIT_PCT
         if net1['net_pct'] < target_min_pct:
             print(f"[{w['ticker']}] Rejected: Net return ({net1['net_pct']}%) below minimum target ({target_min_pct}%).")
