@@ -1,27 +1,24 @@
-name: Run IEX Test Script
+import os
+from datetime import datetime
+import pytz
+import alpaca_trade_api as tradeapi
 
-on:
-  workflow_dispatch: # מאפשר הרצה ידנית בלחיצת כפתור
+from scanner.pm_engine import get_premarket_minute_data
+from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
 
-jobs:
-  run-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+# הגדרת אובייקט ה-API של Alpaca ישירות מתוך המפתחות
+ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://api.alpaca.markets")
+api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+ET = pytz.timezone('America/New_York')
+now_et = datetime.now(ET)
 
-      - name: Install Dependencies
-        run: |
-          pip install -r requirements.txt
+print(f"Current ET Time: {now_et.strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
-      - name: Run Test
-        env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-        run: |
-          python test_iex.py
+# בדיקה 1: מניה נזילה ביותר (Mega-Cap)
+aapl_data = get_premarket_minute_data("AAPL", api)
+print(f"[AAPL Test] bars_count={aapl_data['pm_bars_count']}, volume={aapl_data['pm_volume']}")
+
+# בדיקה 2: מניית Micro-Cap
+crmg_data = get_premarket_minute_data("CRMG", api)
+print(f"[CRMG Test] bars_count={crmg_data['pm_bars_count']}, volume={crmg_data['pm_volume']}")
