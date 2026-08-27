@@ -1,134 +1,68 @@
-"""
-Catalyst Engine – fetches and classifies news from Finnhub (FIXED endpoint)
-"""
-print("🔥 LOADED CATALYST_ENGINE V2.12.1")
-
+import os
 import requests
-from datetime import datetime, timedelta
-from typing import Dict, List, Any, Optional
 
-CATALYST_MAP = {
-    'fda approval': 30,
-    'fda approves': 30,
-    'fda cleared': 25,
-    'approval': 25,
-    'breakthrough': 25,
-    'acquisition': 20,
-    'acquires': 20,
-    'merger': 20,
-    'contract': 18,
-    'partnership': 16,
-    'collaboration': 16,
-    'earnings': 15,
-    'revenue': 15,
-    'eps': 15,
-    'beat': 15,
-    'grant': 12,
-    'award': 12,
-    'patent': 12,
-    'positive': 12,
-    'clearance': 12,
-    'trial': 10,
-    'phase': 10,
-    'designation': 8,
-    'agreement': 8,
-    'expansion': 7,
-    'order': 7,
-    'backlog': 6,
-    'win': 6,
-}
-
-NEGATIVE_MAP = {
-    'offering': -20,
-    'direct offering': -25,
-    'atm': -25,
-    'pipe': -20,
-    'resale': -20,
-    'warrant': -15,
-    'dilution': -30,
-    'shelf': -15,
-    'follow-on': -20,
-    'convertible': -15,
-    'reverse split': -25,
-    'going concern': -20,
-    'nasdaq notice': -15,
-}
-
-
-def classify_catalyst(headlines: List[str]) -> Dict[str, Any]:
-    if not headlines:
-        return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
-
-    text = ' '.join(headlines).lower()
-    score = 0
-    flags = []
-    matched_type = 'UNKNOWN'
-    matched_headline = headlines[0]
-
-    for keyword, value in CATALYST_MAP.items():
-        if keyword in text:
-            score += value
-            flags.append(keyword)
-            matched_type = keyword.upper().replace(' ', '_')
-            if score > 20:
-                matched_headline = next((h for h in headlines if keyword in h.lower()), headlines[0])
-
-    for keyword, value in NEGATIVE_MAP.items():
-        if keyword in text:
-            score += value
-            flags.append(f'NEGATIVE:{keyword}')
-            matched_type = 'NEGATIVE'
-
-    if score >= 25:
-        quality = 'HIGH'
-    elif score >= 15:
-        quality = 'MEDIUM'
-    elif score >= 5:
-        quality = 'LOW'
-    else:
-        quality = 'NONE'
-
-    return {
-        'type': matched_type,
-        'score': min(100, max(-100, score)),
-        'headline': matched_headline[:120],
-        'quality': quality,
-        'is_negative': score < 0,
-        'flags': flags[:5],
-    }
-
-
-def get_catalyst_from_finnhub(symbol: str, finnhub_key: str) -> Dict[str, Any]:
+def get_catalyst_score(symbol: str) -> dict:
     """
-    Fetches news from Finnhub using /company-news (FIXED endpoint).
+    Fetches news/catalyst data from Finnhub API for a given symbol and calculates a catalyst score.
+    Includes explicit error diagnostics.
     """
-    if not finnhub_key:
-        return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
+    api_key = os.getenv("FINNHUB_API_KEY")
+
+    if not api_key:
+        print(f"[Catalyst ERROR] {symbol}: FINNHUB_API_KEY missing from environment variables")
+        return {
+            "score": 0,
+            "headline": None,
+            "type": "UNKNOWN",
+            "error": "FINNHUB_API_KEY missing",
+        }
 
     try:
-        end = datetime.now()
-        start = end - timedelta(days=3)
-        url = f"https://finnhub.io/api/v1/company-news"
-        params = {
-            'symbol': symbol,
-            'from': start.strftime('%Y-%m-%d'),
-            'to': end.strftime('%Y-%m-%d'),
-            'token': finnhub_key
+        # Finnhub Company News Endpoint
+        url = f"https://finnhub.io/api/v1/company-news?symbol={symbol.upper()}&from=2026-08-01&to=2026-08-27&token={api_key}"
+        
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        news_items = response.json()
+
+        if not isinstance(news_items, list) or len(news_items) == 0:
+            print(f"[Catalyst INFO] {symbol}: No news found on Finnhub")
+            return {
+                "score": 0,
+                "headline": None,
+                "type": "NONE",
+                "error": None,
+            }
+
+        # Analysis of the latest news item
+        latest_news = news_items[0]
+        headline = latest_news.get("headline", "")
+        summary = latest_news.get("summary", "")
+
+        score = 5  # Base score if news exists
+        news_type = "GENERAL_NEWS"
+
+        combined_text = (headline + " " + summary).lower()
+        if any(k in combined_text for k in ["fda", "approval", "earnings", "contract", "merger", "acquisition", "buyout"]):
+            score = 8
+            news_type = "HIGH_IMPACT"
+        elif any(k in combined_text for k in ["offering", "dilution", "lawsuit", "investigation"]):
+            score = 2
+            news_type = "NEGATIVE"
+
+        print(f"[Catalyst SUCCESS] {symbol} | Score: {score} | Type: {news_type}")
+        return {
+            "score": score,
+            "headline": headline,
+            "type": news_type,
+            "error": None,
         }
-        resp = requests.get(url, params=params, timeout=5)
-
-        if resp.status_code != 200:
-            print(f"[CatalystEngine] Finnhub error {resp.status_code} for {symbol}")
-            return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
-
-        data = resp.json()
-        if data and len(data) > 0:
-            headlines = [item.get('headline', '') for item in data[:5] if item.get('headline')]
-            if headlines:
-                return classify_catalyst(headlines)
-
-        return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
 
     except Exception as e:
-        print(f"[CatalystEngine] Exception for {symbol}: {e}")
-        return {'type': 'UNKNOWN', 'score': 0, 'headline': '', 'quality': 'NONE', 'is_negative': False, 'flags': []}
+        print(f"[Catalyst ERROR] {symbol}: {e}")
+        return {
+            "score": 0,
+            "headline": None,
+            "type": "UNKNOWN",
+            "error": str(e),
+        }
