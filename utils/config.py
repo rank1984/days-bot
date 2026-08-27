@@ -32,3 +32,9 @@ MAX_ACTIVE_TRADES = 3
 MAX_TRADES_PER_DAY = 5
 MAX_RISK_PER_TRADE = 0.01   # 1% equity risk
 MIN_NET_PROFIT_PCT = 0.01   # 1% minimum net target
+
+# EXECUTION & FEE PARAMETERS
+FEE_PER_SHARE = 0.005       # Execution fee per share ($0.005)
+FEE_PER_ORDER = 0.0         # Flat fee per order
+FEE_MIN = 1.0               # Minimum total fee per order ($1.00)
+SLIPPAGE_PCT = 0.001        # Estimated slippage allowance (0.1%)
