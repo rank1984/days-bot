@@ -1,5 +1,14 @@
 import os
 
+# API KEYS & ENVIRONMENT VARIABLES
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://api.alpaca.markets")
+
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
 # DISCOVERY PARAMETERS
 DISCOVERY_MIN_PRICE = 1.0
 DISCOVERY_MAX_PRICE = 20.0
@@ -14,5 +23,12 @@ VALIDATION_MAX_PM_DIST = 5.0
 VALIDATION_MIN_VWAP_DIST = 0.0
 
 # RVOL & CATALYST
-VALIDATION_MIN_RVOL = 0.0          # Informational / disabled until historical baseline is available
+VALIDATION_MIN_RVOL = 0.0
 VALIDATION_MIN_CATALYST_SCORE = 3.0
+
+# RISK & TRADING LIMITS
+MAX_DAILY_LOSS = 0.05       # 5% max daily drawdown
+MAX_ACTIVE_TRADES = 3
+MAX_TRADES_PER_DAY = 5
+MAX_RISK_PER_TRADE = 0.01   # 1% equity risk
+MIN_NET_PROFIT_PCT = 0.01   # 1% minimum net target
