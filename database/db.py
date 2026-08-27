@@ -1,5 +1,5 @@
 """
-DAYS-BOT DATABASE MODULE (FULLY CONSOLIDATED)
+DAYS-BOT DATABASE MODULE (WITH TRADE MONITOR SUPPORT)
 """
 import sqlite3
 from pathlib import Path
@@ -105,6 +105,50 @@ def log_sell_trade(ticker: str, exit_price: float, exit_time: str = None) -> boo
     conn.commit()
     conn.close()
     return True
+
+
+def update_trade_monitor(trade_id: int = None, ticker: str = None, exit_price: float = None, pnl: float = None, status: str = None, exit_time: str = None, **kwargs):
+    """
+    Updates dynamic trade metrics monitored by trade_monitor.py.
+    Supports updates by trade_id or active ticker.
+    """
+    init_db()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    updates = []
+    params = []
+    
+    if exit_price is not None:
+        updates.append("exit_price = ?")
+        params.append(exit_price)
+    if pnl is not None:
+        updates.append("pnl = ?")
+        params.append(pnl)
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    if exit_time is not None:
+        updates.append("exit_time = ?")
+        params.append(exit_time)
+        
+    for key, value in kwargs.items():
+        if value is not None and key not in ('id', 'ticker'):
+            updates.append(f"{key} = ?")
+            params.append(value)
+            
+    if updates:
+        if trade_id is not None:
+            query = f"UPDATE trades SET {', '.join(updates)} WHERE id = ?"
+            params.append(trade_id)
+            cursor.execute(query, params)
+        elif ticker is not None:
+            query = f"UPDATE trades SET {', '.join(updates)} WHERE ticker = ? AND status = 'OPEN'"
+            params.append(ticker)
+            cursor.execute(query, params)
+            
+    conn.commit()
+    conn.close()
 
 
 def get_all_trades():
