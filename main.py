@@ -1,20 +1,15 @@
+
 """
-DAYS-BOT V2.14 – EXPERIMENT MODE MAIN ENGINE
+DAYS-BOT V3.0 – DECISION ENGINE & QUANT RISK MODE
 
 Modes:
     python main.py scan
-        Automatic/normal experiment scan.
+        Automatic/normal scan.
         Runs only during 08:00-09:30 ET.
 
     python main.py scan --manual
         Manual diagnostic/test run.
         Can be executed at any hour.
-        Marked MANUAL and should NOT be treated as part of the
-        official V2.14 experiment.
-
-    python main.py scan --force
-        Legacy compatibility option.
-        Behaves like manual mode.
 """
 
 import sys
@@ -35,6 +30,7 @@ from utils.config import (
     DATA_VERSION,
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
+    GEMINI_API_KEY  # <-- REQUIRED FOR V3.0: Make sure this is in your config.py!
 )
 
 from scanner.premarket import scan_premarket
@@ -42,13 +38,15 @@ from scanner.universe import load_universe
 from database.db import init_db, save_alert
 from watchlist_manager import WatchlistManager
 
-from telegram_formatter import (
-    format_scan_breakdown,
-    format_watchlist,
-    format_no_candidates,
-    send_message,
-)
+# Legacy Telegram formatters (kept for fallback/errors)
+from telegram_formatter import format_no_candidates, send_message
 
+# ============================================================
+# V3.0 MODULES IMPORTS
+# ============================================================
+from risk_engine import RiskEngine
+from ai_decision import AIDecisionLayer
+from telegram_v3 import format_decision_card
 
 def scan_mode(manual: bool = False):
     init_db()
@@ -64,54 +62,37 @@ def scan_mode(manual: bool = False):
     if manual:
         run_mode = "MANUAL"
     else:
-        run_mode = "EXPERIMENT"
+        run_mode = "V3_LIVE_EXPERIMENT"
 
     # ============================================================
     # AUTOMATIC / EXPERIMENT WINDOW
     # ============================================================
 
     if not manual:
-
         if now_et.time() < time(8, 0):
-            print(
-                f"\n[Main] {BOT_VERSION} – "
-                f"{now_et.strftime('%H:%M:%S')} ET "
-                f"is before experiment window (08:00 ET)."
-            )
+            print(f"\n[Main] {BOT_VERSION} – {now_et.strftime('%H:%M:%S')} ET is before experiment window (08:00 ET).")
             print("[Main] Automatic scan aborted.")
             return
 
         if now_et.time() >= time(9, 30):
-            print(
-                f"\n[Main] {BOT_VERSION} – "
-                f"{now_et.strftime('%H:%M:%S')} ET "
-                f"is after experiment window (09:30 ET)."
-            )
+            print(f"\n[Main] {BOT_VERSION} – {now_et.strftime('%H:%M:%S')} ET is after experiment window (09:30 ET).")
             print("[Main] Automatic scan aborted.")
             return
 
     # ============================================================
-    # START
+    # START V3.0
     # ============================================================
 
     print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT {BOT_VERSION}")
+    print(f"[Main] DAYS-BOT V3.0 DECISION ENGINE")
     print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
     print(f"[Main] MODE: {run_mode}")
-    print(f"[Main] DATA: {DATA_VERSION}")
     print(f"[Main] DATE: {today}")
     print(f"[Main] TIME: {now_et.strftime('%H:%M:%S')} ET")
     print("=" * 70)
 
     if manual:
-        print(
-            "[Main] ⚠️ MANUAL RUN – "
-            "diagnostic/testing only."
-        )
-        print(
-            "[Main] This run must NOT be counted "
-            "as an official V2.14 experiment observation."
-        )
+        print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
 
     # ============================================================
     # SCAN
@@ -120,171 +101,98 @@ def scan_mode(manual: bool = False):
     candidates = scan_premarket(today)
 
     if not candidates:
-
         universe = load_universe()
-
-        msg = format_no_candidates(
-            today,
-            len(universe) if universe else 0
-        )
-
-        send_message(
-            TELEGRAM_TOKEN,
-            TELEGRAM_CHAT_ID,
-            msg
-        )
-
+        msg = format_no_candidates(today, len(universe) if universe else 0)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print("[Main] No candidates found.")
         return
 
     # ============================================================
-    # DEBUG CONTRACT
+    # SAVE TO DATABASE & WATCHLIST
     # ============================================================
-
-    print("\n[DEBUG CONTRACT] Candidates from scanner:")
-
-    for c in candidates[:5]:
-
-        spread = c.get("spread_pct")
-        spread_str = (
-            f"{spread:.2f}%"
-            if spread is not None
-            else "N/A"
-        )
-
-        catalyst = c.get(
-            "catalyst_status",
-            "UNAVAILABLE"
-        )
-
-        pm_dist = c.get("pm_high_dist")
-
-        pm_dist_str = (
-            f"{pm_dist:.1f}%"
-            if pm_dist is not None
-            else "N/A"
-        )
-
-        print(
-            f"  {c['ticker']} | "
-            f"mode={run_mode} | "
-            f"strategy={STRATEGY_VERSION} | "
-            f"quality={c.get('pm_data_quality', 'N/A')} | "
-            f"rvol=UNAVAILABLE | "
-            f"pm_dist={pm_dist_str} | "
-            f"vwap={c.get('pm_vwap', 0):.2f} | "
-            f"spread={spread_str} | "
-            f"catalyst={catalyst}"
-        )
-
-    # ============================================================
-    # SAVE
-    # ============================================================
-
+    
     added = 0
-
     for c in candidates[:10]:
-
         if "/" in c["ticker"]:
             continue
-
-        # Experiment metadata
         c["strategy_version"] = STRATEGY_VERSION
         c["data_version"] = DATA_VERSION
-
-        if manual:
-            c["mode"] = "MANUAL"
-        else:
-            c["mode"] = EXPERIMENT_MODE
+        c["mode"] = run_mode
 
         wm.add_to_watchlist(c)
-
         save_alert(**c)
-
         added += 1
 
-    # ============================================================
-    # STATS
-    # ============================================================
-
-    stats = {
-        "price_pass": len(candidates),
-        "gap_pass": len(candidates),
-        "vol_pass": len(candidates),
-        "spread_pass": len(candidates),
-        "fast_pass": len(candidates),
-        "pm_vol_pass": len([
-            c for c in candidates
-            if c.get("pm_volume", 0) > 0
-        ]),
-        "rvol_pass": len(candidates),
-        "pm_dist_pass": len(candidates),
-        "vwap_pass": len([
-            c for c in candidates
-            if c.get("pm_vwap", 0) > 0
-        ]),
-        "pm_quant_pass": len(candidates),
-        "catalyst_pass": len(candidates),
-        "final_pass": len(candidates),
-    }
+    print(f"\n[Main] Saved {added} candidates to Watchlist & DB.")
 
     # ============================================================
-    # TELEGRAM
+    # V3.0 DECISION PIPELINE (TOP 5)
     # ============================================================
+    print("\n[Main] Initiating V3.0 Quant & AI Decision Pipeline for Top 5...")
+    
+    risk_engine = RiskEngine()
+    try:
+        ai_layer = AIDecisionLayer(api_key=GEMINI_API_KEY)
+    except NameError:
+        print("\n[ERROR] GEMINI_API_KEY is missing from utils/config.py!")
+        sys.exit(1)
 
-    msg = format_scan_breakdown(
-        candidates[:5],
-        stats,
-        today
-    )
+    # 1. Get Global Market Regime (Applies to all trades today)
+    regime_name, regime_mult, regime_reasons = risk_engine.get_market_regime()
+    print(f"[Quant] Market Regime: {regime_name} (Multiplier: {regime_mult})")
 
-    send_message(
-        TELEGRAM_TOKEN,
-        TELEGRAM_CHAT_ID,
-        msg
-    )
+    # 2. Process Top 5 Candidates
+    for i, c in enumerate(candidates[:5]):
+        ticker = c['ticker']
+        print(f"\n--- Processing {ticker} ({i+1}/5) ---")
+        
+        # Prepare Data Objects
+        stock_price = c.get("price", c.get("close", 0))
+        pm_high = c.get("pm_high", stock_price * 1.02) # Fallback if missing
+        pm_vwap = c.get("pm_vwap", stock_price * 0.98) # Fallback if missing
+        
+        stock_data = {
+            "ticker": ticker,
+            "price": stock_price,
+            "gap_pct": c.get("gap_pct", 0),
+            "pm_volume": c.get("pm_volume", 0)
+        }
 
-    watchlist = wm.get_active_watchlist()
+        # A. Calculate Quant Trade Plan
+        trade_plan = risk_engine.calculate_trade_plan(
+            price=stock_price,
+            pm_high=pm_high,
+            pm_vwap=pm_vwap,
+            regime_multiplier=regime_mult
+        )
+        
+        quant_data = {
+            "regime": regime_name,
+            "regime_reasons": regime_reasons,
+            **trade_plan
+        }
 
-    msg = format_watchlist(
-        watchlist,
-        today
-    )
+        # B. AI Analysis
+        print(f"[{ticker}] Fetching AI setup evaluation...")
+        ai_decision = ai_layer.analyze_setup(stock_data, quant_data)
 
-    send_message(
-        TELEGRAM_TOKEN,
-        TELEGRAM_CHAT_ID,
-        msg
-    )
+        # C. Generate & Send Telegram Card
+        print(f"[{ticker}] AI Decision: {ai_decision.get('decision')} (Score: {ai_decision.get('score')})")
+        msg = format_decision_card(stock_data, quant_data, ai_decision)
+        
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
     # ============================================================
     # END
     # ============================================================
 
-    print(
-        f"\n[Main] Done. "
-        f"{added} candidates added to DB & Watchlist."
-    )
-
-    print(
-        "[Main] NO LIVE TRADING EXECUTED – "
-        "SIGNAL LOGGING ONLY."
-    )
-
-    if manual:
-        print(
-            "[Main] ⚠️ MANUAL RUN COMPLETE – "
-            "NOT PART OF OFFICIAL EXPERIMENT."
-        )
-
+    print("\n" + "=" * 70)
+    print(f"[Main] Scan & Decision Pipeline Complete.")
+    print("=" * 70)
 
 if __name__ == "__main__":
-
     if len(sys.argv) < 2:
-        print(
-            "Usage: python main.py scan "
-            "[--manual]"
-        )
+        print("Usage: python main.py scan [--manual]")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
@@ -293,11 +201,5 @@ if __name__ == "__main__":
         print(f"Unknown mode: {mode}")
         sys.exit(1)
 
-    manual_run = "--manual" in sys.argv
-
-    # Backward compatibility:
-    # --force is treated as manual.
-    if "--force" in sys.argv:
-        manual_run = True
-
+    manual_run = "--manual" in sys.argv or "--force" in sys.argv
     scan_mode(manual=manual_run)
