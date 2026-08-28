@@ -2,8 +2,8 @@ name: Market Scanner Workflow V2.14 Experiment
 
 on:
   schedule:
-    # Runs during 08:00 ET - 09:30 ET window
-    # 12:00 UTC = 08:00 ET | 13:30 UTC = 09:30 ET
+    # GitHub Actions uses UTC.
+    # Python is responsible for enforcing the exact 08:00-09:30 ET window.
     - cron: '*/15 12-13 * * 1-5'
   workflow_dispatch:
 
@@ -28,7 +28,7 @@ jobs:
       - name: Create Data Directory
         run: mkdir -p data
 
-      - name: Run Main Scanner Script
+      - name: Run V2.14 Experiment Scanner
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
@@ -37,9 +37,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py scan
 
-      - name: Upload Artifacts
+      - name: Upload Experiment Database
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alerts-db
+          name: alerts-db-v214
           path: data/alerts.db
