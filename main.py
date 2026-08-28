@@ -1,5 +1,5 @@
 """
-DAYS-BOT V2.12.1 – PM DIAGNOSTICS & PRODUCTION MAIN
+DAY-S-BOT V2.14 – EXPERIMENT MODE MAIN ENGINE
 """
 import sys
 import sqlite3
@@ -13,7 +13,27 @@ sys.path.insert(0, str(BASE_DIR / "utils"))
 
 ET = pytz.timezone('America/New_York')
 
-from utils.config import *
+from utils.config import (
+    BOT_VERSION,
+    RUN_MODE,
+    EXPERIMENT_MODE,
+    USE_RVOL_AS_HARD_GATE,
+    USE_CATALYST_AS_HARD_GATE,
+    USE_PM_BARS_AS_HARD_GATE,
+    VALIDATION_MIN_RVOL,
+    VALIDATION_MIN_CATALYST_SCORE,
+    VALIDATION_MAX_SPREAD,
+    VALIDATION_MAX_PM_DIST,
+    VALIDATION_MIN_VWAP_DIST,
+    DISCOVERY_MAX_GAP,
+    MAX_DAILY_LOSS,
+    MAX_ACTIVE_TRADES,
+    MAX_TRADES_PER_DAY,
+    MAX_RISK_PER_TRADE,
+    MIN_NET_PROFIT_PCT,
+    TELEGRAM_TOKEN,
+    TELEGRAM_CHAT_ID,
+)
 from scanner.premarket import scan_premarket
 from scanner.universe import load_universe
 from database.db import (
@@ -54,7 +74,7 @@ def scan_mode(force: bool = False):
         print(f"\n[Main] Current time is {now_et.strftime('%H:%M:%S')} ET. Market already open (>= 09:30 ET) - Premarket scan aborted.")
         return
 
-    print(f"\n[Main] SCAN MODE V2.12.1 - {today} {now_et.strftime('%H:%M:%S')} (ET) {'[FORCED]' if force else ''}")
+    print(f"\n[Main] SCAN MODE {BOT_VERSION} ({RUN_MODE}) - {today} {now_et.strftime('%H:%M:%S')} (ET) {'[FORCED]' if force else ''}")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -67,14 +87,13 @@ def scan_mode(force: bool = False):
     print("\n[DEBUG CONTRACT] Candidates from scanner (first 5):")
     for c in candidates[:5]:
         rvol = c.get('rvol')
-        rvol_str = f"{rvol:.2f}" if rvol is not None else "N/A"
+        rvol_str = f"{rvol:.2f}" if rvol is not None else "N/A (Exempt)"
         spread = c.get('spread_pct')
         spread_str = f"{spread:.2f}" if spread is not None else "N/A"
-        catalyst = c.get('catalyst')
-        catalyst_str = catalyst[:30] if catalyst else "N/A"
+        catalyst = c.get('catalyst_status', 'N/A')
         
         pm_dist = c.get('pm_high_dist')
-        pm_dist_str = f"{pm_dist:.1f}" if pm_dist is not None else "N/A"
+        pm_dist_str = f"{pm_dist:.1f}%" if pm_dist is not None else "N/A"
         
         print(
             f"  {c['ticker']} | "
@@ -83,7 +102,7 @@ def scan_mode(force: bool = False):
             f"pm_dist={pm_dist_str} | "
             f"vwap={c.get('pm_vwap', 0):.2f} | "
             f"spread={spread_str} | "
-            f"catalyst={catalyst_str}"
+            f"catalyst={catalyst}"
         )
 
     added = 0
@@ -98,16 +117,17 @@ def scan_mode(force: bool = False):
         'price_pass': len(candidates) * 5,
         'gap_pass': len(candidates) * 4,
         'vol_pass': len(candidates) * 3,
-        'spread_pass': len([c for c in candidates if c.get('spread_pct') is not None]),
+        'spread_pass': len([c for c in candidates if c.get('spread_pct') is not None and c.get('spread_pct') <= VALIDATION_MAX_SPREAD]),
         'fast_pass': len(candidates),
-        'pm_vol_pass': len([c for c in candidates if c.get('pm_volume', 0) > 0]),
-        'rvol_pass': len([c for c in candidates if c.get('rvol') is not None and c.get('rvol') >= VALIDATION_MIN_RVOL]),
+        'pm_vol_pass': len([c for c in candidates if c.get('pm_volume', 0) >= 100_000]),
+        'rvol_pass': len(candidates) if not USE_RVOL_AS_HARD_GATE else len([c for c in candidates if c.get('rvol') is not None and c.get('rvol') >= VALIDATION_MIN_RVOL]),
         'pm_dist_pass': len([c for c in candidates if c.get('pm_high_dist') is not None and c.get('pm_high_dist') <= VALIDATION_MAX_PM_DIST]),
         'vwap_pass': len([c for c in candidates if c.get('pm_vwap', 0) > 0]),
         'pm_quant_pass': len(candidates),
-        'catalyst_pass': len([c for c in candidates if c.get('catalyst_score', 0) >= VALIDATION_MIN_CATALYST_SCORE]),
+        'catalyst_pass': len(candidates) if not USE_CATALYST_AS_HARD_GATE else len([c for c in candidates if c.get('catalyst_score', 0) >= VALIDATION_MIN_CATALYST_SCORE]),
         'final_pass': len(candidates),
     }
+    
     msg = format_scan_breakdown(candidates[:5], stats, today)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
@@ -116,14 +136,13 @@ def scan_mode(force: bool = False):
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
     for c in candidates[:10]:
-        catalyst = c.get('catalyst')
-        catalyst_str = catalyst if catalyst else 'N/A'
+        catalyst = c.get('catalyst_status', 'N/A')
         save_alert(
             ticker=c['ticker'],
             price=c['price'],
             gap_pct=c['gap_pct'],
             score=c.get('event_score', 0),
-            catalyst=catalyst_str
+            catalyst=catalyst
         )
     print(f"[Main] Done. {added} candidates added to DB & Watchlist.")
 
@@ -133,7 +152,7 @@ def review_mode():
     wm = WatchlistManager()
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
-    print(f"\n[Main] REVIEW MODE - {today} {now_et.strftime('%H:%M:%S')} (ET)")
+    print(f"\n[Main] REVIEW MODE {BOT_VERSION} ({RUN_MODE}) - {today} {now_et.strftime('%H:%M:%S')} (ET)")
 
     monthly_ops, monthly_shares = get_monthly_usage()
     print(f"[Main] Current Monthly Usage (ET): {monthly_ops} ops | {monthly_shares} shares")
@@ -176,9 +195,16 @@ def review_mode():
         if event_score < 60:
             continue
 
-        rvol = w.get('rvol')
-        if rvol is not None and rvol < VALIDATION_MIN_RVOL:
-            continue
+        # Hard Gate Checks (Skipped if False during Experiment Mode)
+        if USE_RVOL_AS_HARD_GATE:
+            rvol = w.get('rvol')
+            if rvol is not None and rvol < VALIDATION_MIN_RVOL:
+                continue
+
+        if USE_CATALYST_AS_HARD_GATE:
+            catalyst_score = w.get('catalyst_score', 0)
+            if catalyst_score < VALIDATION_MIN_CATALYST_SCORE:
+                continue
 
         gap = w.get('gap_pct', 0)
         if gap > DISCOVERY_MAX_GAP:
@@ -186,10 +212,6 @@ def review_mode():
 
         pm_dist = w.get('pm_high_dist')
         if pm_dist is not None and pm_dist > VALIDATION_MAX_PM_DIST:
-            continue
-
-        catalyst_score = w.get('catalyst_score', 0)
-        if catalyst_score < VALIDATION_MIN_CATALYST_SCORE:
             continue
 
         price = w.get('price', 0)
