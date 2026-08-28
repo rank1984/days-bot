@@ -4,17 +4,40 @@ import pytz
 import pandas as pd
 from alpaca_trade_api.rest import REST, TimeFrame
 
-def get_premarket_minute_data(symbol: str, current_price: float = None) -> dict:
-    """
-    Retrieves Pre-Market (04:00 - 09:30 ET) 1-minute bars using Alpaca SIP Feed.
-    Calculates Typical-Price VWAP, signed/absolute distance from PM High, and PM metrics.
-    """
-    api_key = os.getenv("ALPACA_API_KEY")
-    secret_key = os.getenv("ALPACA_SECRET_KEY")
-    base_url = os.getenv("ALPACA_BASE_URL", "https://api.alpaca.markets")
+from utils.config import (
+    ALPACA_API_KEY,
+    ALPACA_SECRET_KEY,
+    ALPACA_BASE_URL,
+)
 
-    if not api_key or not secret_key:
-        print(f"[PM ENGINE ERROR] {symbol}: Alpaca credentials missing from environment variables")
+ET = pytz.timezone("America/New_York")
+
+
+def fetch_pm_data(symbol: str, current_price: float = None) -> dict:
+    """
+    Fetches Premarket minute bars for the 08:00 ET -> 09:30 ET window via IEX feed.
+    Calculates PM High, VWAP, Data Quality, and Signed Distance metrics.
+    """
+    api = REST(
+        ALPACA_API_KEY,
+        ALPACA_SECRET_KEY,
+        ALPACA_BASE_URL,
+        api_version="v2",
+    )
+    
+    now_et = datetime.now(ET)
+
+    pm_start_et = ET.localize(
+        datetime.combine(now_et.date(), time(8, 0))
+    )
+    pm_end_et = ET.localize(
+        datetime.combine(now_et.date(), time(9, 30))
+    )
+
+    # Never read beyond current time
+    pm_end_et = min(now_et, pm_end_et)
+
+    if now_et < pm_start_et:
         return {
             "pm_volume": 0,
             "pm_bars_count": 0,
@@ -22,41 +45,36 @@ def get_premarket_minute_data(symbol: str, current_price: float = None) -> dict:
             "pm_vwap": None,
             "pm_dist_signed": None,
             "pm_high_dist": None,
-            "rvol": None,
-            "rvol_method": "UNAVAILABLE",
-            "error": "ALPACA_CREDENTIALS_MISSING"
+            "pm_data_quality": "NOT_STARTED",
+            "error": "PREMARKET_NOT_STARTED",
+            "rvol_time_adjusted": None,
         }
 
-    api = REST(api_key, secret_key, base_url, api_version='v2')
-
-    et_tz = pytz.timezone("America/New_York")
-    now_et = datetime.now(et_tz)
-
-    pm_start_et = et_tz.localize(datetime.combine(now_et.date(), time(4, 0)))
-    pm_end_et = et_tz.localize(datetime.combine(now_et.date(), time(9, 30)))
-
-    if now_et < pm_end_et:
-        pm_end_et = now_et
-
-    start_str = pm_start_et.isoformat()
-    end_str = pm_end_et.isoformat()
-
-    print(f"[PM ENGINE] {symbol} | window={start_str} -> {end_str} | feed=SIP")
+    if pm_end_et <= pm_start_et:
+        return {
+            "pm_volume": 0,
+            "pm_bars_count": 0,
+            "pm_high": None,
+            "pm_vwap": None,
+            "pm_dist_signed": None,
+            "pm_high_dist": None,
+            "pm_data_quality": "NO_DATA",
+            "error": "NO_PREMARKET_WINDOW",
+            "rvol_time_adjusted": None,
+        }
 
     try:
-        # Fetch directly using SIP feed
-        bars_response = api.get_bars(
+        response = api.get_bars(
             symbol,
             TimeFrame.Minute,
-            start=start_str,
-            end=end_str,
-            adjustment='raw',
-            feed='sip'
+            start=pm_start_et.isoformat(),
+            end=pm_end_et.isoformat(),
+            adjustment="raw",
+            feed="iex",
         )
-        bars = bars_response.df
+        df = response.df
 
-        if bars.empty:
-            print(f"[PM ENGINE INFO] {symbol}: No PM bars returned from Alpaca SIP feed")
+        if df is None or df.empty:
             return {
                 "pm_volume": 0,
                 "pm_bars_count": 0,
@@ -64,29 +82,39 @@ def get_premarket_minute_data(symbol: str, current_price: float = None) -> dict:
                 "pm_vwap": None,
                 "pm_dist_signed": None,
                 "pm_high_dist": None,
-                "rvol": None,
-                "rvol_method": "UNAVAILABLE",
-                "error": "NO_PM_BARS"
+                "pm_data_quality": "NO_DATA",
+                "error": "EMPTY_BARS",
+                "rvol_time_adjusted": None,
             }
 
-        pm_bars_count = len(bars)
-        pm_volume = int(bars['volume'].sum())
-        pm_high = float(bars['high'].max())
+        pm_bars_count = len(df)
+        pm_volume = int(df["volume"].sum())
 
-        # Volume-Weighted Average Price using Typical Price: (High + Low + Close) / 3
-        total_vol = bars['volume'].sum()
-        if total_vol > 0:
-            typical_price = (bars['high'] + bars['low'] + bars['close']) / 3.0
-            pm_vwap = float((typical_price * bars['volume']).sum() / total_vol)
+        # Data Quality Classification
+        if pm_bars_count >= 10:
+            pm_data_quality = "GOOD_DATA"
+        elif pm_bars_count >= 1:
+            pm_data_quality = "LOW_DATA"
         else:
-            pm_vwap = float(bars['close'].mean())
+            pm_data_quality = "NO_DATA"
 
-        # Distance calculation
-        price_for_dist = current_price if (current_price is not None and current_price > 0) else float(bars['close'].iloc[-1])
-        pm_dist_signed = (((price_for_dist - pm_high) / pm_high) * 100.0) if pm_high else None
-        pm_high_dist = abs(pm_dist_signed) if pm_dist_signed is not None else None
+        pm_high = float(df["high"].max())
+        
+        # Calculate VWAP
+        if pm_volume > 0:
+            pm_vwap = float((df["close"] * df["volume"]).sum() / pm_volume)
+        else:
+            pm_vwap = current_price
 
-        print(f"[PM RESULT] {symbol} | Bars: {pm_bars_count} | Vol: {pm_volume} | PM High: {pm_high:.2f} | PM VWAP: {pm_vwap:.2f} | Abs Dist: {pm_high_dist:.2f}%")
+        # Signed distance and high distance metrics
+        ref_price = current_price if current_price is not None else float(df["close"].iloc[-1])
+        
+        if pm_high and pm_high > 0:
+            pm_dist_signed = ((ref_price - pm_high) / pm_high) * 100.0
+            pm_high_dist = max(0.0, -pm_dist_signed)
+        else:
+            pm_dist_signed = None
+            pm_high_dist = None
 
         return {
             "pm_volume": pm_volume,
@@ -95,13 +123,12 @@ def get_premarket_minute_data(symbol: str, current_price: float = None) -> dict:
             "pm_vwap": pm_vwap,
             "pm_dist_signed": pm_dist_signed,
             "pm_high_dist": pm_high_dist,
-            "rvol": None,
-            "rvol_method": "UNAVAILABLE",
-            "error": None
+            "pm_data_quality": pm_data_quality,
+            "error": None,
+            "rvol_time_adjusted": None,  # Informational placeholder
         }
 
     except Exception as e:
-        print(f"[PM ENGINE ERROR] {symbol}: SIP feed failed: {e}")
         return {
             "pm_volume": 0,
             "pm_bars_count": 0,
@@ -109,10 +136,7 @@ def get_premarket_minute_data(symbol: str, current_price: float = None) -> dict:
             "pm_vwap": None,
             "pm_dist_signed": None,
             "pm_high_dist": None,
-            "rvol": None,
-            "rvol_method": "UNAVAILABLE",
-            "error": f"SIP_FEED_ERROR: {e}"
+            "pm_data_quality": "ERROR",
+            "error": f"{type(e).__name__}: {e}",
+            "rvol_time_adjusted": None,
         }
-
-# Alias for compatibility across all imports
-get_pm_data = get_premarket_minute_data
