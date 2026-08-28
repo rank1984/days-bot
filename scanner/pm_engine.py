@@ -1,13 +1,12 @@
-import os
-from datetime import datetime, time
 import pytz
-import pandas as pd
+from datetime import datetime, time
 from alpaca_trade_api.rest import REST, TimeFrame
 
 from utils.config import (
     ALPACA_API_KEY,
     ALPACA_SECRET_KEY,
     ALPACA_BASE_URL,
+    BOT_VERSION,
 )
 
 ET = pytz.timezone("America/New_York")
@@ -15,53 +14,50 @@ ET = pytz.timezone("America/New_York")
 
 def fetch_pm_data(symbol: str, current_price: float = None) -> dict:
     """
-    Fetches Premarket minute bars for the 08:00 ET -> 09:30 ET window via IEX feed.
+    Fetches Premarket minute bars strictly for the 08:00 ET -> 09:30 ET window via IEX feed.
     Calculates PM High, VWAP, Data Quality, and Signed Distance metrics.
     """
+    now_et = datetime.now(ET)
+    now_time = now_et.time()
+
+    # Strict hard checks for window
+    if now_time < time(8, 0):
+        print(f"[PM Engine] {BOT_VERSION} – Too early for IEX PM experiment: {now_et.strftime('%H:%M:%S')} ET")
+        return {
+            "pm_volume": 0,
+            "pm_bars_count": 0,
+            "pm_high": None,
+            "pm_vwap": None,
+            "pm_dist_signed": None,
+            "pm_high_dist": None,
+            "error": "PREMARKET_NOT_STARTED_8AM",
+            "rvol": None,
+            "rvol_status": "UNAVAILABLE",
+        }
+
+    if now_time >= time(9, 30):
+        print(f"[PM Engine] {BOT_VERSION} – Market already open: {now_et.strftime('%H:%M:%S')} ET")
+        return {
+            "pm_volume": 0,
+            "pm_bars_count": 0,
+            "pm_high": None,
+            "pm_vwap": None,
+            "pm_dist_signed": None,
+            "pm_high_dist": None,
+            "error": "MARKET_ALREADY_OPEN",
+            "rvol": None,
+            "rvol_status": "UNAVAILABLE",
+        }
+
+    pm_start_et = ET.localize(datetime.combine(now_et.date(), time(8, 0)))
+    pm_end_et = min(now_et, ET.localize(datetime.combine(now_et.date(), time(9, 30))))
+
     api = REST(
         ALPACA_API_KEY,
         ALPACA_SECRET_KEY,
         ALPACA_BASE_URL,
         api_version="v2",
     )
-    
-    now_et = datetime.now(ET)
-
-    pm_start_et = ET.localize(
-        datetime.combine(now_et.date(), time(8, 0))
-    )
-    pm_end_et = ET.localize(
-        datetime.combine(now_et.date(), time(9, 30))
-    )
-
-    # Never read beyond current time
-    pm_end_et = min(now_et, pm_end_et)
-
-    if now_et < pm_start_et:
-        return {
-            "pm_volume": 0,
-            "pm_bars_count": 0,
-            "pm_high": None,
-            "pm_vwap": None,
-            "pm_dist_signed": None,
-            "pm_high_dist": None,
-            "pm_data_quality": "NOT_STARTED",
-            "error": "PREMARKET_NOT_STARTED",
-            "rvol_time_adjusted": None,
-        }
-
-    if pm_end_et <= pm_start_et:
-        return {
-            "pm_volume": 0,
-            "pm_bars_count": 0,
-            "pm_high": None,
-            "pm_vwap": None,
-            "pm_dist_signed": None,
-            "pm_high_dist": None,
-            "pm_data_quality": "NO_DATA",
-            "error": "NO_PREMARKET_WINDOW",
-            "rvol_time_adjusted": None,
-        }
 
     try:
         response = api.get_bars(
@@ -82,33 +78,23 @@ def fetch_pm_data(symbol: str, current_price: float = None) -> dict:
                 "pm_vwap": None,
                 "pm_dist_signed": None,
                 "pm_high_dist": None,
-                "pm_data_quality": "NO_DATA",
                 "error": "EMPTY_BARS",
-                "rvol_time_adjusted": None,
+                "rvol": None,
+                "rvol_status": "UNAVAILABLE",
             }
 
         pm_bars_count = len(df)
         pm_volume = int(df["volume"].sum())
-
-        # Data Quality Classification
-        if pm_bars_count >= 10:
-            pm_data_quality = "GOOD_DATA"
-        elif pm_bars_count >= 1:
-            pm_data_quality = "LOW_DATA"
-        else:
-            pm_data_quality = "NO_DATA"
-
         pm_high = float(df["high"].max())
         
-        # Calculate VWAP
+        # Calculate PM VWAP
         if pm_volume > 0:
             pm_vwap = float((df["close"] * df["volume"]).sum() / pm_volume)
         else:
             pm_vwap = current_price
 
-        # Signed distance and high distance metrics
+        # Signed distance metrics
         ref_price = current_price if current_price is not None else float(df["close"].iloc[-1])
-        
         if pm_high and pm_high > 0:
             pm_dist_signed = ((ref_price - pm_high) / pm_high) * 100.0
             pm_high_dist = max(0.0, -pm_dist_signed)
@@ -123,9 +109,9 @@ def fetch_pm_data(symbol: str, current_price: float = None) -> dict:
             "pm_vwap": pm_vwap,
             "pm_dist_signed": pm_dist_signed,
             "pm_high_dist": pm_high_dist,
-            "pm_data_quality": pm_data_quality,
             "error": None,
-            "rvol_time_adjusted": None,  # Informational placeholder
+            "rvol": None,
+            "rvol_status": "UNAVAILABLE",
         }
 
     except Exception as e:
@@ -136,7 +122,7 @@ def fetch_pm_data(symbol: str, current_price: float = None) -> dict:
             "pm_vwap": None,
             "pm_dist_signed": None,
             "pm_high_dist": None,
-            "pm_data_quality": "ERROR",
             "error": f"{type(e).__name__}: {e}",
-            "rvol_time_adjusted": None,
+            "rvol": None,
+            "rvol_status": "UNAVAILABLE",
         }
