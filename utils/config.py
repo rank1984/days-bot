@@ -1,11 +1,13 @@
 import os
 
 # ============================================================
-# BOT VERSION / EXPERIMENT
+# BOT VERSION / EXPERIMENT METADATA
 # ============================================================
 
 BOT_VERSION = "V2.14"
-RUN_MODE = "EXPERIMENT"
+STRATEGY_VERSION = "V2.14"
+EXPERIMENT_MODE = "EXPERIMENT_V2.14"
+DATA_VERSION = "ALPACA_IEX_PM"
 
 
 # ============================================================
@@ -26,7 +28,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 
 # ============================================================
-# DISCOVERY
+# DISCOVERY (FROZEN FOR EXPERIMENT)
 # ============================================================
 
 DISCOVERY_MIN_PRICE = 2.0
@@ -37,32 +39,25 @@ DISCOVERY_MAX_GAP = 100.0
 
 
 # ============================================================
-# VALIDATION
+# VALIDATION (FROZEN FOR EXPERIMENT)
 # ============================================================
 
 VALIDATION_MAX_SPREAD = 2.0
 
-# RVOL is INFORMATIONAL ONLY during V2.14
-VALIDATION_MIN_RVOL = 0.0
-
-# Catalyst is INFORMATIONAL ONLY during V2.14
-VALIDATION_MIN_CATALYST_SCORE = 0.0
-
-# PM data
+# PM Bar Data Classification Thresholds (Soft Quality Tagging Only)
 VALIDATION_MIN_PM_VOLUME_ABS = 100_000
-
-# Hard minimum: at least one real PM bar
-VALIDATION_MIN_PM_BARS = 1
-
-# Quality threshold only — does NOT block candidate
-PM_BARS_QUALITY_THRESHOLD = 10
+VALIDATION_MIN_PM_BARS = 10
 
 VALIDATION_MAX_PM_DIST = 5.0
 VALIDATION_MIN_VWAP_DIST = 0.0
 
+# RVOL & Catalyst are INFORMATIONAL ONLY during V2.14 (Soft Gates)
+VALIDATION_MIN_RVOL = 0.0
+VALIDATION_MIN_CATALYST_SCORE = 0
+
 
 # ============================================================
-# RISK
+# RISK & MONTE CARLO CONSTRAINTS
 # ============================================================
 
 MAX_ACTIVE_TRADES = 3
@@ -75,12 +70,11 @@ MIN_NET_PROFIT_PCT = 1.5
 
 
 # ============================================================
-# EXPERIMENT FLAGS
+# EXPERIMENT FLAGS (SOFT GATES)
 # ============================================================
 
-EXPERIMENT_MODE = True
+EXPERIMENT_MODE_ACTIVE = True
 
 USE_RVOL_AS_HARD_GATE = False
 USE_CATALYST_AS_HARD_GATE = False
-
-USE_PM_BARS_AS_HARD_GATE = True
+USE_PM_BARS_AS_HARD_GATE = False
