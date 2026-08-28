@@ -4,9 +4,9 @@ import os
 # BOT VERSION / EXPERIMENT METADATA
 # ============================================================
 
-BOT_VERSION = "V2.14"
-STRATEGY_VERSION = "V2.14"
-EXPERIMENT_MODE = "EXPERIMENT_V2.14"
+BOT_VERSION = "V3.0"
+STRATEGY_VERSION = "V3.0"
+EXPERIMENT_MODE = "V3.0_LIVE_DECISION"
 DATA_VERSION = "ALPACA_IEX_PM"
 
 
@@ -25,6 +25,9 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# Gemini API Key for V3.0 AI Decision Engine
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 
 # ============================================================
@@ -51,7 +54,7 @@ VALIDATION_MIN_PM_BARS = 10
 VALIDATION_MAX_PM_DIST = 5.0
 VALIDATION_MIN_VWAP_DIST = 0.0
 
-# RVOL & Catalyst are INFORMATIONAL ONLY during V2.14 (Soft Gates)
+# RVOL & Catalyst are INFORMATIONAL ONLY during V3.0 (Soft Gates)
 VALIDATION_MIN_RVOL = 0.0
 VALIDATION_MIN_CATALYST_SCORE = 0
 
