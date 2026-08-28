@@ -1,10 +1,15 @@
-name: Market Scanner Workflow V2.14 Experiment
+name: DAYS-BOT V2.14 Experiment Scanner
 
 on:
   schedule:
     # GitHub Actions uses UTC.
-    # Python is responsible for enforcing the exact 08:00-09:30 ET window.
-    - cron: '*/15 12-13 * * 1-5'
+    # 12:00 UTC = 08:00 ET during EDT
+    # 13:30 UTC = 09:30 ET during EDT
+    #
+    # Runs every 15 minutes during the usable IEX premarket window.
+    - cron: "*/15 12-13 * * 1-5"
+
+  # Allows manual execution whenever you want.
   workflow_dispatch:
 
 jobs:
@@ -12,34 +17,63 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # --------------------------------------------------------
+      # CHECKOUT
+      # --------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      # --------------------------------------------------------
+      # PYTHON
+      # --------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
+      # --------------------------------------------------------
+      # DEPENDENCIES
+      # --------------------------------------------------------
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # --------------------------------------------------------
+      # DATA DIRECTORY
+      # --------------------------------------------------------
       - name: Create Data Directory
-        run: mkdir -p data
+        run: |
+          mkdir -p data
 
-      - name: Run V2.14 Experiment Scanner
+      # --------------------------------------------------------
+      # RUN SCANNER
+      # --------------------------------------------------------
+      - name: Run DAYS-BOT V2.14 Experiment Scanner
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py scan
+          ALPACA_BASE_URL: https://api.alpaca.markets
+        run: |
+          echo "=============================================="
+          echo "DAYS-BOT V2.14 EXPERIMENT"
+          echo "Automatic / Manual Scanner"
+          echo "=============================================="
+          date -u
+          python main.py scan
 
+      # --------------------------------------------------------
+      # UPLOAD DATABASE / LOGS
+      # --------------------------------------------------------
       - name: Upload Experiment Database
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alerts-db-v214
-          path: data/alerts.db
+          name: alerts-db-v214-${{ github.run_number }}
+          path: |
+            data/alerts.db
+          if-no-files-found: warn
+          retention-days: 30
