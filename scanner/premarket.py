@@ -1,12 +1,13 @@
-import os
 import pytz
 import requests
-from datetime import datetime
+from datetime import datetime, time
 from alpaca_trade_api.rest import REST
 
 from utils.config import (
     BOT_VERSION,
-    RUN_MODE,
+    STRATEGY_VERSION,
+    EXPERIMENT_MODE,
+    DATA_VERSION,
     ALPACA_API_KEY,
     ALPACA_SECRET_KEY,
     ALPACA_BASE_URL,
@@ -26,9 +27,9 @@ ET = pytz.timezone("America/New_York")
 
 
 def get_catalyst_from_finnhub(ticker: str, api_key: str) -> dict:
-    """Fetches company news catalyst from Finnhub (Informational for V2.14)."""
+    """Fetches company news catalyst from Finnhub (Soft classification for V2.14)."""
     if not api_key:
-        return {"score": 0, "headline": None}
+        return {"score": None, "status": "UNAVAILABLE", "headline": None}
     try:
         today_str = datetime.now(ET).strftime("%Y-%m-%d")
         url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={today_str}&to={today_str}&token={api_key}"
@@ -37,14 +38,26 @@ def get_catalyst_from_finnhub(ticker: str, api_key: str) -> dict:
             data = res.json()
             if data and isinstance(data, list) and len(data) > 0:
                 headline = data[0].get("headline", "")
-                return {"score": 50, "headline": headline}
+                return {"score": 50, "status": "AVAILABLE", "headline": headline}
     except Exception:
         pass
-    return {"score": 0, "headline": None}
+    return {"score": None, "status": "UNAVAILABLE", "headline": None}
 
 
 def scan_premarket(target_date_str: str) -> list:
-    print(f"\n[Premarket] {BOT_VERSION} ({RUN_MODE}) – Discovery & Validation Engine...")
+    now_et = datetime.now(ET)
+
+    # Hard Stop 1: Too early (< 08:00 ET)
+    if now_et.time() < time(8, 0):
+        print(f"[Premarket] {BOT_VERSION} – Too early for IEX PM experiment: {now_et.strftime('%H:%M:%S')} ET")
+        return []
+
+    # Hard Stop 2: Market Open (>= 09:30 ET)
+    if now_et.time() >= time(9, 30):
+        print(f"[Premarket] {BOT_VERSION} – Market already open: {now_et.strftime('%H:%M:%S')} ET")
+        return []
+
+    print(f"\n[Premarket] {BOT_VERSION} ({EXPERIMENT_MODE}) – Executing 08:00–09:30 ET Discovery & Validation...")
     api = REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version="v2")
     universe = load_universe()
 
@@ -63,9 +76,8 @@ def scan_premarket(target_date_str: str) -> list:
     }
 
     discovery_candidates = []
-
-    # Fetch snapshots in batches
     batch_size = 100
+
     for i in range(0, len(universe), batch_size):
         batch = universe[i:i + batch_size]
         try:
@@ -98,7 +110,6 @@ def scan_premarket(target_date_str: str) -> list:
             ask = float(snap.latest_quote.ask_price) if snap.latest_quote and snap.latest_quote.ask_price else 0.0
             spread_pct = ((ask - bid) / price) * 100.0 if price > 0 and ask > bid else 0.0
 
-            # Discovery Filters
             if price < DISCOVERY_MIN_PRICE or price > DISCOVERY_MAX_PRICE:
                 stats["price_fail"] += 1
                 continue
@@ -123,14 +134,10 @@ def scan_premarket(target_date_str: str) -> list:
                 "spread_pct": spread_pct,
             })
 
-    # Near-Miss Report
     print("\n" + "=" * 60)
-    print("📊 DISCOVERY NEAR-MISS REPORT")
+    print(f"📊 DISCOVERY NEAR-MISS REPORT ({BOT_VERSION})")
     print("=" * 60)
     print(f"Universe: {stats['total']:,}")
-    print(f"No snapshot: {stats['no_snapshot']:,}")
-    print(f"No trade: {stats['no_trade']:,}")
-    print(f"No daily bar: {stats['no_bar']:,}")
     print(f"Price pass: {stats['price_pass']:,} | Price fail: {stats['price_fail']:,}")
     print(f"Gap pass: {stats['gap_pass']:,} | Gap fail: {stats['gap_fail']:,}")
     print(f"Spread pass: {stats['spread_pass']:,} | Spread fail: {stats['spread_fail']:,}")
@@ -143,40 +150,34 @@ def scan_premarket(target_date_str: str) -> list:
         ticker = candidate["ticker"]
         price = candidate["price"]
 
-        # Fetch Premarket Engine Data (08:00 - 09:30 ET window)
         pm_data = fetch_pm_data(ticker, current_price=price)
-        
         pm_volume = pm_data.get("pm_volume", 0)
         pm_bars_count = pm_data.get("pm_bars_count", 0)
 
-        # HARD GATES for V2.14
-        if pm_volume < VALIDATION_MIN_PM_VOLUME_ABS:
-            continue
-        if pm_bars_count < VALIDATION_MIN_PM_BARS:
-            continue
-
-        # INFORMATIONAL ONLY METRICS (No hard gates)
-        rvol = pm_data.get("rvol_time_adjusted")
-        rvol_status = "AVAILABLE" if rvol is not None else "N/A"
+        # Soft Data Quality Tagging (Does NOT drop candidate)
+        pm_data_quality = (
+            "GOOD_DATA"
+            if (pm_volume >= VALIDATION_MIN_PM_VOLUME_ABS and pm_bars_count >= VALIDATION_MIN_PM_BARS)
+            else "LOW_DATA"
+        )
 
         catalyst_res = get_catalyst_from_finnhub(ticker, FINNHUB_API_KEY)
-        catalyst_score = catalyst_res.get("score", 0)
-        catalyst_status = "AVAILABLE" if catalyst_score > 0 else "N/A"
 
         candidate.update({
             "pm_volume": pm_volume,
             "pm_bars": pm_bars_count,
-            "pm_high": pm_data.get("pm_high"),
             "pm_vwap": pm_data.get("pm_vwap"),
+            "pm_high": pm_data.get("pm_high"),
             "pm_dist_signed": pm_data.get("pm_dist_signed"),
             "pm_high_dist": pm_data.get("pm_high_dist"),
-            "pm_data_quality": pm_data.get("pm_data_quality"),
-            "rvol": rvol,
-            "rvol_status": rvol_status,
-            "catalyst_score": catalyst_score,
-            "catalyst_status": catalyst_status,
-            "strategy_version": BOT_VERSION,
-            "run_mode": RUN_MODE,
+            "pm_data_quality": pm_data_quality,
+            "rvol": None,
+            "rvol_status": "UNAVAILABLE",
+            "catalyst_score": catalyst_res.get("score"),
+            "catalyst_status": catalyst_res.get("status", "UNAVAILABLE"),
+            "strategy_version": STRATEGY_VERSION,
+            "data_version": DATA_VERSION,
+            "mode": EXPERIMENT_MODE,
             "event_score": 75,
         })
 
