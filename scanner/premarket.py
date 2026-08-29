@@ -15,35 +15,33 @@ Experiment rules:
 9. No live trading is executed here.
 """
 
-import pytz
 from datetime import datetime, time
 from typing import List
+import pytz
 
 # ✅ שורות מעודכנות
 from alpaca_trade_api.rest import REST
 from alpaca_trade_api.timeframe import TimeFrame
 
+from scanner.universe import load_universe
 from utils.config import (
-    BOT_VERSION,
-    STRATEGY_VERSION,
-    EXPERIMENT_MODE,
-    DATA_VERSION,
     ALPACA_API_KEY,
-    ALPACA_SECRET_KEY,
     ALPACA_BASE_URL,
-    DISCOVERY_MIN_PRICE,
+    ALPACA_SECRET_KEY,
+    BOT_VERSION,
+    DATA_VERSION,
+    DISCOVERY_MAX_GAP,
     DISCOVERY_MAX_PRICE,
     DISCOVERY_MIN_GAP,
-    DISCOVERY_MAX_GAP,
-    VALIDATION_MAX_SPREAD,
-    VALIDATION_MIN_PM_VOLUME_ABS,
-    VALIDATION_MIN_PM_BARS,
+    DISCOVERY_MIN_PRICE,
+    EXPERIMENT_MODE,
+    STRATEGY_VERSION,
     VALIDATION_MAX_PM_DIST,
+    VALIDATION_MAX_SPREAD,
+    VALIDATION_MIN_PM_BARS,
+    VALIDATION_MIN_PM_VOLUME_ABS,
     VALIDATION_MIN_VWAP_DIST,
 )
-
-from scanner.universe import load_universe
-
 
 ET = pytz.timezone("America/New_York")
 
@@ -56,8 +54,7 @@ def _safe_float(value, default=0.0):
 
 
 def scan_premarket(target_date_str: str = None) -> List[dict]:
-    """
-    Main V2.14 premarket scanner.
+    """Main V2.14 premarket scanner.
 
     Discovery:
         Price
@@ -125,20 +122,15 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
     stats = {
         "total": len(universe),
-
         "no_snapshot": 0,
         "no_trade": 0,
         "no_bar": 0,
-
         "price_pass": 0,
         "price_fail": 0,
-
         "gap_pass": 0,
         "gap_fail": 0,
-
         "spread_pass": 0,
         "spread_fail": 0,
-
         "discovery_pass": 0,
     }
 
@@ -151,8 +143,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     batch_size = 100
 
     for i in range(0, len(universe), batch_size):
-
-        batch = universe[i:i + batch_size]
+        batch = universe[i : i + batch_size]
 
         # Universe may contain dictionaries or strings.
         symbols = []
@@ -173,14 +164,10 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             snapshots = api.get_snapshots(symbols)
 
         except Exception as e:
-            print(
-                f"[Discovery] Batch error "
-                f"{i}-{i + len(symbols)}: {e}"
-            )
+            print(f"[Discovery] Batch error {i}-{i + len(symbols)}: {e}")
             continue
 
         for ticker in symbols:
-
             try:
                 snap = snapshots.get(ticker)
 
@@ -245,15 +232,9 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 # GAP
                 # ------------------------------------------------
 
-                gap_pct = (
-                    (price - prev_close)
-                    / prev_close
-                ) * 100.0
+                gap_pct = ((price - prev_close) / prev_close) * 100.0
 
-                if (
-                    gap_pct < DISCOVERY_MIN_GAP
-                    or gap_pct > DISCOVERY_MAX_GAP
-                ):
+                if gap_pct < DISCOVERY_MIN_GAP or gap_pct > DISCOVERY_MAX_GAP:
                     stats["gap_fail"] += 1
                     continue
 
@@ -286,9 +267,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 )
 
                 if bid > 0 and ask > bid:
-                    spread_pct = (
-                        (ask - bid) / price
-                    ) * 100.0
+                    spread_pct = ((ask - bid) / price) * 100.0
                 else:
                     # Missing quote is not automatically
                     # converted into a huge spread.
@@ -313,7 +292,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                         "prev_close": prev_close,
                         "gap_pct": gap_pct,
                         "spread_pct": spread_pct,
-
                         # Experiment metadata
                         "mode": EXPERIMENT_MODE,
                         "strategy_version": STRATEGY_VERSION,
@@ -322,9 +300,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 )
 
             except Exception as e:
-                print(
-                    f"[Discovery] {ticker} processing error: {e}"
-                )
+                print(f"[Discovery] {ticker} processing error: {e}")
                 continue
 
         print(
@@ -363,9 +339,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
         f"| fail: {stats['spread_fail']:,}"
     )
 
-    print(
-        f"Discovery pass: {stats['discovery_pass']:,}"
-    )
+    print(f"Discovery pass: {stats['discovery_pass']:,}")
 
     print("=" * 70)
 
@@ -405,11 +379,9 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     )
 
     for candidate in discovery_candidates:
-
         ticker = candidate["ticker"]
 
         try:
-
             bars = api.get_bars(
                 ticker,
                 TimeFrame.Minute,
@@ -424,7 +396,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             # ----------------------------------------------------
 
             if bars is None or bars.empty:
-
                 candidate.update(
                     {
                         "pm_volume": 0,
@@ -433,13 +404,10 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                         "pm_high": None,
                         "pm_low": None,
                         "pm_vwap": None,
-
                         "pm_dist_signed": None,
                         "pm_high_dist": None,
-
                         "pm_data_quality": "NO_DATA",
                         "pm_data_error": "NO_PM_BARS",
-
                         # Informational only
                         "rvol": None,
                         "rvol_status": "UNAVAILABLE",
@@ -465,32 +433,20 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
             pm_bars_count = len(bars)
 
-            pm_volume = int(
-                bars["volume"].sum()
-            )
+            pm_volume = int(bars["volume"].sum())
 
-            pm_high = float(
-                bars["high"].max()
-            )
+            pm_high = float(bars["high"].max())
 
-            pm_low = float(
-                bars["low"].min()
-            )
+            pm_low = float(bars["low"].min())
 
             total_volume = bars["volume"].sum()
 
             if total_volume > 0:
                 pm_vwap = float(
-                    (
-                        bars["close"]
-                        * bars["volume"]
-                    ).sum()
-                    / total_volume
+                    (bars["close"] * bars["volume"]).sum() / total_volume
                 )
             else:
-                pm_vwap = float(
-                    bars["close"].mean()
-                )
+                pm_vwap = float(bars["close"].mean())
 
             # ----------------------------------------------------
             # SIGNED PM DISTANCE
@@ -499,10 +455,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             current_price = candidate["price"]
 
             if pm_high > 0:
-
                 pm_dist_signed = (
-                    (current_price - pm_high)
-                    / pm_high
+                    (current_price - pm_high) / pm_high
                 ) * 100.0
 
             else:
@@ -553,23 +507,17 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             candidate.update(
                 {
                     "pm_volume": pm_volume,
-
                     "pm_bars": pm_bars_count,
                     "pm_bars_count": pm_bars_count,
-
                     "pm_high": pm_high,
                     "pm_low": pm_low,
                     "pm_vwap": pm_vwap,
-
                     "pm_dist_signed": pm_dist_signed,
                     "pm_high_dist": pm_high_dist,
-
                     "pm_data_quality": pm_data_quality,
                     "pm_data_error": None,
-
                     "rvol": rvol,
                     "rvol_status": rvol_status,
-
                     "mode": EXPERIMENT_MODE,
                     "strategy_version": STRATEGY_VERSION,
                     "data_version": DATA_VERSION,
@@ -599,8 +547,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             #
             # IMPORTANT:
             # Signed distance:
-            #   +2% = price is ABOVE PM high
-            #   -2% = price is BELOW PM high
+            #    +2% = price is ABOVE PM high
+            #    -2% = price is BELOW PM high
             #
             # The experiment should care primarily about being
             # too far BELOW PM high.
@@ -618,10 +566,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             if pm_vwap <= 0:
                 continue
 
-            vwap_required_price = (
-                pm_vwap
-                * (1.0 + VALIDATION_MIN_VWAP_DIST)
-            )
+            vwap_required_price = pm_vwap * (1.0 + VALIDATION_MIN_VWAP_DIST)
 
             if current_price < vwap_required_price:
                 continue
@@ -684,10 +629,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             validated_candidates.append(candidate)
 
         except Exception as e:
-
-            print(
-                f"[PM ERROR] {ticker}: {e}"
-            )
+            print(f"[PM ERROR] {ticker}: {e}")
 
             continue
 
@@ -727,17 +669,11 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
         f" | LOW_DATA: {low_data:,}"
     )
 
-    print(
-        "RVOL: INFORMATIONAL / UNAVAILABLE"
-    )
+    print("RVOL: INFORMATIONAL / UNAVAILABLE")
 
-    print(
-        "Catalyst: INFORMATIONAL / NOT USED AS HARD GATE"
-    )
+    print("Catalyst: INFORMATIONAL / NOT USED AS HARD GATE")
 
-    print(
-        f"FINAL: {len(validated_candidates):,}"
-    )
+    print(f"FINAL: {len(validated_candidates):,}")
 
     print("=" * 70)
 
