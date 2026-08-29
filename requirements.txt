@@ -1,8 +1,9 @@
-alpaca-trade-api
+yfinance
 pandas
 numpy
-requests
 pytz
-yfinance
-python-dotenv
-google-generativeai
+requests
+python-telegram-bot
+google-genai
+alpaca-py
+finnhub-python
