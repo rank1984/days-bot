@@ -47,7 +47,7 @@ jobs:
           mkdir -p data
 
       # --------------------------------------------------------
-      # RUN SCANNER
+      # RUN SCANNER (AUTOMATIC vs MANUAL DETECT)
       # --------------------------------------------------------
       - name: Run DAYS-BOT V3.0 Decision Engine Scanner
         env:
@@ -64,7 +64,14 @@ jobs:
           echo "Automatic / Manual Scanner"
           echo "=============================================="
           date -u
-          python main.py scan
+          
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "[Workflow] ⚠️ Manual Dispatch Detected -> Executing with --manual flag"
+            python main.py scan --manual
+          else
+            echo "[Workflow] 🟢 Scheduled Cron Run Detected -> Executing standard scan"
+            python main.py scan
+          fi
 
       # --------------------------------------------------------
       # UPLOAD DATABASE / LOGS
