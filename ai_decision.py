@@ -1,10 +1,9 @@
-import google.generativeai as genai
+from google import genai
 import json
 
 class AIDecisionLayer:
     def __init__(self, api_key):
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        self.client = genai.Client(api_key=api_key)
 
     def analyze_setup(self, stock_data, quant_data):
         prompt = f"""
@@ -33,7 +32,10 @@ class AIDecisionLayer:
         """
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt
+            )
             # Clean formatting if Gemini adds markdown blocks
             raw_text = response.text.replace('```json', '').replace('```', '').strip()
             decision_data = json.loads(raw_text)
