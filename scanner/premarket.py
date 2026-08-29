@@ -1,5 +1,5 @@
 """
-DAYS-BOT V2.14 – Premarket Scanner
+DAYS-BOT V3.0 – Premarket Scanner
 ==================================
 
 Experiment rules:
@@ -19,7 +19,6 @@ from datetime import datetime, time
 from typing import List
 import pytz
 
-# ✅ שורות מעודכנות
 from alpaca_trade_api.rest import REST
 from alpaca_trade_api.timeframe import TimeFrame
 
@@ -54,7 +53,8 @@ def _safe_float(value, default=0.0):
 
 
 def scan_premarket(target_date_str: str = None) -> List[dict]:
-    """Main V2.14 premarket scanner.
+    """
+    Main V3.0 premarket scanner.
 
     Discovery:
         Price
@@ -71,7 +71,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
         PM data quality
 
     RVOL/Catalyst:
-        Informational only in V2.14.
+        Informational only.
     """
 
     now_et = datetime.now(ET)
@@ -162,7 +162,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
         try:
             snapshots = api.get_snapshots(symbols)
-
         except Exception as e:
             print(f"[Discovery] Batch error {i}-{i + len(symbols)}: {e}")
             continue
@@ -175,17 +174,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     stats["no_snapshot"] += 1
                     continue
 
-                latest_trade = getattr(
-                    snap,
-                    "latest_trade",
-                    None,
-                )
-
-                prev_bar = getattr(
-                    snap,
-                    "prev_daily_bar",
-                    None,
-                )
+                latest_trade = getattr(snap, "latest_trade", None)
+                prev_bar = getattr(snap, "prev_daily_bar", None)
 
                 if not latest_trade:
                     stats["no_trade"] += 1
@@ -195,21 +185,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     stats["no_bar"] += 1
                     continue
 
-                price = _safe_float(
-                    getattr(
-                        latest_trade,
-                        "price",
-                        None,
-                    )
-                )
-
-                prev_close = _safe_float(
-                    getattr(
-                        prev_bar,
-                        "close",
-                        None,
-                    )
-                )
+                price = _safe_float(getattr(latest_trade, "price", None))
+                prev_close = _safe_float(getattr(prev_bar, "close", None))
 
                 if price <= 0 or prev_close <= 0:
                     stats["no_trade"] += 1
@@ -234,7 +211,10 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
                 gap_pct = ((price - prev_close) / prev_close) * 100.0
 
-                if gap_pct < DISCOVERY_MIN_GAP or gap_pct > DISCOVERY_MAX_GAP:
+                if (
+                    gap_pct < DISCOVERY_MIN_GAP
+                    or gap_pct > DISCOVERY_MAX_GAP
+                ):
                     stats["gap_fail"] += 1
                     continue
 
@@ -244,33 +224,13 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 # SPREAD
                 # ------------------------------------------------
 
-                latest_quote = getattr(
-                    snap,
-                    "latest_quote",
-                    None,
-                )
-
-                bid = _safe_float(
-                    getattr(
-                        latest_quote,
-                        "bid_price",
-                        None,
-                    )
-                )
-
-                ask = _safe_float(
-                    getattr(
-                        latest_quote,
-                        "ask_price",
-                        None,
-                    )
-                )
+                latest_quote = getattr(snap, "latest_quote", None)
+                bid = _safe_float(getattr(latest_quote, "bid_price", None))
+                ask = _safe_float(getattr(latest_quote, "ask_price", None))
 
                 if bid > 0 and ask > bid:
                     spread_pct = ((ask - bid) / price) * 100.0
                 else:
-                    # Missing quote is not automatically
-                    # converted into a huge spread.
                     spread_pct = 0.0
 
                 if spread_pct > VALIDATION_MAX_SPREAD:
@@ -317,30 +277,23 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     print("=" * 70)
     print("📊 DISCOVERY NEAR-MISS REPORT")
     print("=" * 70)
-
     print(f"Universe:       {stats['total']:,}")
-
     print(f"No snapshot:    {stats['no_snapshot']:,}")
     print(f"No trade:       {stats['no_trade']:,}")
     print(f"No daily bar:   {stats['no_bar']:,}")
-
     print(
         f"Price pass:     {stats['price_pass']:,} "
         f"| fail: {stats['price_fail']:,}"
     )
-
     print(
         f"Gap pass:       {stats['gap_pass']:,} "
         f"| fail: {stats['gap_fail']:,}"
     )
-
     print(
         f"Spread pass:    {stats['spread_pass']:,} "
         f"| fail: {stats['spread_fail']:,}"
     )
-
     print(f"Discovery pass: {stats['discovery_pass']:,}")
-
     print("=" * 70)
 
     if not discovery_candidates:
@@ -357,24 +310,14 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
     validated_candidates = []
 
-    # IMPORTANT:
-    # PM window begins at 04:00, but IEX usable coverage
-    # is expected only from approximately 08:00 ET.
     pm_start = ET.localize(
-        datetime.combine(
-            now_et.date(),
-            time(4, 0),
-        )
+        datetime.combine(now_et.date(), time(4, 0))
     )
 
-    # Never use future PM data.
     pm_end = min(
         now_et,
         ET.localize(
-            datetime.combine(
-                now_et.date(),
-                time(9, 30),
-            )
+            datetime.combine(now_et.date(), time(9, 30))
         ),
     )
 
@@ -382,14 +325,15 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
         ticker = candidate["ticker"]
 
         try:
-            bars = api.get_bars(
+            bar_set = api.get_bars(
                 ticker,
                 TimeFrame.Minute,
                 start=pm_start.isoformat(),
                 end=pm_end.isoformat(),
                 adjustment="raw",
                 feed="iex",
-            ).df
+            )
+            bars = getattr(bar_set, "df", None)
 
             # ----------------------------------------------------
             # NO PM DATA
@@ -408,7 +352,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                         "pm_high_dist": None,
                         "pm_data_quality": "NO_DATA",
                         "pm_data_error": "NO_PM_BARS",
-                        # Informational only
                         "rvol": None,
                         "rvol_status": "UNAVAILABLE",
                     }
@@ -420,11 +363,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     f" | Vol=0"
                     f" | quality=NO_DATA"
                 )
-
-                # In experiment mode we do not hard-block
-                # solely because PM data is unavailable.
-                # However, PM metrics are required for the
-                # candidate to be considered a PM setup.
                 continue
 
             # ----------------------------------------------------
@@ -432,13 +370,9 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             # ----------------------------------------------------
 
             pm_bars_count = len(bars)
-
             pm_volume = int(bars["volume"].sum())
-
             pm_high = float(bars["high"].max())
-
             pm_low = float(bars["low"].min())
-
             total_volume = bars["volume"].sum()
 
             if total_volume > 0:
@@ -458,12 +392,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 pm_dist_signed = (
                     (current_price - pm_high) / pm_high
                 ) * 100.0
-
             else:
                 pm_dist_signed = None
-
-            # Positive = price above PM high
-            # Negative = price below PM high
 
             pm_high_dist = (
                 max(0.0, pm_dist_signed)
@@ -480,22 +410,14 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 and pm_volume >= VALIDATION_MIN_PM_VOLUME_ABS
             ):
                 pm_data_quality = "GOOD_DATA"
-
             elif pm_bars_count > 0:
                 pm_data_quality = "LOW_DATA"
-
             else:
                 pm_data_quality = "NO_DATA"
 
             # ----------------------------------------------------
             # RVOL
             # ----------------------------------------------------
-
-            # V2.14:
-            # No fake baseline.
-            # No /50,000 placeholder.
-            # RVOL remains informational until historical
-            # same-time PM data exists.
 
             rvol = None
             rvol_status = "UNAVAILABLE"
@@ -524,10 +446,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 }
             )
 
-            # ----------------------------------------------------
-            # DEBUG
-            # ----------------------------------------------------
-
             print(
                 f"[PM RESULT] {ticker}"
                 f" | Bars={pm_bars_count}"
@@ -539,19 +457,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             )
 
             # ----------------------------------------------------
-            # PM DISTANCE
+            # PM DISTANCE FILTER
             # ----------------------------------------------------
-
-            # Only reject candidates that are genuinely too far
-            # below the PM high.
-            #
-            # IMPORTANT:
-            # Signed distance:
-            #    +2% = price is ABOVE PM high
-            #    -2% = price is BELOW PM high
-            #
-            # The experiment should care primarily about being
-            # too far BELOW PM high.
 
             if pm_dist_signed is None:
                 continue
@@ -560,43 +467,41 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 continue
 
             # ----------------------------------------------------
-            # VWAP
+            # VWAP FILTER
             # ----------------------------------------------------
 
             if pm_vwap <= 0:
                 continue
 
-            vwap_required_price = pm_vwap * (1.0 + VALIDATION_MIN_VWAP_DIST)
+            vwap_required_price = pm_vwap * (
+                1.0 + VALIDATION_MIN_VWAP_DIST
+            )
 
             if current_price < vwap_required_price:
                 continue
 
             # ----------------------------------------------------
-            # EVENT SCORE – EXPERIMENT PLACEHOLDER
+            # EVENT SCORE
             # ----------------------------------------------------
 
             event_score = 0.0
 
             # Gap contribution
             event_score += min(
-                max(candidate["gap_pct"], 0.0) * 2.0,
-                30.0,
+                max(candidate["gap_pct"], 0.0) * 2.0, 30.0
             )
 
             # PM volume contribution
             if pm_volume > 0:
                 event_score += min(
-                    pm_volume / 100_000.0 * 20.0,
-                    30.0,
+                    (pm_volume / 100_000.0) * 20.0, 30.0
                 )
 
             # PM high proximity
             if pm_dist_signed >= 0:
                 event_score += 25.0
-
             elif pm_dist_signed >= -2.0:
                 event_score += 15.0
-
             elif pm_dist_signed >= -5.0:
                 event_score += 5.0
 
@@ -605,21 +510,17 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 event_score += 10.0
 
             event_score = round(
-                min(100.0, max(0.0, event_score)),
-                1,
+                min(100.0, max(0.0, event_score)), 1
             )
 
             candidate["event_score"] = event_score
 
             if event_score >= 70:
                 grade = "A"
-
             elif event_score >= 55:
                 grade = "B"
-
             elif event_score >= 40:
                 grade = "C"
-
             else:
                 grade = "WATCH"
 
@@ -630,7 +531,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
         except Exception as e:
             print(f"[PM ERROR] {ticker}: {e}")
-
             continue
 
     # ------------------------------------------------------------
@@ -639,42 +539,26 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
     print()
     print("=" * 70)
-    print("📊 PREMARKET SCAN V2.14 – EXPERIMENT")
+    print("📊 PREMARKET SCAN V3.0 – EXPERIMENT")
     print("=" * 70)
-
-    print(
-        f"Discovery candidates: "
-        f"{len(discovery_candidates):,}"
-    )
-
-    print(
-        f"PM validated: "
-        f"{len(validated_candidates):,}"
-    )
+    print(f"Discovery candidates: {len(discovery_candidates):,}")
+    print(f"PM validated:         {len(validated_candidates):,}")
 
     good_data = sum(
         1
         for c in validated_candidates
         if c.get("pm_data_quality") == "GOOD_DATA"
     )
-
     low_data = sum(
         1
         for c in validated_candidates
         if c.get("pm_data_quality") == "LOW_DATA"
     )
 
-    print(
-        f"GOOD_DATA: {good_data:,}"
-        f" | LOW_DATA: {low_data:,}"
-    )
-
+    print(f"GOOD_DATA: {good_data:,} | LOW_DATA: {low_data:,}")
     print("RVOL: INFORMATIONAL / UNAVAILABLE")
-
     print("Catalyst: INFORMATIONAL / NOT USED AS HARD GATE")
-
     print(f"FINAL: {len(validated_candidates):,}")
-
     print("=" * 70)
 
     # ------------------------------------------------------------
