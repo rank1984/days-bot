@@ -19,8 +19,7 @@ from datetime import datetime, time
 from typing import List
 import pytz
 
-from alpaca_trade_api.rest import REST
-from alpaca_trade_api.timeframe import TimeFrame
+from alpaca_trade_api.rest import REST, TimeFrame
 
 from scanner.universe import load_universe
 from utils.config import (
@@ -145,9 +144,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     for i in range(0, len(universe), batch_size):
         batch = universe[i : i + batch_size]
 
-        # Universe may contain dictionaries or strings.
         symbols = []
-
         for item in batch:
             if isinstance(item, dict):
                 symbol = item.get("symbol")
@@ -192,10 +189,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     stats["no_trade"] += 1
                     continue
 
-                # ------------------------------------------------
                 # PRICE
-                # ------------------------------------------------
-
                 if (
                     price < DISCOVERY_MIN_PRICE
                     or price > DISCOVERY_MAX_PRICE
@@ -205,10 +199,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
                 stats["price_pass"] += 1
 
-                # ------------------------------------------------
                 # GAP
-                # ------------------------------------------------
-
                 gap_pct = ((price - prev_close) / prev_close) * 100.0
 
                 if (
@@ -220,10 +211,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
                 stats["gap_pass"] += 1
 
-                # ------------------------------------------------
                 # SPREAD
-                # ------------------------------------------------
-
                 latest_quote = getattr(snap, "latest_quote", None)
                 bid = _safe_float(getattr(latest_quote, "bid_price", None))
                 ask = _safe_float(getattr(latest_quote, "ask_price", None))
@@ -239,10 +227,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
                 stats["spread_pass"] += 1
 
-                # ------------------------------------------------
                 # DISCOVERY PASS
-                # ------------------------------------------------
-
                 stats["discovery_pass"] += 1
 
                 discovery_candidates.append(
@@ -252,7 +237,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                         "prev_close": prev_close,
                         "gap_pct": gap_pct,
                         "spread_pct": spread_pct,
-                        # Experiment metadata
                         "mode": EXPERIMENT_MODE,
                         "strategy_version": STRATEGY_VERSION,
                         "data_version": DATA_VERSION,
@@ -335,10 +319,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             )
             bars = getattr(bar_set, "df", None)
 
-            # ----------------------------------------------------
-            # NO PM DATA
-            # ----------------------------------------------------
-
             if bars is None or bars.empty:
                 candidate.update(
                     {
@@ -365,10 +345,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 )
                 continue
 
-            # ----------------------------------------------------
-            # BASIC PM METRICS
-            # ----------------------------------------------------
-
             pm_bars_count = len(bars)
             pm_volume = int(bars["volume"].sum())
             pm_high = float(bars["high"].max())
@@ -381,10 +357,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 )
             else:
                 pm_vwap = float(bars["close"].mean())
-
-            # ----------------------------------------------------
-            # SIGNED PM DISTANCE
-            # ----------------------------------------------------
 
             current_price = candidate["price"]
 
@@ -401,10 +373,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 else None
             )
 
-            # ----------------------------------------------------
-            # DATA QUALITY
-            # ----------------------------------------------------
-
             if (
                 pm_bars_count >= VALIDATION_MIN_PM_BARS
                 and pm_volume >= VALIDATION_MIN_PM_VOLUME_ABS
@@ -415,16 +383,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             else:
                 pm_data_quality = "NO_DATA"
 
-            # ----------------------------------------------------
-            # RVOL
-            # ----------------------------------------------------
-
             rvol = None
             rvol_status = "UNAVAILABLE"
-
-            # ----------------------------------------------------
-            # UPDATE CANDIDATE
-            # ----------------------------------------------------
 
             candidate.update(
                 {
@@ -456,19 +416,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 f" | quality={pm_data_quality}"
             )
 
-            # ----------------------------------------------------
-            # PM DISTANCE FILTER
-            # ----------------------------------------------------
-
-            if pm_dist_signed is None:
+            if pm_dist_signed is None or pm_dist_signed < -VALIDATION_MAX_PM_DIST:
                 continue
-
-            if pm_dist_signed < -VALIDATION_MAX_PM_DIST:
-                continue
-
-            # ----------------------------------------------------
-            # VWAP FILTER
-            # ----------------------------------------------------
 
             if pm_vwap <= 0:
                 continue
@@ -480,24 +429,17 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             if current_price < vwap_required_price:
                 continue
 
-            # ----------------------------------------------------
-            # EVENT SCORE
-            # ----------------------------------------------------
-
             event_score = 0.0
 
-            # Gap contribution
             event_score += min(
                 max(candidate["gap_pct"], 0.0) * 2.0, 30.0
             )
 
-            # PM volume contribution
             if pm_volume > 0:
                 event_score += min(
                     (pm_volume / 100_000.0) * 20.0, 30.0
                 )
 
-            # PM high proximity
             if pm_dist_signed >= 0:
                 event_score += 25.0
             elif pm_dist_signed >= -2.0:
@@ -505,7 +447,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             elif pm_dist_signed >= -5.0:
                 event_score += 5.0
 
-            # Spread
             if candidate["spread_pct"] <= 1.0:
                 event_score += 10.0
 
@@ -533,10 +474,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
             print(f"[PM ERROR] {ticker}: {e}")
             continue
 
-    # ------------------------------------------------------------
-    # FINAL REPORT
-    # ------------------------------------------------------------
-
     print()
     print("=" * 70)
     print("📊 PREMARKET SCAN V3.0 – EXPERIMENT")
@@ -560,10 +497,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     print("Catalyst: INFORMATIONAL / NOT USED AS HARD GATE")
     print(f"FINAL: {len(validated_candidates):,}")
     print("=" * 70)
-
-    # ------------------------------------------------------------
-    # SORT
-    # ------------------------------------------------------------
 
     validated_candidates.sort(
         key=lambda x: (
