@@ -19,7 +19,7 @@ from datetime import datetime, time
 from typing import List
 import pytz
 
-from alpaca_trade_api.rest import REST, TimeFrame
+from alpaca_trade_api.rest import REST
 
 from scanner.universe import load_universe
 from utils.config import (
@@ -311,7 +311,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
         try:
             bar_set = api.get_bars(
                 ticker,
-                TimeFrame.Minute,
+                "1Min",
                 start=pm_start.isoformat(),
                 end=pm_end.isoformat(),
                 adjustment="raw",
