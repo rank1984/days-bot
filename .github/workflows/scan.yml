@@ -64,7 +64,7 @@ jobs:
           echo "Automatic / Manual Scanner"
           echo "=============================================="
           date -u
-          
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "[Workflow] ⚠️ Manual Dispatch Detected -> Executing with --manual flag"
             python main.py scan --manual
