@@ -1,4 +1,4 @@
-name: DAYS-BOT V2.14 Experiment Scanner
+name: DAYS-BOT V3.0 Decision Engine Scanner
 
 on:
   schedule:
@@ -49,17 +49,18 @@ jobs:
       # --------------------------------------------------------
       # RUN SCANNER
       # --------------------------------------------------------
-      - name: Run DAYS-BOT V2.14 Experiment Scanner
+      - name: Run DAYS-BOT V3.0 Decision Engine Scanner
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ALPACA_BASE_URL: https://api.alpaca.markets
         run: |
           echo "=============================================="
-          echo "DAYS-BOT V2.14 EXPERIMENT"
+          echo "DAYS-BOT V3.0 DECISION ENGINE"
           echo "Automatic / Manual Scanner"
           echo "=============================================="
           date -u
@@ -72,7 +73,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alerts-db-v214-${{ github.run_number }}
+          name: alerts-db-v30-${{ github.run_number }}
           path: |
             data/alerts.db
           if-no-files-found: warn
