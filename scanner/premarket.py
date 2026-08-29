@@ -19,7 +19,9 @@ import pytz
 from datetime import datetime, time
 from typing import List
 
-from alpaca_trade_api.rest import REST, TimeFrame
+# ✅ שורות מעודכנות
+from alpaca_trade_api.rest import REST
+from alpaca_trade_api.timeframe import TimeFrame
 
 from utils.config import (
     BOT_VERSION,
