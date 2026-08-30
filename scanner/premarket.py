@@ -41,12 +41,10 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
         batch = universe[i:i+batch_size]
         try:
             data = yf.download(" ".join(batch), period="5d", interval="1d", progress=False, threads=False)
-            # אם רק מניה אחת, data הוא Series
             if len(batch) == 1:
                 if not data.empty:
                     prev_closes[batch[0]] = data['Close'].iloc[-1]
             else:
-                # MultiIndex
                 for ticker in batch:
                     if ticker in data['Close']:
                         series = data['Close'][ticker].dropna()
