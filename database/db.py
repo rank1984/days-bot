@@ -51,11 +51,17 @@ def init_db():
             hold_min INTEGER,
             hold_max INTEGER,
             risk_model TEXT,
-            spread_status TEXT
+            spread_status TEXT,
+            composite_score REAL,
+            rvol_calc REAL,
+            rs_score REAL,
+            sentiment_stocktwits REAL,
+            sentiment_google_trends REAL,
+            news_headlines TEXT
         )
     """)
 
-    # Auto-migration for new columns (safely add if missing)
+    # Auto-migration for new columns
     columns_to_add = [
         ("grade", "TEXT"),
         ("decision", "TEXT"),
@@ -71,6 +77,12 @@ def init_db():
         ("risk_model", "TEXT"),
         ("spread_status", "TEXT"),
         ("opportunity_score", "REAL"),
+        ("composite_score", "REAL"),
+        ("rvol_calc", "REAL"),
+        ("rs_score", "REAL"),
+        ("sentiment_stocktwits", "REAL"),
+        ("sentiment_google_trends", "REAL"),
+        ("news_headlines", "TEXT"),
     ]
 
     cursor.execute("PRAGMA table_info(alerts)")
@@ -102,7 +114,8 @@ def save_alert(**kwargs):
             decision, entry, stop, target_1, target_2,
             risk_per_share, position_size,
             hold_type, hold_min, hold_max, risk_model,
-            spread_status
+            spread_status, composite_score, rvol_calc, rs_score,
+            sentiment_stocktwits, sentiment_google_trends, news_headlines
         ) VALUES (
             :ticker, :price, :gap_pct, :spread_pct,
             :pm_volume, :pm_bars, :pm_high, :pm_vwap,
@@ -113,7 +126,8 @@ def save_alert(**kwargs):
             :decision, :entry, :stop, :target_1, :target_2,
             :risk_per_share, :position_size,
             :hold_type, :hold_min, :hold_max, :risk_model,
-            :spread_status
+            :spread_status, :composite_score, :rvol_calc, :rs_score,
+            :sentiment_stocktwits, :sentiment_google_trends, :news_headlines
         )
     """, {
         "ticker": kwargs.get("ticker"),
@@ -131,9 +145,9 @@ def save_alert(**kwargs):
         "rvol_status": kwargs.get("rvol_status", "UNAVAILABLE"),
         "catalyst_score": kwargs.get("catalyst_score"),
         "catalyst_status": kwargs.get("catalyst_status", "UNAVAILABLE"),
-        "strategy_version": kwargs.get("strategy_version", "V3.1"),
+        "strategy_version": kwargs.get("strategy_version", "V3.2"),
         "data_version": kwargs.get("data_version", "YFINANCE_KEYLESS"),
-        "mode": kwargs.get("mode", "EXPERIMENT_V3.1"),
+        "mode": kwargs.get("mode", "EXPERIMENT_V3.2"),
         "opportunity_score": kwargs.get("opportunity_score"),
         "grade": kwargs.get("grade"),
         "decision": kwargs.get("decision"),
@@ -148,6 +162,12 @@ def save_alert(**kwargs):
         "hold_max": kwargs.get("hold_max"),
         "risk_model": kwargs.get("risk_model"),
         "spread_status": kwargs.get("spread_status", "UNAVAILABLE"),
+        "composite_score": kwargs.get("composite_score"),
+        "rvol_calc": kwargs.get("analysis", {}).get("rvol") if kwargs.get("analysis") else None,
+        "rs_score": kwargs.get("analysis", {}).get("rs") if kwargs.get("analysis") else None,
+        "sentiment_stocktwits": kwargs.get("analysis", {}).get("sentiment", {}).get("stocktwits") if kwargs.get("analysis") else None,
+        "sentiment_google_trends": kwargs.get("analysis", {}).get("sentiment", {}).get("google_trends") if kwargs.get("analysis") else None,
+        "news_headlines": ", ".join(kwargs.get("analysis", {}).get("news", [])[:3]) if kwargs.get("analysis") else None,
     })
 
     conn.commit()
