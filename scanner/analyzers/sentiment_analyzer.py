@@ -1,9 +1,7 @@
 """
-מנתח סנטימנט – שימוש ב-StockTwits API (חינמי) + Google Trends (pytrends)
+מנתח סנטימנט – StockTwits + Google Trends
 """
 import requests
-import time
-# לניווט בגוגל טרנדים – צריך להתקין: pip install pytrends
 from pytrends.request import TrendReq
 
 def get_stocktwits_sentiment(ticker: str) -> float:
@@ -15,7 +13,6 @@ def get_stocktwits_sentiment(ticker: str) -> float:
             data = resp.json()
             messages = data.get('messages', [])
             if messages:
-                # ניקח 20 הודעות אחרונות ונספור חיוביות/שליליות
                 positive = sum(1 for m in messages[:20] if m.get('entities', {}).get('sentiment', {}).get('basic') == 'Bullish')
                 negative = sum(1 for m in messages[:20] if m.get('entities', {}).get('sentiment', {}).get('basic') == 'Bearish')
                 total = positive + negative
@@ -32,7 +29,6 @@ def get_google_trends_score(ticker: str) -> float:
         pytrends.build_payload([ticker], timeframe='now 1-d')
         data = pytrends.interest_over_time()
         if not data.empty:
-            # ממוצע הפופולריות ב-24 שעות
             return round(data[ticker].mean(), 1)
     except:
         pass
@@ -42,8 +38,15 @@ def get_combined_sentiment(ticker: str) -> dict:
     """מחזיר מילון עם סנטימנט StockTwits ופופולריות גוגל"""
     st_sent = get_stocktwits_sentiment(ticker)
     gt_score = get_google_trends_score(ticker)
+    # נורמליזציה של google trends ל-[-1,1] בקירוב
+    gt_norm = (gt_score / 50) - 1 if gt_score is not None else 0
+    combined = 0.0
+    if st_sent is not None:
+        combined += st_sent * 0.6
+    if gt_score is not None:
+        combined += gt_norm * 0.4
     return {
         "stocktwits": st_sent,
         "google_trends": gt_score,
-        "combined": (st_sent if st_sent else 0) * 0.6 + (gt_score/100 if gt_score else 0) * 0.4
+        "combined": round(combined, 2)
     }
