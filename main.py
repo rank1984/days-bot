@@ -1,5 +1,5 @@
 """
-DAYS-BOT V3.2 – Manual Trading MVP (yfinance)
+DAYS-BOT V3.2 – Full Scan & Manual Trading MVP
 """
 import sys
 from pathlib import Path
@@ -24,12 +24,14 @@ from utils.config import (
 )
 
 from scanner.premarket import scan_premarket
+from scanner.opening import check_opening_confirmation
+from scanner.full_scan import full_scan
 from scanner.universe import load_universe
 from database.db import init_db, save_alert
 from watchlist_manager import WatchlistManager
 from telegram_formatter import format_no_candidates, send_message
 from risk.trade_plan import build_trade_plan
-from telegram_v3 import format_trade_card_v32
+from telegram_v3 import format_trade_card_v31, format_full_alert
 
 
 def scan_mode(manual: bool = False):
@@ -95,10 +97,10 @@ def scan_mode(manual: bool = False):
         added += 1
     print(f"[Main] Saved {added} candidates.")
 
-    # 4. Send Telegram (top 1)
+    # 4. Send Telegram (top 1 – V3.1 format)
     if enriched:
         top = enriched[0]
-        msg = format_trade_card_v32(top, top, confirmed=False)
+        msg = format_trade_card_v31(top)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print(f"[Main] Sent Telegram for {top['ticker']}")
 
@@ -107,15 +109,62 @@ def scan_mode(manual: bool = False):
     print("=" * 70)
 
 
+def full_scan_mode(manual: bool = False):
+    """מצב סריקה מלאה – מחזיר 5 מניות עם ניתוח מעמיק"""
+    init_db()
+
+    now_et = datetime.now(ET)
+    today = now_et.strftime("%Y-%m-%d")
+
+    if manual:
+        run_mode = "MANUAL_FULL"
+    else:
+        run_mode = "V3.2_FULL_AUTO"
+
+    print("\n" + "=" * 70)
+    print(f"[Main] DAYS-BOT V3.2 – FULL SCAN (5 TOP PICKS)")
+    print(f"[Main] MODE: {run_mode}")
+    print(f"[Main] DATE: {today}")
+    print(f"[Main] TIME: {now_et.strftime('%H:%M:%S')} ET")
+    print("=" * 70)
+
+    if manual:
+        print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
+
+    top5 = full_scan(manual)
+    if not top5:
+        print("[Main] No candidates after full analysis.")
+        return
+
+    # Save to DB & send Telegram
+    for c in top5:
+        c["strategy_version"] = STRATEGY_VERSION
+        c["data_version"] = DATA_VERSION
+        c["mode"] = run_mode
+        save_alert(**c)
+        msg = format_full_alert(c)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        print(f"[Main] Sent full alert for {c['ticker']}")
+
+    print("\n" + "=" * 70)
+    print("[Main] Full scan complete. 5 picks sent to Telegram.")
+    print("=" * 70)
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py scan [--manual]")
+        print("Usage:")
+        print("  python main.py scan [--manual]")
+        print("  python main.py fullscan [--manual]")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
-    if mode != "scan":
+    manual_run = "--manual" in sys.argv or "--force" in sys.argv
+
+    if mode == "scan":
+        scan_mode(manual=manual_run)
+    elif mode == "fullscan":
+        full_scan_mode(manual=manual_run)
+    else:
         print(f"Unknown mode: {mode}")
         sys.exit(1)
-
-    manual_run = "--manual" in sys.argv or "--force" in sys.argv
-    scan_mode(manual=manual_run)
