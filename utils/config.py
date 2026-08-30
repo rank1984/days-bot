@@ -32,10 +32,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # DISCOVERY (FROZEN FOR EXPERIMENT)
 # ============================================================
 
-DISCOVERY_MIN_PRICE = 2.0
-DISCOVERY_MAX_PRICE = 20.0
+DISCOVERY_MIN_PRICE = 1.0
+DISCOVERY_MAX_PRICE = 30.0
 
-DISCOVERY_MIN_GAP = 8.0
+DISCOVERY_MIN_GAP = 5.0
 DISCOVERY_MAX_GAP = 100.0
 
 # ============================================================
