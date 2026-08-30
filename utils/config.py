@@ -4,11 +4,10 @@ import os
 # BOT VERSION / EXPERIMENT METADATA
 # ============================================================
 
-BOT_VERSION = "V3.0"
-STRATEGY_VERSION = "V3.0"
-EXPERIMENT_MODE = "V3.0_LIVE_DECISION"
-DATA_VERSION = "ALPACA_IEX_PM"
-
+BOT_VERSION = "V3.1"
+STRATEGY_VERSION = "V3.1"
+EXPERIMENT_MODE = "V3.1_LIVE_DECISION"
+DATA_VERSION = "YFINANCE_KEYLESS"
 
 # ============================================================
 # API KEYS
@@ -29,7 +28,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # Gemini API Key for V3.0 AI Decision Engine
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-
 # ============================================================
 # DISCOVERY (FROZEN FOR EXPERIMENT)
 # ============================================================
@@ -39,7 +37,6 @@ DISCOVERY_MAX_PRICE = 20.0
 
 DISCOVERY_MIN_GAP = 8.0
 DISCOVERY_MAX_GAP = 100.0
-
 
 # ============================================================
 # VALIDATION (FROZEN FOR EXPERIMENT)
@@ -58,9 +55,8 @@ VALIDATION_MIN_VWAP_DIST = 0.0
 VALIDATION_MIN_RVOL = 0.0
 VALIDATION_MIN_CATALYST_SCORE = 0
 
-
 # ============================================================
-# RISK & MONTE CARLO CONSTRAINTS
+# RISK & MONTE CARLO CONSTRAINTS (V3.0)
 # ============================================================
 
 MAX_ACTIVE_TRADES = 3
@@ -71,7 +67,6 @@ MAX_RISK_PER_TRADE = 0.01
 
 MIN_NET_PROFIT_PCT = 1.5
 
-
 # ============================================================
 # EXPERIMENT FLAGS (SOFT GATES)
 # ============================================================
@@ -81,3 +76,11 @@ EXPERIMENT_MODE_ACTIVE = True
 USE_RVOL_AS_HARD_GATE = False
 USE_CATALYST_AS_HARD_GATE = False
 USE_PM_BARS_AS_HARD_GATE = False
+
+# ============================================================
+# ACCOUNT & POSITION SIZING (V3.1 NEW)
+# ============================================================
+
+ACCOUNT_SIZE = 5000.0               # $5,000 default
+MAX_RISK_PER_TRADE_V31 = 0.005      # 0.5% per trade (V3.1)
+MAX_POSITION_VALUE_PCT = 0.20       # 20% of account max position value
