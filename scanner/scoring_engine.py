@@ -7,9 +7,10 @@ from utils.config import LEARNING_MODE
 def calculate_composite_score(candidate: dict, analysis: dict) -> float:
     """
     מחשב ציון מורכב לפי:
-    - Hard Filter: Float < 20M, Short Interest > 10%, RVOL > 5, Gap > 10%
-    - Risk Check: SEC Offering -> הפחתת ציון
-    - Sentiment & Catalyst Quality
+    - Gap, Volume, PM Distance
+    - RVOL, Float, Short Interest
+    - Catalyst Quality, Sentiment
+    - SEC Risk (הפחתה)
     
     LEARNING_MODE: True = ניכוי ציון במקום פסילה
     """
