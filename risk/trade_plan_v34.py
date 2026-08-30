@@ -1,108 +1,190 @@
 """
-Trade Plan V3.4 – מבוסס VWAP עם Entry/Stop/Targets חכמים
+DAYS-BOT V3.4 Trade Plan
+
+Deterministic Python-only trade planning.
+
+Gemini must never calculate or modify:
+- Entry
+- Stop
+- Targets
+- Shares
+- Risk
 """
-from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
+
+from typing import Dict, Any
+import math
 
 
-def build_trade_plan_v34(candidate: dict, vwap_data: dict) -> dict:
-    """
-    בונה תוכנית מסחר לפי VWAP:
-    - Entry: VWAP + 0.5% (או pm_high * 1.005)
-    - Stop: VWAP * 0.995 (או entry - pm_range)
-    - Targets: 2R, 4R
-    """
-    price = candidate.get('price', 0)
-    pm_high = candidate.get('pm_high', 0)
-    pm_low = candidate.get('pm_low', 0)
-    pm_vwap = candidate.get('pm_vwap', 0)
-    score = candidate.get('opportunity_score', 0)
+def _round_price(price: float) -> float:
+    return round(float(price), 2)
 
-    # שימוש ב-VWAP מעודכן אם קיים
-    vwap = vwap_data.get('vwap', pm_vwap)
-    vwap_high = vwap_data.get('vwap_high', pm_high)
-    vwap_low = vwap_data.get('vwap_low', pm_low)
 
-    if vwap <= 0 or vwap_high <= 0:
-        return {"decision": "NO TRADE", "reason": "Missing VWAP data"}
+def build_trade_plan(
+    candidate: Dict[str, Any],
+    account_size: float = 5000.0,
+    max_risk_pct: float = 0.005,
+    max_position_pct: float = 0.20,
+) -> Dict[str, Any]:
 
-    # Entry – 0.5% מעל VWAP (או PM High)
-    entry = max(vwap * 1.005, vwap_high * 1.005)
-    if entry <= price:  # אם כבר מעל, ניקח את המחיר הנוכחי
-        entry = max(entry, price)
+    result = {
+        "decision": "NO_TRADE",
+        "entry": None,
+        "stop": None,
+        "target_1": None,
+        "target_2": None,
+        "position_size": 0,
+        "max_loss": 0.0,
+        "risk_per_share": None,
+        "risk_pct": max_risk_pct,
+        "hold_type": "NO_TRADE",
+        "plan_valid": False,
+        "plan_error": None,
+    }
 
-    # Stop – VWAP * 0.995 או entry - (vwap_high - vwap_low)
-    pm_range = vwap_high - vwap_low if vwap_high > vwap_low else vwap * 0.02
-    stop_candidate1 = vwap * 0.995
-    stop_candidate2 = entry - pm_range
-    stop = max(stop_candidate1, stop_candidate2)
-    if stop >= entry:
-        stop = entry - pm_range
-    if stop >= entry:
-        stop = entry * 0.98
+    try:
+        price = float(candidate.get("price", 0))
+        pm_high = float(candidate.get("pm_high", 0))
+        pm_vwap = float(candidate.get("pm_vwap", 0))
+
+    except (TypeError, ValueError):
+        result["plan_error"] = "INVALID_PRICE_DATA"
+        return result
+
+    if price <= 0 or pm_high <= 0 or pm_vwap <= 0:
+        result["plan_error"] = "MISSING_MARKET_LEVELS"
+        return result
+
+    # ---------------------------------------------------------
+    # Entry
+    # ---------------------------------------------------------
+    #
+    # We require a breakout above PMH.
+    #
+    entry = _round_price(pm_high * 1.005)
+
+    # ---------------------------------------------------------
+    # Stop
+    # ---------------------------------------------------------
+    #
+    # VWAP-based structural stop.
+    #
+    structural_stop = pm_vwap * 0.995
+
+    # Conservative volatility proxy:
+    # use distance between PMH and VWAP.
+    range_proxy = abs(pm_high - pm_vwap)
+
+    volatility_stop = entry - max(
+        range_proxy,
+        entry * 0.01,
+    )
+
+    # Use the tighter valid stop below entry.
+    stop = max(
+        structural_stop,
+        volatility_stop,
+    )
+
+    stop = _round_price(stop)
+
+    # ---------------------------------------------------------
+    # Basic validation
+    # ---------------------------------------------------------
+
+    if entry <= stop:
+        result["plan_error"] = "ENTRY_NOT_ABOVE_STOP"
+        return result
 
     risk_per_share = entry - stop
+
     if risk_per_share <= 0:
-        return {"decision": "NO TRADE", "reason": "Invalid stop"}
+        result["plan_error"] = "NON_POSITIVE_RISK"
+        return result
 
+    # ---------------------------------------------------------
+    # Account risk
+    # ---------------------------------------------------------
+
+    max_risk_dollars = (
+        account_size
+        * max_risk_pct
+    )
+
+    # ---------------------------------------------------------
+    # Position value cap
+    # ---------------------------------------------------------
+
+    max_position_value = (
+        account_size
+        * max_position_pct
+    )
+
+    shares_by_risk = math.floor(
+        max_risk_dollars
+        / risk_per_share
+    )
+
+    shares_by_position = math.floor(
+        max_position_value
+        / entry
+    )
+
+    shares = min(
+        shares_by_risk,
+        shares_by_position,
+    )
+
+    if shares <= 0:
+        result["plan_error"] = "POSITION_SIZE_ZERO"
+        return result
+
+    # ---------------------------------------------------------
     # Targets
-    target_1 = entry + 2 * risk_per_share
-    target_2 = entry + 4 * risk_per_share
+    # ---------------------------------------------------------
 
-    # Position Size
-    risk_dollars = ACCOUNT_SIZE * MAX_RISK_PER_TRADE_V31
-    shares_by_risk = int(risk_dollars / risk_per_share)
-    if shares_by_risk < 1:
-        shares_by_risk = 0
-    max_position_value = ACCOUNT_SIZE * MAX_POSITION_VALUE_PCT
-    shares_by_value = int(max_position_value / entry)
-    shares = min(shares_by_risk, shares_by_value)
-    if shares < 0:
-        shares = 0
+    target_1 = _round_price(
+        entry + (2.0 * risk_per_share)
+    )
 
-    # Decision
-    if score >= 70 and candidate.get('pm_volume', 0) > 100000:
-        decision = "BUY SETUP"
-        decision_detail = "WAIT FOR BREAKOUT"
-    elif score >= 55:
-        decision = "WAIT"
-        decision_detail = "Monitor for breakout"
-    else:
-        decision = "NO TRADE"
-        decision_detail = "Score too low"
+    target_2 = _round_price(
+        entry + (4.0 * risk_per_share)
+    )
 
-    # Hold Time
-    if score >= 80 and candidate.get('pm_dist_signed', -100) >= 0:
-        hold_type = "MOMENTUM"
-        hold_min, hold_max = 15, 90
-    elif score >= 65:
-        hold_type = "INTRADAY"
-        hold_min, hold_max = 30, 240
-    else:
-        hold_type = "WATCH"
-        hold_min, hold_max = 0, 0
+    max_loss = _round_price(
+        shares * risk_per_share
+    )
 
-    return {
-        "entry": round(entry, 4),
-        "stop": round(stop, 4),
-        "target_1": round(target_1, 4),
-        "target_2": round(target_2, 4),
-        "risk_per_share": round(risk_per_share, 4),
-        "position_shares": shares,
-        "risk_dollars": round(risk_dollars, 2),
-        "risk_reward_1": round((target_1 - entry) / risk_per_share, 1),
-        "risk_reward_2": round((target_2 - entry) / risk_per_share, 1),
-        "hold_type": hold_type,
-        "hold_min": hold_min,
-        "hold_max": hold_max,
-        "decision": decision,
-        "decision_detail": decision_detail,
-        "invalidation_conditions": [
-            "Falls below VWAP support",
-            "Spread > 2%",
-            "Trading halt",
-            "Breakout fails"
-        ],
-        "vwap_used": vwap,
-        "vwap_high": vwap_high,
-        "vwap_low": vwap_low
-    }
+    # ---------------------------------------------------------
+    # Final validation
+    # ---------------------------------------------------------
+
+    if not (
+        entry > stop
+        and target_1 > entry
+        and target_2 > target_1
+        and risk_per_share > 0
+        and shares > 0
+        and max_loss <= max_risk_dollars + 0.01
+    ):
+        result["plan_error"] = "TRADE_PLAN_VALIDATION_FAILED"
+        return result
+
+    # ---------------------------------------------------------
+    # Valid plan
+    # ---------------------------------------------------------
+
+    result.update({
+        "decision": "WAIT_BREAKOUT",
+        "entry": entry,
+        "stop": stop,
+        "target_1": target_1,
+        "target_2": target_2,
+        "position_size": shares,
+        "max_loss": max_loss,
+        "risk_per_share": _round_price(risk_per_share),
+        "hold_type": "MOMENTUM_15_90M",
+        "plan_valid": True,
+        "plan_error": None,
+    })
+
+    return result
