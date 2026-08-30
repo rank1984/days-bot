@@ -424,3 +424,72 @@ def format_debug_report(candidate: dict) -> str:
 
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
+
+
+# ============================================================
+# V3.4 NO CANDIDATES MESSAGE
+# ============================================================
+
+def format_no_candidates_v34(date: str, now_et, learning_mode: bool, debug: bool) -> str:
+    """הודעה כאשר אין מועמדים שעברו את כל המסננים"""
+    lines = []
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📊 DAYS-BOT V3.4 – סריקה")
+    lines.append(f"📅 {date}  |  🕐 {now_et.strftime('%H:%M:%S')} ET")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append("😴 <b>אין מועמדויות שעברו את כל המסננים</b>")
+    lines.append("")
+    lines.append("🔍 <b>סיבות אפשריות:</b>")
+    lines.append("  • Gap < 10%")
+    lines.append("  • RVOL < 3x")
+    lines.append("  • Float > 50M")
+    lines.append("  • SEC Offering detected")
+    lines.append("  • Personality = GAP_AND_CRAP")
+    lines.append("")
+    
+    if learning_mode:
+        lines.append("📖 <b>LEARNING MODE פעיל</b>")
+        lines.append("  המסננים מוקלים – חלק מהמועמדים")
+        lines.append("  עדיין נפסלו בגלל תנאים קשים.")
+    else:
+        lines.append("🔒 <b>מסננים מלאים</b>")
+        lines.append("  הפעל עם --debug כדי לראות את כל המועמדים:")
+        lines.append("  python main.py fullscan_v34 --manual --debug")
+    
+    lines.append("")
+    lines.append("📁 <b>לוג מלא</b>")
+    lines.append(f"  data/logs/daily_log_{date}.json")
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
+def format_interim_report() -> str:
+    """
+    דוח ביניים – נשלח כאשר אין מועמדים שעברו Hard Filters.
+    """
+    now_et = datetime.now(ET)
+    lines = []
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📋 DAYS-BOT V3.4 – INTERIM REPORT")
+    lines.append(f"🕐 {now_et.strftime('%H:%M:%S')} ET")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append("⚠️ No candidates passed all hard filters.")
+    lines.append("")
+    lines.append("🔍 Possible reasons:")
+    lines.append("  • Gap < 10%")
+    lines.append("  • RVOL < 3x")
+    lines.append("  • Float > 50M")
+    lines.append("  • SEC offering detected (HIGH risk)")
+    lines.append("  • Personality = GAP_AND_CRAP")
+    lines.append("")
+    lines.append("📊 Check the daily log for details:")
+    lines.append("  data/logs/daily_log_*.json")
+    lines.append("")
+    lines.append("⏳ Next scan in 15 minutes.")
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🤖 DAYS-BOT – Manual Execution Only")
+    return "\n".join(lines)
