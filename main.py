@@ -1,323 +1,343 @@
 """
-DAYS-BOT V3.4 – DECISION ENGINE + FULL ANALYSIS (Personality + Sympathy + VWAP)
-Modes:
-    python main.py scan [--manual]              # Premarket scan only
-    python main.py fullscan [--manual]          # Full V3.3 analysis
-    python main.py fullscan_v34 [--manual]      # Full V3.4 with Personality + Sympathy + VWAP
+DAYS-BOT V3.4
+Main Entry Point
 
-Flags:
-    --manual   : Run even outside trading hours
-    --debug    : Show all candidates with detailed debug info
+Commands:
+
+    python main.py scan
+    python main.py scan --manual
+
+    python main.py fullscan_v34
+    python main.py fullscan_v34 --manual
+
+Execution remains MANUAL ONLY.
+The bot never submits orders.
 """
 
 import sys
-import json
-import os
 from pathlib import Path
 from datetime import datetime, time
+
 import pytz
 
+
 BASE_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(BASE_DIR))
-sys.path.insert(0, str(BASE_DIR / "utils"))
+
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 
 ET = pytz.timezone("America/New_York")
+
 
 from utils.config import (
     BOT_VERSION,
     STRATEGY_VERSION,
     EXPERIMENT_MODE,
-    DATA_VERSION,
-    TELEGRAM_TOKEN,
-    TELEGRAM_CHAT_ID,
-    GEMINI_API_KEY,
     ACCOUNT_SIZE,
     MAX_RISK_PER_TRADE_V31,
-    LEARNING_MODE
+    MAX_POSITION_VALUE_PCT,
+    TELEGRAM_TOKEN,
+    TELEGRAM_CHAT_ID,
 )
 
+from database.db import init_db
+
 from scanner.premarket import scan_premarket
-from scanner.universe import load_universe
-from database.db import init_db, save_alert
-from watchlist_manager import WatchlistManager
-from telegram_formatter import format_no_candidates, send_message
-from risk.trade_plan import build_trade_plan
-from telegram_v3 import format_trade_card_v31, format_full_alert_v33, format_debug_report, format_no_candidates_v34
 
-# V3.3 Full Scan
-try:
-    from scanner.full_scan_v33 import full_scan_v33
-    V33_AVAILABLE = True
-except ImportError:
-    V33_AVAILABLE = False
-
-# V3.4 Full Scan
-try:
-    from scanner.full_scan_v34 import full_scan_v34
-    V34_AVAILABLE = True
-except ImportError:
-    V34_AVAILABLE = False
-
-# V3.0 Legacy
-try:
-    from risk_engine import RiskEngine
-    from ai_decision import AIDecisionLayer
-    from telegram_v3 import format_decision_card
-    V30_AVAILABLE = True
-except ImportError:
-    V30_AVAILABLE = False
+from risk.trade_plan_v34 import build_trade_plan
 
 
-def save_daily_log(scan_type: str, candidates: list, mode: str, manual: bool, debug: bool):
-    """שומר תיעוד יומי של כל הפעילות"""
-    log_dir = BASE_DIR / "data" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    today = datetime.now(ET).strftime("%Y-%m-%d")
-    log_file = log_dir / f"daily_log_{today}.json"
-    
-    existing_data = []
-    if log_file.exists():
-        try:
-            with open(log_file, 'r', encoding='utf-8') as f:
-                existing_data = json.load(f)
-        except:
-            existing_data = []
-    
-    entry = {
-        "timestamp": datetime.now(ET).isoformat(),
-        "scan_type": scan_type,
-        "mode": mode,
-        "manual": manual,
-        "debug": debug,
-        "learning_mode": LEARNING_MODE,
-        "candidates_count": len(candidates),
-        "candidates": candidates[:20]
-    }
-    existing_data.append(entry)
-    
-    with open(log_file, 'w', encoding='utf-8') as f:
-        json.dump(existing_data, f, indent=2, ensure_ascii=False, default=str)
-    
-    print(f"[Log] Saved daily log: {log_file}")
+def _in_premarket_window() -> bool:
+    now = datetime.now(ET).time()
+
+    return (
+        time(8, 0)
+        <= now
+        < time(9, 30)
+    )
 
 
-def scan_mode(manual: bool = False, debug: bool = False):
-    init_db()
-    wm = WatchlistManager()
-
-    now_et = datetime.now(ET)
-    today = now_et.strftime("%Y-%m-%d")
-
-    if manual:
-        run_mode = "MANUAL"
-    else:
-        run_mode = "V3.4_LIVE_EXPERIMENT"
-
-    if not manual:
-        if now_et.time() < time(8, 0):
-            print(f"[Main] Before 08:00 ET – abort.")
-            return
-        if now_et.time() >= time(9, 30):
-            print(f"[Main] After 09:30 ET – abort (use --manual for testing).")
-            return
-
-    print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT V3.4 – PREMARKET SCAN")
-    print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
-    print(f"[Main] MODE: {run_mode}")
-    print(f"[Main] DATE: {today}")
-    print(f"[Main] TIME: {now_et.strftime('%H:%M:%S')} ET")
-    print("=" * 70)
-
-    if manual:
-        print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
-    if debug:
-        print("[Main] 🐞 DEBUG MODE – showing all candidates with details")
-
-    candidates = scan_premarket(today)
-    if not candidates:
-        universe = load_universe()
-        msg = format_no_candidates(today, len(universe) if universe else 0)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print("[Main] No candidates found.")
-        return
+def _apply_trade_plans(candidates):
 
     enriched = []
-    for c in candidates[:15]:
-        plan = build_trade_plan(c)
-        c.update(plan)
-        c["account_size"] = ACCOUNT_SIZE
-        c["risk_pct"] = MAX_RISK_PER_TRADE_V31
-        enriched.append(c)
 
-    added = 0
-    for c in enriched[:5]:
-        if "/" in c["ticker"]:
-            continue
-        c["strategy_version"] = STRATEGY_VERSION
-        c["data_version"] = DATA_VERSION
-        c["mode"] = run_mode
-        wm.add_to_watchlist(c)
-        save_alert(**c)
-        added += 1
-    print(f"[Main] Saved {added} candidates.")
+    for candidate in candidates:
 
-    save_daily_log("scan", enriched, run_mode, manual, debug)
+        plan = build_trade_plan(
+            candidate,
+            account_size=ACCOUNT_SIZE,
+            max_risk_pct=MAX_RISK_PER_TRADE_V31,
+            max_position_pct=MAX_POSITION_VALUE_PCT,
+        )
 
-    if enriched:
-        if debug:
-            for c in enriched[:5]:
-                msg = format_debug_report(c)
-                send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        else:
-            top = enriched[0]
-            msg = format_trade_card_v31(top)
-            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print(f"[Main] Sent Telegram for {enriched[0]['ticker']}")
+        candidate.update(plan)
 
-    print("\n" + "=" * 70)
-    print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
-    print("=" * 70)
+        enriched.append(candidate)
+
+    return enriched
 
 
-def fullscan_mode(manual: bool = False, debug: bool = False):
-    """Full V3.3 mode"""
-    if not V33_AVAILABLE:
-        print("[Main] V3.3 full scan not available.")
-        return
+def run_fullscan_v34(manual: bool = False):
 
     init_db()
+
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
 
-    if manual:
-        run_mode = "MANUAL_FULLSCAN"
-    else:
-        run_mode = "V3.3_FULLSCAN"
+    print()
+    print("=" * 75)
+    print("DAYS-BOT V3.4")
+    print("FULLSCAN / TRADING-READY PIPELINE")
+    print("=" * 75)
 
-    print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT V3.3 – FULL ANALYSIS")
-    print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
-    print(f"[Main] MODE: {run_mode}")
-    print(f"[Main] DATE: {today}")
-    print(f"[Main] TIME: {now_et.strftime('%H:%M:%S')} ET")
-    print("=" * 70)
+    print(
+        f"Version:        {BOT_VERSION}"
+    )
 
-    if manual:
-        print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
-    if debug:
-        print("[Main] 🐞 DEBUG MODE – showing all candidates with details")
+    print(
+        f"Strategy:       {STRATEGY_VERSION}"
+    )
 
-    top5 = full_scan_v33(manual)
-    
-    if not top5:
-        print("[Main] No candidates passed V3.3 filters.")
-        msg = format_no_candidates_v34(today, now_et, LEARNING_MODE, debug)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        save_daily_log("fullscan", [], run_mode, manual, debug)
+    print(
+        f"Mode:            "
+        f"{'MANUAL' if manual else 'AUTOMATIC'}"
+    )
+
+    print(
+        f"Time ET:         "
+        f"{now_et.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+    print(
+        f"Account:         ${ACCOUNT_SIZE:,.2f}"
+    )
+
+    print(
+        f"Max Risk:        "
+        f"{MAX_RISK_PER_TRADE_V31 * 100:.2f}%"
+    )
+
+    print(
+        f"Max Position:    "
+        f"{MAX_POSITION_VALUE_PCT * 100:.1f}%"
+    )
+
+    print("=" * 75)
+
+    # ---------------------------------------------------------
+    # Automatic time gate
+    # ---------------------------------------------------------
+
+    if not manual and not _in_premarket_window():
+
+        print(
+            "[Main] Automatic scan outside "
+            "08:00-09:30 ET."
+        )
+
+        print(
+            "[Main] Scan aborted safely."
+        )
+
         return
 
-    for c in top5:
-        c["strategy_version"] = STRATEGY_VERSION
-        c["data_version"] = DATA_VERSION
-        c["mode"] = run_mode
-        save_alert(**c)
+    # ---------------------------------------------------------
+    # PREMARKET DISCOVERY
+    # ---------------------------------------------------------
 
-    save_daily_log("fullscan", top5, run_mode, manual, debug)
+    print(
+        "\n[Main] Starting V3.4 premarket discovery..."
+    )
 
-    for i, c in enumerate(top5):
-        msg = format_full_alert_v33(c)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print(f"[Main] Sent V3.3 alert for {c['ticker']} ({i+1}/5)")
+    candidates = scan_premarket(today)
 
-    print("\n" + "=" * 70)
-    print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
-    print("=" * 70)
+    if not candidates:
 
+        print(
+            "[Main] No candidates."
+        )
 
-def fullscan_v34_mode(manual: bool = False, debug: bool = False):
-    """Full V3.4 mode with Personality + Sympathy + VWAP – תמיד שולחת הודעה"""
-    if not V34_AVAILABLE:
-        print("[Main] V3.4 full scan not available.")
         return
 
-    init_db()
-    now_et = datetime.now(ET)
-    today = now_et.strftime("%Y-%m-%d")
+    print(
+        f"[Main] Premarket candidates: "
+        f"{len(candidates)}"
+    )
 
-    if manual:
-        run_mode = "MANUAL_FULLSCAN_V34"
-    else:
-        run_mode = "V3.4_FULLSCAN"
+    # ---------------------------------------------------------
+    # TRADE PLAN
+    # ---------------------------------------------------------
 
-    print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT V3.4 – FULL ANALYSIS (Personality + Sympathy + VWAP)")
-    print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
-    print(f"[Main] MODE: {run_mode}")
-    print(f"[Main] DATE: {today}")
-    print(f"[Main] TIME: {now_et.strftime('%H:%M:%S')} ET")
-    print("=" * 70)
+    print(
+        "\n[Main] Building deterministic trade plans..."
+    )
 
-    if manual:
-        print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
-    if debug:
-        print("[Main] 🐞 DEBUG MODE – showing all candidates with details")
+    enriched = _apply_trade_plans(
+        candidates
+    )
 
-    # נפעיל את הסריקה המלאה
-    top5 = full_scan_v34(manual)
-    
-    # ============================================================
-    # קריטי: גם אם אין מועמדים – שולחים הודעה
-    # ============================================================
-    if not top5:
-        print("[Main] No candidates passed V3.4 hard filters.")
-        msg = format_no_candidates_v34(today, now_et, LEARNING_MODE, debug)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        save_daily_log("fullscan_v34", [], run_mode, manual, debug)
-        return
+    # ---------------------------------------------------------
+    # Only valid plans
+    # ---------------------------------------------------------
 
-    for c in top5:
-        c["strategy_version"] = STRATEGY_VERSION
-        c["data_version"] = DATA_VERSION
-        c["mode"] = run_mode
-        save_alert(**c)
+    valid = [
+        c for c in enriched
+        if c.get("plan_valid") is True
+    ]
 
-    save_daily_log("fullscan_v34", top5, run_mode, manual, debug)
+    print(
+        f"[Main] Valid trade plans: "
+        f"{len(valid)}"
+    )
 
-    for i, c in enumerate(top5):
-        msg = format_full_alert_v33(c)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print(f"[Main] Sent V3.4 alert for {c['ticker']} ({i+1}/5)")
+    # ---------------------------------------------------------
+    # Top 5
+    # ---------------------------------------------------------
 
-    print("\n" + "=" * 70)
-    print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
-    print("=" * 70)
+    top5 = sorted(
+        enriched,
+        key=lambda x: (
+            x.get("event_score", 0),
+            x.get("gap_pct", 0),
+            x.get("pm_volume", 0),
+        ),
+        reverse=True,
+    )[:5]
+
+    # ---------------------------------------------------------
+    # Print result
+    # ---------------------------------------------------------
+
+    print()
+    print("=" * 75)
+    print("TOP 5 V3.4")
+    print("=" * 75)
+
+    for i, candidate in enumerate(top5, 1):
+
+        print(
+            f"{i}. {candidate.get('ticker')}"
+        )
+
+        print(
+            f"   Score: "
+            f"{candidate.get('event_score')}"
+        )
+
+        print(
+            f"   Gap: "
+            f"{candidate.get('gap_pct', 0):.2f}%"
+        )
+
+        print(
+            f"   PM Volume: "
+            f"{candidate.get('pm_volume', 0):,}"
+        )
+
+        print(
+            f"   Entry: "
+            f"{candidate.get('entry')}"
+        )
+
+        print(
+            f"   Stop: "
+            f"{candidate.get('stop')}"
+        )
+
+        print(
+            f"   T1: "
+            f"{candidate.get('target_1')}"
+        )
+
+        print(
+            f"   T2: "
+            f"{candidate.get('target_2')}"
+        )
+
+        print(
+            f"   Shares: "
+            f"{candidate.get('position_size')}"
+        )
+
+        print(
+            f"   Decision: "
+            f"{candidate.get('decision')}"
+        )
+
+        print()
+
+    # ---------------------------------------------------------
+    # IMPORTANT
+    # ---------------------------------------------------------
+
+    print("=" * 75)
+    print(
+        "⚠️ NO AUTOMATIC ORDERS"
+    )
+    print(
+        "⚠️ PREMARKET CANDIDATE ≠ BUY"
+    )
+    print(
+        "⚠️ BREAKOUT CONFIRMATION REQUIRED"
+    )
+    print("=" * 75)
+
+    return top5
+
+
+def run_scan(manual: bool = False):
+
+    print(
+        "[Main] Legacy scan requested."
+    )
+
+    return run_fullscan_v34(
+        manual=manual
+    )
 
 
 if __name__ == "__main__":
+
     if len(sys.argv) < 2:
-        print("Usage:")
-        print("  python main.py scan [--manual] [--debug]                # Premarket scan")
-        print("  python main.py fullscan [--manual] [--debug]            # Full V3.3 analysis")
-        print("  python main.py fullscan_v34 [--manual] [--debug]        # Full V3.4 analysis")
-        print("")
-        print("  Flags:")
-        print("    --manual  : Run even outside trading hours")
-        print("    --debug   : Show all candidates with detailed debug info")
+
+        print(
+            "Usage:"
+        )
+
+        print(
+            "  python main.py fullscan_v34 [--manual]"
+        )
+
+        print(
+            "  python main.py scan [--manual]"
+        )
+
         sys.exit(1)
 
-    mode = sys.argv[1].lower()
-    manual_run = "--manual" in sys.argv or "--force" in sys.argv
-    debug_run = "--debug" in sys.argv
+    command = sys.argv[1].lower()
 
-    if mode == "scan":
-        scan_mode(manual=manual_run, debug=debug_run)
-    elif mode == "fullscan":
-        fullscan_mode(manual=manual_run, debug=debug_run)
-    elif mode == "fullscan_v34":
-        fullscan_v34_mode(manual=manual_run, debug=debug_run)
+    manual = (
+        "--manual" in sys.argv
+        or "--force" in sys.argv
+    )
+
+    if command == "fullscan_v34":
+
+        run_fullscan_v34(
+            manual=manual
+        )
+
+    elif command == "scan":
+
+        run_scan(
+            manual=manual
+        )
+
     else:
-        print(f"Unknown mode: {mode}")
-        print("Available modes: scan, fullscan, fullscan_v34")
+
+        print(
+            f"Unknown command: {command}"
+        )
+
         sys.exit(1)
