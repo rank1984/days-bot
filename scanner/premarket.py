@@ -1,173 +1,535 @@
 """
-DAYS-BOT V3.2 – Premarket Scanner (yfinance, batch size 50)
+DAYS-BOT V3.4
+Stable Premarket Scanner
+
+Design:
+- Small universe
+- yfinance only
+- Small batches
+- Retry/backoff
+- No fake spread
+- Premarket 04:00-09:30 ET
+- Discovery first
+- PM validation second
 """
-import pandas as pd
-from datetime import datetime, time, timedelta
-import pytz
+
+from datetime import datetime, time
 from typing import List
+import time as time_module
+
+import pandas as pd
+import pytz
 import yfinance as yf
 
 from scanner.universe import load_universe
 from utils.config import (
-    DISCOVERY_MIN_PRICE, DISCOVERY_MAX_PRICE,
-    DISCOVERY_MIN_GAP, DISCOVERY_MAX_GAP,
-    VALIDATION_MIN_PM_VOLUME_ABS,
+    BOT_VERSION,
+    DATA_VERSION,
+    DISCOVERY_MAX_GAP,
+    DISCOVERY_MAX_PRICE,
+    DISCOVERY_MIN_GAP,
+    DISCOVERY_MIN_PRICE,
+    EXPERIMENT_MODE,
+    STRATEGY_VERSION,
     VALIDATION_MAX_PM_DIST,
-    VALIDATION_MIN_VWAP_DIST
+    VALIDATION_MIN_PM_BARS,
+    VALIDATION_MIN_PM_VOLUME_ABS,
+    VALIDATION_MIN_VWAP_DIST,
 )
+
 
 ET = pytz.timezone("America/New_York")
 
+PM_START = time(4, 0)
+PM_END = time(9, 30)
 
-def scan_premarket(target_date_str: str = None) -> List[dict]:
-    now_et = datetime.now(ET)
-    if target_date_str is None:
-        target_date_str = now_et.strftime("%Y-%m-%d")
+BATCH_SIZE = 25
+MAX_RETRIES = 3
 
-    print(f"[Premarket V3.2] Scanning at {now_et.strftime('%H:%M:%S')} ET")
 
-    universe = load_universe()
-    if not universe:
-        return []
+def _download_batch(
+    tickers: List[str],
+    interval: str,
+    period: str,
+    prepost: bool = False,
+):
+    """
+    Download one small batch with exponential backoff.
+    """
 
-    # PM window
-    pm_start = ET.localize(datetime.combine(now_et.date(), time(4, 0)))
-    pm_end = min(now_et, ET.localize(datetime.combine(now_et.date(), time(9, 30))))
+    ticker_string = " ".join(tickers)
 
-    # שלב 1: סגירות קודמות (5 ימים) – בבתים של 50
-    prev_closes = {}
-    batch_size = 50
-    for i in range(0, len(universe), batch_size):
-        batch = universe[i:i+batch_size]
+    for attempt in range(MAX_RETRIES):
         try:
-            data = yf.download(" ".join(batch), period="5d", interval="1d", progress=False, threads=False)
-            if len(batch) == 1:
-                if not data.empty:
-                    prev_closes[batch[0]] = data['Close'].iloc[-1]
-            else:
-                for ticker in batch:
-                    if ticker in data['Close']:
-                        series = data['Close'][ticker].dropna()
-                        if not series.empty:
-                            prev_closes[ticker] = float(series.iloc[-1])
-        except Exception as e:
-            print(f"[Premarket] Batch error (daily) for {batch}: {e}")
-            continue
-
-    print(f"[Premarket] Found {len(prev_closes)} previous closes.")
-
-    # שלב 2: PM 1-min data – בבתים של 50
-    candidates = []
-    for i in range(0, len(universe), batch_size):
-        batch = universe[i:i+batch_size]
-        try:
-            pm_data = yf.download(
-                " ".join(batch),
-                period="1d",
-                interval="1m",
-                prepost=True,
+            data = yf.download(
+                ticker_string,
+                period=period,
+                interval=interval,
+                prepost=prepost,
+                group_by="ticker",
                 progress=False,
-                threads=False
+                threads=False,
+                auto_adjust=False,
             )
-        except Exception as e:
-            print(f"[Premarket] PM data error for batch: {e}")
+
+            if data is not None and not data.empty:
+                return data
+
+        except Exception as exc:
+            wait = 2 ** attempt
+
+            print(
+                f"[Yahoo] Batch failed "
+                f"(attempt {attempt + 1}/{MAX_RETRIES}): "
+                f"{exc}"
+            )
+
+            if attempt < MAX_RETRIES - 1:
+                time_module.sleep(wait)
+
+    return None
+
+
+def _extract_ticker_df(data, ticker: str):
+    if data is None or data.empty:
+        return None
+
+    try:
+        if isinstance(data.columns, pd.MultiIndex):
+            level0 = data.columns.get_level_values(0)
+
+            if ticker not in level0:
+                return None
+
+            df = data[ticker].copy()
+
+        else:
+            df = data.copy()
+
+        if "Close" not in df.columns:
+            return None
+
+        df = df.dropna(subset=["Close"])
+
+        if df.empty:
+            return None
+
+        return df
+
+    except Exception:
+        return None
+
+
+def _normalize_index_to_et(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Make sure timestamps are timezone-aware and represented in ET.
+    """
+
+    result = df.copy()
+
+    try:
+        if result.index.tz is None:
+            result.index = result.index.tz_localize("UTC")
+
+        result.index = result.index.tz_convert(ET)
+
+    except Exception:
+        return pd.DataFrame()
+
+    return result
+
+
+def _get_previous_closes(universe: List[str]):
+    """
+    Fetch daily history in small batches instead of one giant request.
+    """
+
+    result = {}
+
+    print(
+        f"[Premarket] Fetching previous closes "
+        f"for {len(universe)} symbols..."
+    )
+
+    for i in range(0, len(universe), BATCH_SIZE):
+        batch = universe[i:i + BATCH_SIZE]
+
+        data = _download_batch(
+            batch,
+            interval="1d",
+            period="5d",
+            prepost=False,
+        )
+
+        if data is None:
             continue
 
         for ticker in batch:
-            prev_close = prev_closes.get(ticker)
-            if not prev_close:
+            df = _extract_ticker_df(data, ticker)
+
+            if df is None or df.empty:
                 continue
 
             try:
-                if len(batch) == 1:
-                    df = pm_data.copy()
-                else:
-                    if ticker not in pm_data.columns.get_level_values(0):
-                        continue
-                    df = pm_data[ticker].dropna(subset=['Close'])
+                close = df["Close"].dropna()
 
-                if df.empty:
-                    continue
+                if not close.empty:
+                    result[ticker] = float(close.iloc[-1])
 
-                # טיפול ב-TimeZone
-                df.index = pd.to_datetime(df.index)
-                if df.index.tz is None:
-                    df.index = df.index.tz_localize("UTC")
-                df.index = df.index.tz_convert(ET)
-
-                # סינון עד now_et
-                df = df[df.index <= now_et]
-                if df.empty:
-                    continue
-
-                price = float(df['Close'].iloc[-1])
-
-                # Hard Filters
-                if price < DISCOVERY_MIN_PRICE or price > DISCOVERY_MAX_PRICE:
-                    continue
-                gap_pct = ((price - prev_close) / prev_close) * 100
-                if gap_pct < DISCOVERY_MIN_GAP or gap_pct > DISCOVERY_MAX_GAP:
-                    continue
-
-                # PM window
-                df_pm = df[(df.index >= pm_start) & (df.index < pm_end)]
-                if df_pm.empty:
-                    continue
-                pm_volume = int(df_pm['Volume'].sum())
-                if pm_volume < VALIDATION_MIN_PM_VOLUME_ABS:
-                    continue
-                pm_high = float(df_pm['High'].max())
-                pm_low = float(df_pm['Low'].min())
-                total_vol = df_pm['Volume'].sum()
-                if total_vol > 0:
-                    pm_vwap = float((df_pm['Close'] * df_pm['Volume']).sum() / total_vol)
-                else:
-                    pm_vwap = float(df_pm['Close'].mean())
-
-                pm_dist_signed = ((price - pm_high) / pm_high) * 100 if pm_high > 0 else None
-                if pm_dist_signed is None or pm_dist_signed < -VALIDATION_MAX_PM_DIST:
-                    continue
-                if price < pm_vwap * (1 + VALIDATION_MIN_VWAP_DIST):
-                    continue
-
-                # Score (פשוט)
-                score = 0.0
-                score += min(max(gap_pct, 0) * 2, 30)
-                score += min((pm_volume / 100_000) * 20, 30)
-                if pm_dist_signed >= 0:
-                    score += 25
-                elif pm_dist_signed >= -2:
-                    score += 15
-                elif pm_dist_signed >= -5:
-                    score += 5
-                score = round(min(100, max(0, score)), 1)
-
-                grade = "A" if score >= 70 else "B" if score >= 55 else "C" if score >= 40 else "WATCH"
-
-                candidate = {
-                    "ticker": ticker,
-                    "price": price,
-                    "gap_pct": gap_pct,
-                    "pm_volume": pm_volume,
-                    "pm_high": pm_high,
-                    "pm_low": pm_low,
-                    "pm_vwap": pm_vwap,
-                    "pm_dist_signed": pm_dist_signed,
-                    "opportunity_score": score,
-                    "grade": grade,
-                    "state": "WATCH",
-                    "spread_pct": None,
-                    "spread_status": "UNAVAILABLE",
-                    "pm_data_quality": "GOOD_DATA",
-                    "mode": "V3.2",
-                    "strategy_version": "V3.2",
-                    "data_version": "YFINANCE"
-                }
-                candidates.append(candidate)
-
-            except Exception as e:
-                # Skip individual symbol errors
+            except Exception:
                 continue
 
-    candidates.sort(key=lambda x: x['opportunity_score'], reverse=True)
+        # Tiny pause reduces burst pressure.
+        time_module.sleep(0.5)
+
+    print(
+        f"[Premarket] Previous closes found: "
+        f"{len(result)}"
+    )
+
+    return result
+
+
+def _calculate_pm_metrics(df_pm: pd.DataFrame):
+    if df_pm.empty:
+        return None
+
+    volume = pd.to_numeric(
+        df_pm["Volume"],
+        errors="coerce"
+    ).fillna(0)
+
+    close = pd.to_numeric(
+        df_pm["Close"],
+        errors="coerce"
+    )
+
+    high = pd.to_numeric(
+        df_pm["High"],
+        errors="coerce"
+    )
+
+    low = pd.to_numeric(
+        df_pm["Low"],
+        errors="coerce"
+    )
+
+    volume_sum = float(volume.sum())
+
+    if volume_sum <= 0:
+        return None
+
+    pm_high = float(high.max())
+    pm_low = float(low.min())
+
+    pm_vwap = float(
+        (close * volume).sum() / volume_sum
+    )
+
+    return {
+        "pm_volume": int(volume_sum),
+        "pm_bars_count": int(len(df_pm)),
+        "pm_high": pm_high,
+        "pm_low": pm_low,
+        "pm_vwap": pm_vwap,
+    }
+
+
+def scan_premarket(target_date_str: str = None) -> List[dict]:
+
+    now_et = datetime.now(ET)
+
+    if target_date_str is None:
+        target_date_str = now_et.strftime("%Y-%m-%d")
+
+    print()
+    print("=" * 70)
+    print(
+        f"[Premarket] {BOT_VERSION} "
+        f"| {STRATEGY_VERSION} "
+        f"| KEYLESS YFINANCE"
+    )
+    print(
+        f"[Premarket] Date={target_date_str} "
+        f"| ET={now_et.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    print("=" * 70)
+
+    universe = load_universe()
+
+    if not universe:
+        print("[Premarket] ❌ Empty universe.")
+        return []
+
+    prev_closes = _get_previous_closes(universe)
+
+    candidates = []
+
+    stats = {
+        "universe": len(universe),
+        "no_previous_close": 0,
+        "price_fail": 0,
+        "gap_fail": 0,
+        "pm_missing": 0,
+        "pm_volume_fail": 0,
+        "pm_bars_fail": 0,
+        "vwap_fail": 0,
+        "validated": 0,
+    }
+
+    for i in range(0, len(universe), BATCH_SIZE):
+
+        batch = universe[i:i + BATCH_SIZE]
+
+        print(
+            f"[Premarket] Batch "
+            f"{i + 1}-{min(i + BATCH_SIZE, len(universe))}"
+            f"/{len(universe)}"
+        )
+
+        pm_data = _download_batch(
+            batch,
+            interval="1m",
+            period="1d",
+            prepost=True,
+        )
+
+        if pm_data is None:
+            print("[Premarket] Batch returned no data.")
+            continue
+
+        for ticker in batch:
+
+            prev_close = prev_closes.get(ticker)
+
+            if prev_close is None or prev_close <= 0:
+                stats["no_previous_close"] += 1
+                continue
+
+            df = _extract_ticker_df(pm_data, ticker)
+
+            if df is None:
+                stats["pm_missing"] += 1
+                continue
+
+            df = _normalize_index_to_et(df)
+
+            if df.empty:
+                stats["pm_missing"] += 1
+                continue
+
+            # We only use the requested trading date.
+            try:
+                df = df[
+                    df.index.strftime("%Y-%m-%d")
+                    == target_date_str
+                ]
+            except Exception:
+                continue
+
+            if df.empty:
+                stats["pm_missing"] += 1
+                continue
+
+            # Latest available market price.
+            price = float(df["Close"].iloc[-1])
+
+            if (
+                price < DISCOVERY_MIN_PRICE
+                or price > DISCOVERY_MAX_PRICE
+            ):
+                stats["price_fail"] += 1
+                continue
+
+            gap_pct = (
+                (price - prev_close)
+                / prev_close
+                * 100.0
+            )
+
+            if (
+                gap_pct < DISCOVERY_MIN_GAP
+                or gap_pct > DISCOVERY_MAX_GAP
+            ):
+                stats["gap_fail"] += 1
+                continue
+
+            # Premarket window.
+            df_pm = df[
+                (df.index.time >= PM_START)
+                & (df.index.time < PM_END)
+            ]
+
+            if df_pm.empty:
+                stats["pm_missing"] += 1
+                continue
+
+            metrics = _calculate_pm_metrics(df_pm)
+
+            if metrics is None:
+                stats["pm_volume_fail"] += 1
+                continue
+
+            pm_volume = metrics["pm_volume"]
+            pm_bars = metrics["pm_bars_count"]
+
+            if pm_volume < VALIDATION_MIN_PM_VOLUME_ABS:
+                stats["pm_volume_fail"] += 1
+                continue
+
+            if pm_bars < VALIDATION_MIN_PM_BARS:
+                stats["pm_bars_fail"] += 1
+                continue
+
+            pm_high = metrics["pm_high"]
+            pm_low = metrics["pm_low"]
+            pm_vwap = metrics["pm_vwap"]
+
+            if pm_high <= 0 or pm_vwap <= 0:
+                stats["vwap_fail"] += 1
+                continue
+
+            pm_dist_signed = (
+                (price - pm_high)
+                / pm_high
+                * 100.0
+            )
+
+            if pm_dist_signed < -VALIDATION_MAX_PM_DIST:
+                continue
+
+            vwap_required_price = (
+                pm_vwap
+                * (1.0 + VALIDATION_MIN_VWAP_DIST)
+            )
+
+            if price < vwap_required_price:
+                stats["vwap_fail"] += 1
+                continue
+
+            # ------------------------------------------------
+            # EVENT SCORE
+            # ------------------------------------------------
+
+            event_score = 0.0
+
+            event_score += min(
+                max(gap_pct, 0.0) * 2.0,
+                30.0
+            )
+
+            event_score += min(
+                (pm_volume / 100_000.0) * 20.0,
+                30.0
+            )
+
+            if pm_dist_signed >= 0:
+                event_score += 25.0
+
+            elif pm_dist_signed >= -2.0:
+                event_score += 15.0
+
+            elif pm_dist_signed >= -5.0:
+                event_score += 5.0
+
+            # IMPORTANT:
+            # No fake spread bonus.
+            # yfinance bulk data does not provide reliable L1.
+            spread_pct = None
+
+            event_score = round(
+                min(max(event_score, 0.0), 100.0),
+                1
+            )
+
+            if event_score >= 70:
+                grade = "A"
+            elif event_score >= 55:
+                grade = "B"
+            elif event_score >= 40:
+                grade = "C"
+            else:
+                grade = "WATCH"
+
+            candidate = {
+                "ticker": ticker,
+                "price": price,
+                "prev_close": prev_close,
+                "gap_pct": gap_pct,
+
+                "pm_volume": pm_volume,
+                "pm_bars": pm_bars,
+                "pm_bars_count": pm_bars,
+
+                "pm_high": pm_high,
+                "pm_low": pm_low,
+                "pm_vwap": pm_vwap,
+
+                "pm_dist_signed": pm_dist_signed,
+                "pm_high_dist": max(
+                    0.0,
+                    pm_dist_signed
+                ),
+
+                "spread_pct": spread_pct,
+
+                "pm_data_quality": "GOOD_DATA",
+                "pm_data_error": None,
+
+                "rvol": None,
+                "rvol_status": "UNAVAILABLE",
+
+                "event_score": event_score,
+                "grade": grade,
+
+                "state": "WATCH",
+
+                "mode": EXPERIMENT_MODE,
+                "strategy_version": STRATEGY_VERSION,
+                "data_version": DATA_VERSION,
+            }
+
+            candidates.append(candidate)
+            stats["validated"] += 1
+
+            print(
+                f"[PM PASS] {ticker}"
+                f" | Price={price:.2f}"
+                f" | Gap={gap_pct:.1f}%"
+                f" | Vol={pm_volume:,}"
+                f" | PMH={pm_high:.2f}"
+                f" | VWAP={pm_vwap:.2f}"
+                f" | Score={event_score}"
+            )
+
+        time_module.sleep(0.75)
+
+    # ------------------------------------------------------------
+    # FINAL SORT
+    # ------------------------------------------------------------
+
+    candidates.sort(
+        key=lambda x: (
+            x.get("event_score", 0.0),
+            x.get("pm_volume", 0),
+            x.get("gap_pct", 0.0),
+        ),
+        reverse=True,
+    )
+
+    print()
+    print("=" * 70)
+    print("PREMARKET SUMMARY")
+    print("=" * 70)
+
+    for key, value in stats.items():
+        print(f"{key:20}: {value}")
+
+    print("=" * 70)
+    print(
+        f"[Premarket] Final candidates: "
+        f"{len(candidates)}"
+    )
+
+    # Keep enough candidates for deep analysis.
     return candidates[:20]
