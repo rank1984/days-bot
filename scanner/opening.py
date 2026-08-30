@@ -16,7 +16,7 @@ def check_opening_confirmation(watchlist: List[Dict[str, Any]]) -> List[Dict[str
     מקבל רשימת מועמדים (כל אחד עם מפתחות: ticker, pm_high, pm_vwap, price, opportunity_score, ...)
     בודק 5 דקות אחרונות אחרי 09:30 ET:
       - מחיר נוכחי > pm_high (פריצה)
-      - נפח ב-5 הדקות האחרונות לפחות פי 1.5 מהממוצע של 5 הדקות (או > 100K)
+      - נפח ב-5 הדקות האחרונות לפחות פי 1.5 מהממוצע של 5 הדקות (או > 50K)
       - מחיר מעל VWAP של 5 הדקות
     מחזיר רשימה של מועמדים שעברו את האישור, עם שדות נוספים: current_price, breakout_price, confirmed_volume, confirmed_vwap
     """
@@ -31,10 +31,6 @@ def check_opening_confirmation(watchlist: List[Dict[str, Any]]) -> List[Dict[str
 
     print(f"[Opening] Checking {len(watchlist)} candidates at {now_et.strftime('%H:%M:%S')} ET")
 
-    # נבצע סריקה של 5 הדקות האחרונות (או 10 כדי להיות בטוחים)
-    start_time = now_et - timedelta(minutes=10)
-    # נסיים ב-now_et, אבל yfinance לא יודע לקבל end=now, אז נשתמש ב-period
-    # נשתמש ב-yfinance להורדת 5-min bars (או 1-min) ל-10 דקות אחרונות
     confirmed = []
 
     for candidate in watchlist:
@@ -87,8 +83,6 @@ def check_opening_confirmation(watchlist: List[Dict[str, Any]]) -> List[Dict[str
             # 3. מחיר מעל VWAP
             if current_price < vwap * 0.995:
                 continue
-
-            # 4. (אופציונלי) ספרד - אין לנו, מדלגים
 
             # העתקת המועמד והוספת שדות אישור
             confirmed_candidate = candidate.copy()
