@@ -1,5 +1,5 @@
 """
-telegram_v3.py – V3.0 Decision Cards & V3.1 Trade Plan Cards & V3.2 Full Alert
+telegram_v3.py – V3.0 Decision Cards & V3.1/V3.2/V3.3 Trade Plan Cards
 """
 
 import requests
@@ -10,7 +10,7 @@ ET = pytz.timezone("America/New_York")
 
 
 def send_message(token: str, chat_id: str, text: str) -> bool:
-    """Send a Telegram message (duplicated here for safety if import fails)."""
+    """Send a Telegram message"""
     if not token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -81,13 +81,12 @@ def format_decision_card(stock_data: dict, quant_data: dict, ai_decision: dict) 
 
 
 # ============================================================
-# V3.1 TRADE PLAN CARD
+# V3.1 / V3.2 TRADE PLAN CARD
 # ============================================================
 
 def format_trade_card_v31(plan: dict) -> str:
     """
     Format a V3.1 trade plan (enriched candidate) into a beautiful Telegram message.
-    Expects all keys from build_trade_plan to be present.
     """
     lines = []
     lines.append("🚨 DAYS-BOT V3.1")
@@ -154,49 +153,159 @@ def format_trade_card_v31(plan: dict) -> str:
 
 
 # ============================================================
-# V3.2 FULL ALERT CARD (NEW – FOR FULL SCAN)
+# V3.2 OPENING CONFIRMATION CARD
 # ============================================================
 
-def format_full_alert(candidate: dict) -> str:
-    """פורמט עשיר עם כל הנתונים – ל-full scan"""
+def format_trade_card_v32(candidate, plan, confirmed=False):
+    """V3.2 format with opening confirmation status."""
     lines = []
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🚨 DAYS-BOT V3.2")
+    lines.append("TRADE DECISION" if confirmed else "PRE-MARKET WATCH")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"🥇 {candidate['ticker']}")
+    lines.append(f"Score: {candidate.get('opportunity_score', 0)}/100")
+    lines.append(f"Grade: {candidate.get('grade', 'N/A')}")
+    lines.append("")
+    lines.append("📈 SETUP")
+    lines.append(f"Gap:       {candidate.get('gap_pct', 0):+.1f}%")
+    lines.append(f"PM High:   ${candidate.get('pm_high', 0):.2f}")
+    lines.append(f"VWAP:      ${candidate.get('pm_vwap', 0):.2f}")
+    lines.append(f"PM Volume: {candidate.get('pm_volume', 0):,}")
+    lines.append("")
+    if confirmed:
+        lines.append("🟢 STATUS: CONFIRMED BREAKOUT")
+        lines.append(f"Current: ${candidate.get('current_price', 0):.2f}")
+    else:
+        lines.append("🟡 STATUS: WAIT FOR BREAKOUT")
+
+    if plan.get('decision') != "NO TRADE" and plan.get('entry') is not None:
+        lines.append("")
+        lines.append("🎯 ENTRY")
+        lines.append(f"${plan['entry']:.2f}")
+        lines.append("")
+        lines.append("🛑 STOP")
+        lines.append(f"${plan['stop']:.2f}")
+        lines.append("")
+        lines.append("🎯 TARGETS")
+        lines.append(f"T1 ${plan['target_1']:.2f}  (+{((plan['target_1']-plan['entry'])/plan['entry']*100):.1f}%)")
+        lines.append(f"T2 ${plan['target_2']:.2f}  (+{((plan['target_2']-plan['entry'])/plan['entry']*100):.1f}%)")
+        lines.append("")
+        lines.append("⚖️ RISK")
+        lines.append(f"Risk/share: ${plan['risk_per_share']:.2f}")
+        lines.append(f"Suggested shares: {plan['position_shares']}")
+        lines.append(f"Max loss: ~${plan['risk_dollars']:.2f}")
+        lines.append("")
+        lines.append("⏱ HOLDING PLAN")
+        lines.append(f"{plan['hold_type']} ({plan['hold_min']}-{plan['hold_max']} min)")
+        lines.append("")
+        lines.append("🔔 TRIGGER")
+        lines.append("Close above PM High + volume confirmation")
+        lines.append("")
+        lines.append("❌ CANCEL IF")
+        for cond in plan.get('invalidation_conditions', []):
+            lines.append(f"• {cond}")
+    else:
+        lines.append("")
+        lines.append("❌ NO TRADE – " + plan.get('reason', 'Score too low'))
+
+    lines.append("")
+    lines.append("🤖 AI (summary)")
+    lines.append("Strong setup, but manual execution required.")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
+# ============================================================
+# V3.3 FULL ANALYSIS CARD (WITH ALL METRICS)
+# ============================================================
+
+def format_full_alert_v33(candidate: dict) -> str:
+    """
+    פורמט עשיר עם כל הנתונים החדשים של V3.3:
+    Float, Short Interest, RVOL, RS, Catalyst, Sentiment, SEC Risk
+    """
+    lines = []
+    a = candidate.get('analysis', {})
+    plan = candidate  # candidate already contains all trade plan fields
+
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"🚀 {candidate['ticker']} – TOP PICK")
     lines.append(f"ציון כולל: {candidate.get('composite_score', 0)}/100")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"💰 מחיר נוכחי: ${candidate['price']:.2f}")
-    lines.append(f"📈 Gap: {candidate['gap_pct']:+.1f}%")
-    lines.append(f"📊 PM High: ${candidate['pm_high']:.2f} | VWAP: ${candidate['pm_vwap']:.2f}")
-    lines.append(f"📦 נפח PM: {candidate['pm_volume']:,}")
+
+    # Price & Gap
+    lines.append(f"💰 מחיר: ${candidate['price']:.2f}  |  Gap: {candidate['gap_pct']:+.1f}%")
+    lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  VWAP: ${candidate['pm_vwap']:.2f}")
+    lines.append(f"📦 PM Volume: {candidate['pm_volume']:,}")
     lines.append("")
-    lines.append("📰 חדשות אחרונות:")
-    for headline in candidate.get('analysis', {}).get('news', [])[:3]:
-        lines.append(f"  • {headline}")
+
+    # Fundamental Data
+    float_val = a.get('float', 0)
+    short = a.get('short_interest', 0)
+    rvol = a.get('rvol', 0)
+    rs = a.get('rs', 0)
+    lines.append("📊 FUNDAMENTALS:")
+    lines.append(f"  Float: {float_val:,.0f}" if float_val else "  Float: N/A")
+    lines.append(f"  Short Interest: {short*100:.1f}%" if short else "  Short Interest: N/A")
+    lines.append(f"  RVOL: {rvol:.1f}x" if rvol else "  RVOL: N/A")
+    lines.append(f"  Relative Strength: {rs:.2f}" if rs else "  RS: N/A")
     lines.append("")
-    lines.append(f"📊 RVOL: {candidate.get('analysis', {}).get('rvol', 'N/A')}")
-    lines.append(f"📊 חוזק יחסי: {candidate.get('analysis', {}).get('rs', 'N/A')}")
-    lines.append(f"💬 סנטימנט (StockTwits): {candidate.get('analysis', {}).get('sentiment', {}).get('stocktwits', 'N/A')}")
-    lines.append(f"🔍 פופולריות גוגל: {candidate.get('analysis', {}).get('sentiment', {}).get('google_trends', 'N/A')}")
+
+    # News & Catalyst
+    headlines = a.get('news', [])
+    catalyst = a.get('catalyst', {})
+    lines.append("📰 NEWS:")
+    if headlines:
+        for h in headlines[:3]:
+            lines.append(f"  • {h}")
+    else:
+        lines.append("  • No recent news")
     lines.append("")
-    lines.append("🎯 תוכנית מסחר:")
-    lines.append(f"  כניסה: ${candidate.get('entry', 0):.2f}")
-    lines.append(f"  סטופ: ${candidate.get('stop', 0):.2f}")
-    lines.append(f"  יעד 1: ${candidate.get('target_1', 0):.2f}")
-    lines.append(f"  יעד 2: ${candidate.get('target_2', 0):.2f}")
-    lines.append(f"  R:R: {candidate.get('risk_reward_1', 0):.1f}R / {candidate.get('risk_reward_2', 0):.1f}R")
+    lines.append(f"🔬 Catalyst Type: {catalyst.get('type', 'UNKNOWN')}")
+    lines.append(f"  Quality Score: {catalyst.get('score', 0)}/10")
+    lines.append(f"  {catalyst.get('summary', '')}")
+
+    # Sentiment
+    sent = a.get('sentiment', {})
     lines.append("")
-    lines.append(f"📦 גודל פוזיציה מומלץ: {candidate.get('position_shares', 0)} מניות")
-    lines.append(f"⚠️ סיכון מרבי: ${candidate.get('risk_dollars', 0):.2f}")
+    lines.append(f"💬 Sentiment: {sent.get('bull_pct', 0):.0f}% Bull / {sent.get('bear_pct', 0):.0f}% Bear")
+    lines.append(f"  Net Score: {sent.get('sentiment_score', 0):.2f}")
+
+    # SEC Risk
+    sec = a.get('sec_risk', {})
+    if sec.get('has_offering'):
+        lines.append("")
+        lines.append(f"⚠️ SEC RISK: {sec.get('risk_level')} – Offering filing detected ({sec.get('filing_type')})")
+    else:
+        lines.append("")
+        lines.append("✅ No active SEC offering detected.")
+
+    # Trade Plan
     lines.append("")
-    lines.append("🧠 סיכום AI:")
-    lines.append(candidate.get('ai_summary', 'אין סיכום כרגע.'))
+    lines.append("🎯 TRADE PLAN:")
+    lines.append(f"  Entry: ${candidate.get('entry', 0):.2f}")
+    lines.append(f"  Stop:  ${candidate.get('stop', 0):.2f}")
+    lines.append(f"  T1:    ${candidate.get('target_1', 0):.2f}  ({candidate.get('risk_reward_1', 0):.1f}R)")
+    lines.append(f"  T2:    ${candidate.get('target_2', 0):.2f}  ({candidate.get('risk_reward_2', 0):.1f}R)")
+    lines.append(f"  Shares: {candidate.get('position_shares', 0)}")
+    lines.append(f"  Max Loss: ${candidate.get('risk_dollars', 0):.2f}")
+
+    # Hold Time
     lines.append("")
-    lines.append("⏱ זמן החזקה משוער:")
-    lines.append(f"  {candidate.get('hold_type', '')} ({candidate.get('hold_min', 0)}-{candidate.get('hold_max', 0)} דקות)")
+    lines.append(f"⏱ Hold: {candidate.get('hold_type', 'NONE')} ({candidate.get('hold_min', 0)}-{candidate.get('hold_max', 0)} min)")
+
+    # AI Summary
     lines.append("")
-    lines.append("❌ תנאי ביטול:")
+    lines.append("🧠 AI SUMMARY:")
+    lines.append(candidate.get('ai_summary', 'N/A'))
+
+    # Invalidation
+    lines.append("")
+    lines.append("❌ CANCEL IF:")
     for cond in candidate.get('invalidation_conditions', []):
         lines.append(f"  • {cond}")
+
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ ביצוע ידני בלבד – אין פקודות אוטומטיות.")
+    lines.append("⚠️ MANUAL EXECUTION ONLY")
     return "\n".join(lines)
