@@ -61,8 +61,7 @@ def full_scan(manual=False) -> list:
             composite_score += 7
         c['composite_score'] = round(min(100, composite_score), 1)
 
-        # AI summary (נעשה רק למועמדים המובילים אחרי הדירוג, כדי לחסוך בקשות)
-        # נשמור את הניתוח להמשך
+        # AI summary – נשמור את הניתוח להמשך
         c['analysis'] = analysis
         enriched.append(c)
 
