@@ -1,63 +1,109 @@
 """
 DAYS-BOT V3.2 – Opening Confirmation (after 09:30 ET)
+בודק מועמדים מה-Premarket שפרצו מעל PM High עם נפח ואישור VWAP.
 """
-from datetime import datetime
+import pandas as pd
+from datetime import datetime, timedelta
 import pytz
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+import yfinance as yf
+from typing import List, Dict, Any
 
 ET = pytz.timezone("America/New_York")
 
-def check_opening_confirmation(watchlist, now_et):
+
+def check_opening_confirmation(watchlist: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    מקבל רשימת מועמדים (עם pm_high) ובודק אם הם פרצו מעל pm_high
-    עם נפח מספיק ומחיר מעל VWAP.
+    מקבל רשימת מועמדים (כל אחד עם מפתחות: ticker, pm_high, pm_vwap, price, opportunity_score, ...)
+    בודק 5 דקות אחרונות אחרי 09:30 ET:
+      - מחיר נוכחי > pm_high (פריצה)
+      - נפח ב-5 הדקות האחרונות לפחות פי 1.5 מהממוצע של 5 הדקות (או > 100K)
+      - מחיר מעל VWAP של 5 הדקות
+    מחזיר רשימה של מועמדים שעברו את האישור, עם שדות נוספים: current_price, breakout_price, confirmed_volume, confirmed_vwap
     """
-    client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-    symbols = [c['ticker'] for c in watchlist]
-    if not symbols:
+    if not watchlist:
         return []
 
-    start = now_et - pd.Timedelta(minutes=5)  # 5 דקות אחרונות
-    req = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Minute,
-        start=start,
-        end=now_et,
-    )
-    bars_data = client.get_stock_bars(req).data
+    now_et = datetime.now(ET)
+    # אם לפני 09:30 – לא בודקים
+    if now_et.time() < datetime.strptime("09:30", "%H:%M").time():
+        print("[Opening] Before 09:30 ET – skipping confirmation.")
+        return []
 
+    print(f"[Opening] Checking {len(watchlist)} candidates at {now_et.strftime('%H:%M:%S')} ET")
+
+    # נבצע סריקה של 5 הדקות האחרונות (או 10 כדי להיות בטוחים)
+    start_time = now_et - timedelta(minutes=10)
+    # נסיים ב-now_et, אבל yfinance לא יודע לקבל end=now, אז נשתמש ב-period
+    # נשתמש ב-yfinance להורדת 5-min bars (או 1-min) ל-10 דקות אחרונות
     confirmed = []
-    for c in watchlist:
-        ticker = c['ticker']
-        bars = bars_data.get(ticker, [])
-        if not bars:
+
+    for candidate in watchlist:
+        ticker = candidate['ticker']
+        pm_high = candidate.get('pm_high', 0)
+        pm_vwap = candidate.get('pm_vwap', 0)
+
+        if pm_high <= 0 or pm_vwap <= 0:
             continue
-        df = pd.DataFrame([{'time': b.timestamp, 'close': b.close, 'volume': b.volume} for b in bars])
-        df.set_index('time', inplace=True)
-        current_price = df['close'].iloc[-1]
-        # תנאי אישור:
-        # 1. מחיר > pm_high
-        pm_high = c.get('pm_high', 0)
-        if current_price <= pm_high:
+
+        try:
+            # נשלוף נתוני 1-minute ל-15 דקות אחרונות (כולל אחרי 09:30)
+            data = yf.download(ticker, period="5d", interval="1m", prepost=True, progress=False)
+            if data.empty:
+                continue
+
+            # נוודא timezone
+            data.index = pd.to_datetime(data.index)
+            if data.index.tz is None:
+                data.index = data.index.tz_localize("UTC")
+            data.index = data.index.tz_convert(ET)
+
+            # נסנן רק רלוונטי: מ-09:30 ועד עכשיו
+            session_start = ET.localize(datetime.combine(now_et.date(), datetime.strptime("09:30", "%H:%M").time()))
+            data = data[data.index >= session_start]
+            if data.empty:
+                continue
+
+            # ניקח את 5 הדקות האחרונות (או פחות אם אין)
+            recent = data.tail(5)
+            if len(recent) < 3:
+                continue
+
+            current_price = recent['Close'].iloc[-1]
+            avg_volume = recent['Volume'].mean()
+            last_volume = recent['Volume'].iloc[-1]
+
+            # VWAP ל-5 דקות
+            vwap = (recent['Close'] * recent['Volume']).sum() / recent['Volume'].sum() if recent['Volume'].sum() > 0 else recent['Close'].mean()
+
+            # תנאי אישור:
+            # 1. מחיר > PM High (פריצה)
+            if current_price <= pm_high:
+                continue
+
+            # 2. נפח - לפחות פי 1.5 מהממוצע או לפחות 50K
+            if last_volume < avg_volume * 1.5 and last_volume < 50000:
+                continue
+
+            # 3. מחיר מעל VWAP
+            if current_price < vwap * 0.995:
+                continue
+
+            # 4. (אופציונלי) ספרד - אין לנו, מדלגים
+
+            # העתקת המועמד והוספת שדות אישור
+            confirmed_candidate = candidate.copy()
+            confirmed_candidate['current_price'] = round(current_price, 4)
+            confirmed_candidate['breakout_price'] = round(pm_high, 4)
+            confirmed_candidate['confirmed_volume'] = last_volume
+            confirmed_candidate['confirmed_vwap'] = round(vwap, 4)
+            confirmed_candidate['confirmation_time'] = now_et.strftime('%H:%M:%S')
+            confirmed.append(confirmed_candidate)
+
+            print(f"[Opening] ✅ {ticker} confirmed at ${current_price:.2f} (breakout ${pm_high:.2f})")
+
+        except Exception as e:
+            print(f"[Opening] Error checking {ticker}: {e}")
             continue
-        # 2. נפח גדל (לפחות 2x מהממוצע ב-5 דקות אחרונות)
-        avg_vol = df['volume'].mean()
-        if avg_vol == 0 or df['volume'].iloc[-1] < avg_vol * 1.5:
-            continue
-        # 3. spread (אין לנו, אז נדלג)
-        # 4. VWAP – נחשב VWAP ל-5 דקות
-        vwap = (df['close'] * df['volume']).sum() / df['volume'].sum() if df['volume'].sum() > 0 else df['close'].mean()
-        if current_price < vwap * 0.995:
-            continue
-        # כל התנאים עברו
-        confirmed.append({
-            **c,
-            "current_price": current_price,
-            "breakout_price": pm_high,
-            "volume_confirm": True,
-            "vwap_confirm": True,
-        })
+
+    print(f"[Opening] Confirmed {len(confirmed)} out of {len(watchlist)}")
     return confirmed
