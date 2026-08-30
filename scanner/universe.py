@@ -49,8 +49,7 @@ def load_universe() -> List[str]:
         else:
             print("[Universe] No cache file found.")
 
-        # Ultimate fallback: hardcoded list of well-known active stocks (small, just for testing)
-        # You can expand this or keep it as a minimal safe set.
+        # Ultimate fallback: hardcoded list of well-known active stocks
         fallback = ["SPY", "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "JPM", "VTI"]
         print(f"[Universe] Using hardcoded fallback ({len(fallback)} symbols).")
         return fallback
