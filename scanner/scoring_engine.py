@@ -1,12 +1,17 @@
 """
-Scoring Engine V3.3 – ציון משוקלל עם Hard Filters & Risk Checks
+Scoring Engine V3.4 – ציון משוקלל עם Hard Filters ו-Learning Mode
 """
+from utils.config import LEARNING_MODE
+
+
 def calculate_composite_score(candidate: dict, analysis: dict) -> float:
     """
     מחשב ציון מורכב לפי:
     - Hard Filter: Float < 20M, Short Interest > 10%, RVOL > 5, Gap > 10%
     - Risk Check: SEC Offering -> הפחתת ציון
     - Sentiment & Catalyst Quality
+    
+    LEARNING_MODE: True = ניכוי ציון במקום פסילה
     """
     score = 0.0
 
@@ -83,13 +88,45 @@ def calculate_composite_score(candidate: dict, analysis: dict) -> float:
         else:
             score -= 10
 
-    # Float גבוה מדי (סינון קשיח)
+    # ============================================================
+    # HARD FILTERS – עם Learning Mode
+    # ============================================================
+    
+    # Float: אם > 50M
     if float_val and float_val > 50_000_000:
-        score -= 20
-
-    # Short Interest נמוך מאוד (אין squeeze potential)
+        if LEARNING_MODE:
+            score -= 25  # רק ניכוי ב-Learning Mode
+        else:
+            score = -999  # פסילה מלאה
+    
+    # Gap: אם < 10%
+    if gap < 10:
+        if LEARNING_MODE:
+            score -= 20
+        else:
+            score = -999
+    
+    # RVOL: אם < 3x
+    if rvol and rvol < 3:
+        if LEARNING_MODE:
+            score -= 20
+        else:
+            score = -999
+    
+    # Short Interest: אם < 5% (אין squeeze potential)
     if short and short < 0.05:
-        score -= 10
+        if LEARNING_MODE:
+            score -= 10
+        else:
+            score = -999
+    
+    # Personality: GAP_AND_CRAP
+    personality = analysis.get('personality', {}).get('personality', 'NEUTRAL')
+    if personality == "GAP_AND_CRAP":
+        if LEARNING_MODE:
+            score -= 30
+        else:
+            score = -999
 
     # ============================================================
     # Normalize
