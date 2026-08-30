@@ -1,19 +1,16 @@
 """
-DAYS-BOT V3.0 – Premarket Scanner (Keyless / yfinance)
+DAYS-BOT V3.1 – Premarket Scanner (Keyless / yfinance)
 ======================================================
 
-Experiment rules:
-1. Discovery is the hard candidate generator (using yfinance).
-2. PM data comes from Yahoo Finance (1m bars, prepost=True).
-3. PM bars are QUALITY metadata, not a hard gate.
-4. RVOL is informational only.
-5. Spread is mocked to 0 (yfinance doesn't provide reliable premarket L1 bid/ask).
-6. Signed PM distance is preserved.
-7. Every candidate receives experiment metadata.
-8. No live trading is executed here.
+V3.1 fixes:
+- spread_pct = None (not 0)
+- PM window uses full timestamps, UTC->ET conversion
+- price is taken from data up to now_et only
+- spread_status = "UNAVAILABLE"
+- opportunity_score replaces event_score (but we keep both for transition)
 """
 
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import List
 import pytz
 import pandas as pd
@@ -73,28 +70,24 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     # STEP 1: PRE-FETCH PREVIOUS CLOSES (FAST DAILY BATCH)
     # ------------------------------------------------------------
     print("[Premarket] Fetching previous daily closes for discovery...")
-    # Fetch 5 days to ensure we get the last valid close even after a long weekend
     daily_data = yf.download(
-        " ".join(universe), 
-        period="5d", 
-        interval="1d", 
+        " ".join(universe),
+        period="5d",
+        interval="1d",
         progress=False,
         threads=True
     )
-    
+
     prev_closes = {}
     if isinstance(daily_data.columns, pd.MultiIndex):
         for ticker in universe:
             if ticker in daily_data['Close']:
                 series = daily_data['Close'][ticker].dropna()
                 if not series.empty:
-                    # We take the second to last element if today's market is open, 
-                    # but if we are in PM, the last valid close is yesterday's.
                     prev_closes[ticker] = float(series.iloc[-1])
     else:
-        # Edge case if universe has only 1 symbol
         series = daily_data['Close'].dropna()
-        if not series.empty:
+        if not series.empty and len(universe) > 0:
             prev_closes[universe[0]] = float(series.iloc[-1])
 
     print(f"[Premarket] Found previous closes for {len(prev_closes):,} symbols.")
@@ -115,26 +108,33 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     }
 
     validated_candidates = []
-    
-    pm_start_time = time(4, 0)
-    pm_end_time = time(9, 30)
+
+    # PM window: 04:00 ET up to min(now_et, 09:30 ET)
+    pm_start = ET.localize(
+        datetime.combine(now_et.date(), time(4, 0))
+    )
+    pm_end = min(
+        now_et,
+        ET.localize(
+            datetime.combine(now_et.date(), time(9, 30))
+        )
+    )
 
     # ------------------------------------------------------------
     # STEP 2: DISCOVERY & PM VALIDATION (1-MIN BATCHES)
     # ------------------------------------------------------------
-    
+
     batch_size = 150
     for i in range(0, len(universe), batch_size):
         batch = universe[i : i + batch_size]
-        
+
         try:
-            # Download 1-minute data including premarket
             pm_data = yf.download(
-                " ".join(batch), 
-                period="1d", 
-                interval="1m", 
-                prepost=True, 
-                group_by="ticker", 
+                " ".join(batch),
+                period="1d",
+                interval="1m",
+                prepost=True,
+                group_by="ticker",
                 progress=False,
                 threads=True
             )
@@ -162,10 +162,23 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     stats["no_data"] += 1
                     continue
 
-                # --- DISCOVERY ---
-                # Current price is the close of the latest 1-min bar
+                # --- CRITICAL FIX: Ensure timezone and filter up to now_et ---
+                df.index = pd.to_datetime(df.index)
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
+                df.index = df.index.tz_convert(ET)
+
+                # Keep only bars up to current time (no future data)
+                df = df[df.index <= now_et]
+
+                if df.empty:
+                    stats["no_data"] += 1
+                    continue
+
+                # Current price is the last available close (up to now_et)
                 price = float(df['Close'].iloc[-1])
 
+                # --- DISCOVERY ---
                 if price < DISCOVERY_MIN_PRICE or price > DISCOVERY_MAX_PRICE:
                     stats["price_fail"] += 1
                     continue
@@ -178,14 +191,15 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     continue
                 stats["gap_pass"] += 1
 
-                # yfinance does not provide bid/ask spread during bulk download
-                spread_pct = 0.0
+                # --- SPREAD: unavailable from yfinance ---
+                spread_pct = None
+                spread_status = "UNAVAILABLE"
                 stats["spread_pass"] += 1
                 stats["discovery_pass"] += 1
 
                 # --- PM VALIDATION ---
-                # Filter dataframe for Premarket times (04:00 - 09:30 ET)
-                df_pm = df[(df.index.time >= pm_start_time) & (df.index.time < pm_end_time)]
+                # Filter df to PM window using full timestamps
+                df_pm = df[(df.index >= pm_start) & (df.index < pm_end)]
 
                 if df_pm.empty:
                     continue
@@ -199,7 +213,6 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 pm_high = float(df_pm['High'].max())
                 pm_low = float(df_pm['Low'].min())
                 total_volume = df_pm['Volume'].sum()
-
                 if total_volume > 0:
                     pm_vwap = float((df_pm['Close'] * df_pm['Volume']).sum() / total_volume)
                 else:
@@ -212,6 +225,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
                 pm_high_dist = max(0.0, pm_dist_signed) if pm_dist_signed is not None else None
 
+                # Quality flag
                 if pm_bars_count >= VALIDATION_MIN_PM_BARS and pm_volume >= VALIDATION_MIN_PM_VOLUME_ABS:
                     pm_data_quality = "GOOD_DATA"
                 elif pm_bars_count > 0:
@@ -229,6 +243,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     f" | quality={pm_data_quality}"
                 )
 
+                # Hard filters
                 if pm_dist_signed is None or pm_dist_signed < -VALIDATION_MAX_PM_DIST:
                     continue
 
@@ -239,29 +254,31 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 if price < vwap_required_price:
                     continue
 
-                # --- SCORING ---
-                event_score = 0.0
-                event_score += min(max(gap_pct, 0.0) * 2.0, 30.0)
+                # --- OPPORTUNITY SCORE (was event_score) ---
+                score = 0.0
+                # Gap contribution
+                score += min(max(gap_pct, 0.0) * 2.0, 30.0)
+                # Volume contribution
                 if pm_volume > 0:
-                    event_score += min((pm_volume / 100_000.0) * 20.0, 30.0)
-
+                    score += min((pm_volume / 100_000.0) * 20.0, 30.0)
+                # Distance from PM High
                 if pm_dist_signed >= 0:
-                    event_score += 25.0
+                    score += 25.0
                 elif pm_dist_signed >= -2.0:
-                    event_score += 15.0
+                    score += 15.0
                 elif pm_dist_signed >= -5.0:
-                    event_score += 5.0
+                    score += 5.0
+                # Spread – only if available and good
+                if spread_pct is not None and spread_pct <= 1.0:
+                    score += 10.0
 
-                if spread_pct <= 1.0:
-                    event_score += 10.0
+                score = round(min(100.0, max(0.0, score)), 1)
 
-                event_score = round(min(100.0, max(0.0, event_score)), 1)
-
-                if event_score >= 70:
+                if score >= 70:
                     grade = "A"
-                elif event_score >= 55:
+                elif score >= 55:
                     grade = "B"
-                elif event_score >= 40:
+                elif score >= 40:
                     grade = "C"
                 else:
                     grade = "WATCH"
@@ -272,6 +289,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     "prev_close": prev_close,
                     "gap_pct": gap_pct,
                     "spread_pct": spread_pct,
+                    "spread_status": spread_status,
                     "pm_volume": pm_volume,
                     "pm_bars": pm_bars_count,
                     "pm_bars_count": pm_bars_count,
@@ -284,7 +302,8 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                     "pm_data_error": None,
                     "rvol": None,
                     "rvol_status": "UNAVAILABLE",
-                    "event_score": event_score,
+                    "opportunity_score": score,      # new name
+                    "event_score": score,            # kept for backward compatibility
                     "grade": grade,
                     "state": "WATCH",
                     "mode": EXPERIMENT_MODE,
@@ -295,10 +314,9 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
                 validated_candidates.append(candidate)
 
             except Exception as e:
-                # Silently catch symbol-specific parsing errors
+                # Silently skip symbol-specific errors
                 continue
 
-        # Print progress
         print(f"[Discovery] Processed {min(i + batch_size, len(universe)):,}/{len(universe):,}")
 
     # ------------------------------------------------------------
@@ -319,7 +337,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
 
     print()
     print("=" * 70)
-    print("📊 PREMARKET SCAN V3.0 – KEYLESS MODE")
+    print("📊 PREMARKET SCAN V3.1 – KEYLESS MODE (FIXED)")
     print("=" * 70)
     print(f"Discovery candidates: {stats['discovery_pass']:,}")
     print(f"PM validated:         {len(validated_candidates):,}")
@@ -332,7 +350,7 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     print("=" * 70)
 
     validated_candidates.sort(
-        key=lambda x: (x.get("event_score", 0.0), x.get("gap_pct", 0.0)),
+        key=lambda x: (x.get("opportunity_score", 0.0), x.get("gap_pct", 0.0)),
         reverse=True,
     )
 
