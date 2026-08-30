@@ -4,9 +4,9 @@ import os
 # BOT VERSION / EXPERIMENT METADATA
 # ============================================================
 
-BOT_VERSION = "V3.1"
-STRATEGY_VERSION = "V3.1"
-EXPERIMENT_MODE = "V3.1_LIVE_DECISION"
+BOT_VERSION = "V3.2"
+STRATEGY_VERSION = "V3.2"
+EXPERIMENT_MODE = "V3.2_LIVE_DECISION"
 DATA_VERSION = "YFINANCE_KEYLESS"
 
 # ============================================================
@@ -20,7 +20,7 @@ ALPACA_BASE_URL = os.getenv(
     "https://api.alpaca.markets"
 )
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")   # <-- הוסף
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
