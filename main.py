@@ -1,6 +1,10 @@
 """
-DAYS-BOT V3.2 – Full Scan & Manual Trading MVP
+DAYS-BOT V3.3 – DECISION ENGINE + FULL ANALYSIS
+Modes:
+    python main.py scan [--manual]         # Premarket scan only
+    python main.py fullscan [--manual]     # Full analysis with all metrics
 """
+
 import sys
 from pathlib import Path
 from datetime import datetime, time
@@ -19,19 +23,34 @@ from utils.config import (
     DATA_VERSION,
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
+    GEMINI_API_KEY,
     ACCOUNT_SIZE,
     MAX_RISK_PER_TRADE_V31
 )
 
 from scanner.premarket import scan_premarket
-from scanner.opening import check_opening_confirmation
-from scanner.full_scan import full_scan
 from scanner.universe import load_universe
 from database.db import init_db, save_alert
 from watchlist_manager import WatchlistManager
 from telegram_formatter import format_no_candidates, send_message
 from risk.trade_plan import build_trade_plan
-from telegram_v3 import format_trade_card_v31, format_full_alert
+from telegram_v3 import format_trade_card_v31, format_full_alert_v33
+
+# ============================================================
+# V3.0 MODULES (for backward compatibility)
+# ============================================================
+try:
+    from risk_engine import RiskEngine
+    from ai_decision import AIDecisionLayer
+    from telegram_v3 import format_decision_card
+    V30_AVAILABLE = True
+except ImportError:
+    V30_AVAILABLE = False
+
+# ============================================================
+# V3.3 FULL SCAN
+# ============================================================
+from scanner.full_scan_v33 import full_scan_v33
 
 
 def scan_mode(manual: bool = False):
@@ -44,7 +63,7 @@ def scan_mode(manual: bool = False):
     if manual:
         run_mode = "MANUAL"
     else:
-        run_mode = "V3.2_LIVE_EXPERIMENT"
+        run_mode = "V3.3_LIVE_EXPERIMENT"
 
     # Automatic window
     if not manual:
@@ -56,7 +75,7 @@ def scan_mode(manual: bool = False):
             return
 
     print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT V3.2 – PREMARKET SCAN")
+    print(f"[Main] DAYS-BOT V3.3 – PREMARKET SCAN + FULL ANALYSIS")
     print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
     print(f"[Main] MODE: {run_mode}")
     print(f"[Main] DATE: {today}")
@@ -97,32 +116,39 @@ def scan_mode(manual: bool = False):
         added += 1
     print(f"[Main] Saved {added} candidates.")
 
-    # 4. Send Telegram (top 1 – V3.1 format)
+    # 4. Send Telegram (top 1) – V3.1 format
     if enriched:
         top = enriched[0]
         msg = format_trade_card_v31(top)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print(f"[Main] Sent Telegram for {top['ticker']}")
 
+    # 5. Optional: V3.0 Legacy pipeline (if available)
+    if V30_AVAILABLE and len(enriched) >= 5:
+        print("\n[Main] Running V3.0 legacy pipeline for comparison...")
+        run_v30_pipeline(enriched[:5])
+
     print("\n" + "=" * 70)
     print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
     print("=" * 70)
 
 
-def full_scan_mode(manual: bool = False):
-    """מצב סריקה מלאה – מחזיר 5 מניות עם ניתוח מעמיק"""
+def fullscan_mode(manual: bool = False):
+    """
+    מצב Full Scan V3.3 – מפעיל את כל האנליזות
+    """
     init_db()
-
     now_et = datetime.now(ET)
     today = now_et.strftime("%Y-%m-%d")
 
     if manual:
-        run_mode = "MANUAL_FULL"
+        run_mode = "MANUAL_FULLSCAN"
     else:
-        run_mode = "V3.2_FULL_AUTO"
+        run_mode = "V3.3_FULLSCAN"
 
     print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT V3.2 – FULL SCAN (5 TOP PICKS)")
+    print(f"[Main] DAYS-BOT V3.3 – FULL ANALYSIS (ALL METRICS)")
+    print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
     print(f"[Main] MODE: {run_mode}")
     print(f"[Main] DATE: {today}")
     print(f"[Main] TIME: {now_et.strftime('%H:%M:%S')} ET")
@@ -131,31 +157,79 @@ def full_scan_mode(manual: bool = False):
     if manual:
         print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
 
-    top5 = full_scan(manual)
+    # 1. Run Full Scan V3.3
+    top5 = full_scan_v33(manual)
+
     if not top5:
-        print("[Main] No candidates after full analysis.")
+        print("[Main] No candidates passed all V3.3 filters.")
         return
 
-    # Save to DB & send Telegram
+    # 2. Save to DB
     for c in top5:
         c["strategy_version"] = STRATEGY_VERSION
         c["data_version"] = DATA_VERSION
         c["mode"] = run_mode
         save_alert(**c)
-        msg = format_full_alert(c)
+
+    # 3. Send Telegram for each Top 5
+    for i, c in enumerate(top5):
+        msg = format_full_alert_v33(c)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print(f"[Main] Sent full alert for {c['ticker']}")
+        print(f"[Main] Sent V3.3 alert for {c['ticker']} ({i+1}/5)")
 
     print("\n" + "=" * 70)
-    print("[Main] Full scan complete. 5 picks sent to Telegram.")
+    print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
     print("=" * 70)
+
+
+def run_v30_pipeline(candidates):
+    """V3.0 legacy pipeline for reference"""
+    try:
+        risk_engine = RiskEngine()
+        ai_layer = AIDecisionLayer(api_key=GEMINI_API_KEY)
+
+        regime_name, regime_mult, regime_reasons = risk_engine.get_market_regime()
+        print(f"[V3.0] Market Regime: {regime_name} (Multiplier: {regime_mult})")
+
+        for i, c in enumerate(candidates):
+            ticker = c['ticker']
+            stock_price = c.get("price", c.get("close", 0))
+            pm_high = c.get("pm_high", stock_price * 1.02)
+            pm_vwap = c.get("pm_vwap", stock_price * 0.98)
+
+            stock_data = {
+                "ticker": ticker,
+                "price": stock_price,
+                "gap_pct": c.get("gap_pct", 0),
+                "pm_volume": c.get("pm_volume", 0)
+            }
+
+            trade_plan = risk_engine.calculate_trade_plan(
+                price=stock_price,
+                pm_high=pm_high,
+                pm_vwap=pm_vwap,
+                regime_multiplier=regime_mult
+            )
+
+            quant_data = {
+                "regime": regime_name,
+                "regime_reasons": regime_reasons,
+                **trade_plan
+            }
+
+            ai_decision = ai_layer.analyze_setup(stock_data, quant_data)
+            msg = format_decision_card(stock_data, quant_data, ai_decision)
+            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+            print(f"[V3.0] Sent card for {ticker}")
+    except Exception as e:
+        print(f"[V3.0] Error running legacy pipeline: {e}")
 
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python main.py scan [--manual]")
-        print("  python main.py fullscan [--manual]")
+        print("  python main.py scan [--manual]        # Premarket scan")
+        print("  python main.py fullscan [--manual]    # Full V3.3 analysis")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
@@ -164,7 +238,8 @@ if __name__ == "__main__":
     if mode == "scan":
         scan_mode(manual=manual_run)
     elif mode == "fullscan":
-        full_scan_mode(manual=manual_run)
+        fullscan_mode(manual=manual_run)
     else:
         print(f"Unknown mode: {mode}")
+        print("Available modes: scan, fullscan")
         sys.exit(1)
