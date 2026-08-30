@@ -23,7 +23,7 @@ def format_trade_card_v32(candidate, plan, confirmed=False):
     else:
         lines.append("🟡 STATUS: WAIT FOR BREAKOUT")
 
-    if plan.get('decision') != "NO TRADE":
+    if plan.get('decision') != "NO TRADE" and plan.get('entry') is not None:
         lines.append("")
         lines.append("🎯 ENTRY")
         lines.append(f"${plan['entry']:.2f}")
@@ -47,11 +47,11 @@ def format_trade_card_v32(candidate, plan, confirmed=False):
         lines.append("Close above PM High + volume confirmation")
         lines.append("")
         lines.append("❌ CANCEL IF")
-        for cond in plan['invalidation_conditions']:
+        for cond in plan.get('invalidation_conditions', []):
             lines.append(f"• {cond}")
     else:
         lines.append("")
-        lines.append("❌ NO TRADE – " + plan.get('reason', ''))
+        lines.append("❌ NO TRADE – " + plan.get('reason', 'Score too low'))
 
     lines.append("")
     lines.append("🤖 AI (summary)")
