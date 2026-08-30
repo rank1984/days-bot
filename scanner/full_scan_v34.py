@@ -1,5 +1,5 @@
 """
-V3.4 Full Scan – משלב Personality, Sympathy, VWAP, and all metrics
+V3.4 Full Scan – מחזיר 5 מועמדים מובילים תמיד (גם אם לא עברו Hard Filters)
 """
 from scanner.premarket import scan_premarket
 from scanner.analyzers.float_analyzer import get_float_and_short
@@ -18,9 +18,10 @@ from scanner.scoring_engine import calculate_composite_score
 from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31
 
 
-def full_scan_v34(manual=False) -> list:
+def full_scan_v34(manual=False, debug=False) -> list:
     """
-    סריקה מלאה V3.4 – מחזירה Top 5 עם Personality + Sympathy + VWAP
+    סריקה מלאה V3.4 – מחזירה תמיד 5 מועמדים (גם אם לא עברו Hard Filters)
+    debug=True: מדפיסה מידע נוסף
     """
     print("\n[FullScan V3.4] Starting comprehensive analysis...")
 
@@ -29,10 +30,11 @@ def full_scan_v34(manual=False) -> list:
     if not candidates:
         return []
 
-    # 2. Analyze Top 25 candidates
+    # 2. Analyze Top 30 candidates
     enriched = []
-    for c in candidates[:25]:
-        print(f"[FullScan] Analyzing {c['ticker']}...")
+    for c in candidates[:30]:
+        if debug:
+            print(f"[FullScan] Analyzing {c['ticker']}...")
         analysis = {}
 
         # Float & Short
@@ -54,35 +56,25 @@ def full_scan_v34(manual=False) -> list:
         # SEC Risk
         analysis['sec_risk'] = check_offering_risk(c['ticker'])
 
-        # ============================================================
-        # NEW V3.4: Stock Personality
-        # ============================================================
+        # V3.4: Stock Personality
         analysis['personality'] = get_stock_personality(c['ticker'], c.get('gap_pct', 0))
 
-        # ============================================================
-        # NEW V3.4: VWAP (dynamic)
-        # ============================================================
+        # V3.4: VWAP
         vwap_data = calculate_vwap(c['ticker'], lookback_minutes=30)
         if not vwap_data:
             vwap_data = calculate_pm_vwap_from_candidate(c)
         analysis['vwap'] = vwap_data
 
-        # ============================================================
-        # NEW V3.4: Sympathy Candidates
-        # ============================================================
+        # V3.4: Sympathy
         analysis['sympathy'] = find_sympathy_candidates(c, max_candidates=3)
 
-        # ============================================================
-        # Trade Plan V3.4 (VWAP-based)
-        # ============================================================
+        # Trade Plan V3.4
         plan = build_trade_plan_v34(c, vwap_data)
         c.update(plan)
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # ============================================================
-        # Composite Score (V3.4 – עם Personality)
-        # ============================================================
+        # Personality bonus
         personality = analysis['personality']
         personality_bonus = 0
         if personality.get('personality') == "STRONG_FOLLOWER":
@@ -94,39 +86,71 @@ def full_scan_v34(manual=False) -> list:
 
         c['composite_score'] = calculate_composite_score(c, analysis) + personality_bonus
 
-        # Store analysis
+        # ============================================================
+        # Hard Filter Check (למטרות דיווח בלבד – לא פסילה)
+        # ============================================================
+        filter_results = []
+        failed_filters = []
+        passed_filters = []
+
+        # Gap > 10%
+        if c.get('gap_pct', 0) >= 10:
+            passed_filters.append("Gap > 10%")
+        else:
+            failed_filters.append(f"Gap {c.get('gap_pct', 0):.1f}% < 10%")
+
+        # Float < 50M
+        float_val = analysis.get('float', 0)
+        if float_val and float_val < 50_000_000:
+            passed_filters.append("Float < 50M")
+        elif float_val:
+            failed_filters.append(f"Float {float_val/1_000_000:.1f}M > 50M")
+        else:
+            failed_filters.append("Float not available")
+
+        # RVOL > 3
+        rvol = analysis.get('rvol', 0)
+        if rvol and rvol >= 3:
+            passed_filters.append("RVOL > 3x")
+        elif rvol:
+            failed_filters.append(f"RVOL {rvol:.1f}x < 3x")
+        else:
+            failed_filters.append("RVOL not available")
+
+        # SEC Risk – לא HIGH
+        sec_risk = analysis.get('sec_risk', {}).get('risk_level', 'LOW')
+        if sec_risk != 'HIGH':
+            passed_filters.append("No HIGH SEC risk")
+        else:
+            failed_filters.append("HIGH SEC risk (offering detected)")
+
+        # Personality – לא GAP_AND_CRAP
+        if personality.get('personality') != "GAP_AND_CRAP":
+            passed_filters.append("Personality not GAP_AND_CRAP")
+        else:
+            failed_filters.append("Personality: GAP_AND_CRAP")
+
+        c['filter_passed'] = passed_filters
+        c['filter_failed'] = failed_filters
+        c['filter_count'] = len(passed_filters)
         c['analysis'] = analysis
         enriched.append(c)
 
-    # 3. Hard Filters
-    filtered = []
-    for c in enriched:
-        float_val = c['analysis'].get('float', 0)
-        gap = c.get('gap_pct', 0)
-        rvol = c['analysis'].get('rvol', 0)
-        personality = c['analysis']['personality'].get('personality', 'NEUTRAL')
+    # 3. Sort by composite_score – תמיד מחזירים Top 5
+    enriched.sort(key=lambda x: x['composite_score'], reverse=True)
+    top5 = enriched[:5]
 
-        if float_val and float_val > 50_000_000:
-            continue
-        if gap < 10:
-            continue
-        if rvol and rvol < 3:
-            continue
-        if c['analysis']['sec_risk'].get('risk_level') == 'HIGH':
-            continue
-        if personality == "GAP_AND_CRAP":
-            print(f"[Filter] {c['ticker']} – Personality: GAP_AND_CRAP (rejected)")
-            continue
-
-        filtered.append(c)
-
-    # 4. Sort by composite_score and take Top 5
-    filtered.sort(key=lambda x: x['composite_score'], reverse=True)
-    top5 = filtered[:5]
-
-    # 5. Add AI Summary for Top 5
+    # 4. Add AI Summary for Top 5
     for c in top5:
         c['ai_summary'] = summarize_candidate(c, c['analysis'])
 
-    print(f"[FullScan V3.4] Found {len(top5)} qualified candidates.")
+    # 5. Debug Output
+    if debug:
+        print("\n[FullScan V3.4] Debug Output:")
+        for c in top5:
+            print(f"  {c['ticker']}: Score={c['composite_score']}, Filters passed={c['filter_count']}/5")
+            if c['filter_failed']:
+                print(f"    Failed: {', '.join(c['filter_failed'])}")
+
+    print(f"[FullScan V3.4] Returning {len(top5)} candidates (always top 5).")
     return top5
