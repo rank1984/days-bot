@@ -1,5 +1,5 @@
 """
-telegram_v3.py – V3.0 Decision Cards & V3.1/V3.2/V3.3 Trade Plan Cards
+telegram_v3.py – V3.0 Decision Cards & V3.1/V3.2/V3.3/V3.4 Trade Plan Cards
 """
 
 import requests
@@ -217,13 +217,14 @@ def format_trade_card_v32(candidate, plan, confirmed=False):
 
 
 # ============================================================
-# V3.3 FULL ANALYSIS CARD (WITH ALL METRICS)
+# V3.3 / V3.4 FULL ANALYSIS CARD (WITH ALL METRICS)
 # ============================================================
 
 def format_full_alert_v33(candidate: dict) -> str:
     """
-    פורמט עשיר עם כל הנתונים החדשים של V3.3:
-    Float, Short Interest, RVOL, RS, Catalyst, Sentiment, SEC Risk
+    פורמט עשיר עם כל הנתונים החדשים של V3.3/V3.4:
+    Float, Short Interest, RVOL, RS, Catalyst, Sentiment, SEC Risk,
+    Personality, Sympathy, VWAP (V3.4)
     """
     lines = []
     a = candidate.get('analysis', {})
@@ -236,9 +237,18 @@ def format_full_alert_v33(candidate: dict) -> str:
 
     # Price & Gap
     lines.append(f"💰 מחיר: ${candidate['price']:.2f}  |  Gap: {candidate['gap_pct']:+.1f}%")
-    lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  VWAP: ${candidate['pm_vwap']:.2f}")
+    lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  PM VWAP: ${candidate.get('pm_vwap', 0):.2f}")
     lines.append(f"📦 PM Volume: {candidate['pm_volume']:,}")
     lines.append("")
+
+    # VWAP Data (V3.4)
+    vwap = a.get('vwap', {})
+    if vwap:
+        lines.append("📈 VWAP LEVELS:")
+        lines.append(f"  VWAP: ${vwap.get('vwap', 0):.2f}")
+        lines.append(f"  Support: ${vwap.get('vwap_support', 0):.2f}")
+        lines.append(f"  Resistance: ${vwap.get('vwap_resistance', 0):.2f}")
+        lines.append("")
 
     # Fundamental Data
     float_val = a.get('float', 0)
@@ -251,6 +261,16 @@ def format_full_alert_v33(candidate: dict) -> str:
     lines.append(f"  RVOL: {rvol:.1f}x" if rvol else "  RVOL: N/A")
     lines.append(f"  Relative Strength: {rs:.2f}" if rs else "  RS: N/A")
     lines.append("")
+
+    # Personality (V3.4)
+    personality = a.get('personality', {})
+    if personality.get('sample_size', 0) > 0:
+        lines.append("🧠 STOCK PERSONALITY:")
+        lines.append(f"  Type: {personality.get('personality', 'NEUTRAL')}")
+        lines.append(f"  Avg 30min Return: {personality.get('avg_30min_return', 0):.1f}%")
+        lines.append(f"  Failure Rate: {personality.get('failure_rate', 0):.1f}%")
+        lines.append(f"  Sample Size: {personality.get('sample_size', 0)}")
+        lines.append("")
 
     # News & Catalyst
     headlines = a.get('news', [])
@@ -280,6 +300,15 @@ def format_full_alert_v33(candidate: dict) -> str:
     else:
         lines.append("")
         lines.append("✅ No active SEC offering detected.")
+
+    # Sympathy Plays (V3.4)
+    sympathy = a.get('sympathy', [])
+    if sympathy:
+        lines.append("")
+        lines.append("🔄 SYMPATHY PLAYS (same sector):")
+        for s in sympathy[:3]:
+            lines.append(f"  • {s['ticker']} – ${s['price']:.2f} (vol: {s.get('pm_volume', 0):,})")
+        lines.append(f"  Source: {sympathy[0].get('source', 'N/A')}")
 
     # Trade Plan
     lines.append("")
