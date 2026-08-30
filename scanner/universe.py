@@ -1,155 +1,242 @@
 """
 DAYS-BOT V3.4
-Stable Liquid Universe Loader
+Stable Keyless Universe
 
-Goals:
-- Small fixed universe to avoid yfinance 429
-- No FTP dependency during every scan
-- Local cache fallback
-- Remove ETFs / test issues / special symbols
-- Deterministic ordering
+Goal:
+    Keep Yahoo Finance request volume low.
+
+    Do NOT scan thousands of symbols.
+
+    Universe target:
+        ~100-150 liquid US equities.
+
+No API key required.
 """
 
-from pathlib import Path
 from typing import List
-import os
-import pandas as pd
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "data"
+# ============================================================
+# STABLE LIQUID UNIVERSE
+# ============================================================
 
-CACHE_PATH = DATA_DIR / "universe_cache.csv"
+STABLE_UNIVERSE = [
 
-# Keep this intentionally small.
-MAX_UNIVERSE = 150
+    # Mega / Large Cap
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "GOOG",
+    "TSLA",
+    "AVGO",
+    "AMD",
+    "NFLX",
+    "ORCL",
+    "CRM",
+    "ADBE",
+    "QCOM",
+    "INTC",
+    "MU",
+    "AMAT",
+    "LRCX",
+    "TXN",
 
+    # Financial
+    "JPM",
+    "BAC",
+    "WFC",
+    "GS",
+    "MS",
+    "C",
+    "V",
+    "MA",
+    "PYPL",
+    "COF",
 
-# Stable liquid universe.
-# This is a fallback/seed list, not a market-wide scanner.
-DEFAULT_UNIVERSE = [
-    "AAPL", "AMD", "AMZN", "BABA", "BAC", "COIN", "COST",
-    "CRM", "CVX", "DIS", "GOOG", "GOOGL", "INTC", "JNJ",
-    "JPM", "KO", "LI", "META", "MRK", "MSFT", "MSTR",
-    "MU", "NFLX", "NIO", "NVDA", "ORCL", "PDD", "PEP",
-    "PLTR", "PYPL", "QCOM", "RIVN", "SHOP", "SMCI",
-    "SNAP", "SOFI", "T", "TGT", "TSLA", "TSM", "UBER",
-    "UNH", "V", "WMT", "XOM",
+    # Consumer
+    "WMT",
+    "COST",
+    "TGT",
+    "HD",
+    "LOW",
+    "NKE",
+    "MCD",
+    "SBUX",
+    "KO",
+    "PEP",
+    "DIS",
+    "ABNB",
+    "BKNG",
+    "UBER",
+    "LYFT",
+    "DASH",
 
-    # Additional active names
-    "ABNB", "ADBE", "AMAT", "BA", "BB", "BIDU", "BITF",
-    "BLK", "C", "CCL", "CMCSA", "DAL", "DKNG", "DOCU",
-    "F", "FCX", "GILD", "GM", "HOOD", "IBM", "INTU",
-    "IONQ", "LCID", "LUMN", "LYFT", "MARA", "MRVL",
-    "NET", "NKE", "NU", "ON", "PATH", "PFE", "RBLX",
-    "RGTI", "RIVN", "ROKU", "SBUX", "SEDG", "SQ",
-    "TAL", "TME", "UAL", "UPST", "VZ", "WBD", "XPEV",
+    # Energy
+    "XOM",
+    "CVX",
+    "COP",
+    "SLB",
+    "OXY",
 
-    # Higher-volatility / small-cap candidates
-    "ACHR", "APLD", "ASTS", "BBAI", "BE", "CIFR",
-    "CLSK", "ENVX", "EVGO", "GRAB", "HIMS", "IREN",
-    "JOBY", "LAES", "MARA", "MPLN", "OPEN", "QBTS",
-    "RKLB", "RXRX", "SOUN", "TMC", "UUUU", "WULF",
+    # Healthcare
+    "LLY",
+    "JNJ",
+    "PFE",
+    "MRK",
+    "ABBV",
+    "BMY",
+    "UNH",
+    "CVS",
+    "ISRG",
 
-    # Liquid ETFs are intentionally excluded below.
+    # Industrial
+    "CAT",
+    "DE",
+    "BA",
+    "GE",
+    "HON",
+    "UPS",
+    "FDX",
+
+    # Semiconductors / AI
+    "ARM",
+    "SMCI",
+    "MRVL",
+    "ON",
+    "MCHP",
+    "ADI",
+    "KLAC",
+
+    # Software / Internet
+    "PLTR",
+    "SNOW",
+    "CRWD",
+    "PANW",
+    "NET",
+    "DDOG",
+    "MDB",
+    "SHOP",
+    "SQ",
+
+    # EV / Growth
+    "RIVN",
+    "LCID",
+    "F",
+    "GM",
+
+    # Biotech / higher beta
+    "MRNA",
+    "BNTX",
+    "CRSP",
+    "GILD",
+    "REGN",
+    "VRTX",
+
+    # Other liquid names
+    "COIN",
+    "HOOD",
+    "MSTR",
+    "SOFI",
+    "RBLX",
+    "ROKU",
+    "SNAP",
+    "PINS",
+    "SPOT",
+    "DKNG",
+    "CELH",
+
+    # ETFs excluded by design below,
+    # but retained here only if another module needs them.
+    # The scanner itself will remove ETFs.
+    "SPY",
+    "QQQ",
+    "IWM",
 ]
 
 
-def _clean_symbols(symbols: List[str]) -> List[str]:
-    cleaned = []
+# ============================================================
+# KNOWN BAD / NON-TRADABLE / PROBLEMATIC SYMBOLS
+# ============================================================
 
-    for symbol in symbols:
-        if not isinstance(symbol, str):
-            continue
+BLACKLIST = {
+
+    # Examples from current Yahoo errors
+    "BITF",
+    "MPLN",
+
+    # ETFs – scanner should not trade these
+    "SPY",
+    "QQQ",
+    "IWM",
+}
+
+
+# ============================================================
+# SYMBOL SANITIZER
+# ============================================================
+
+def _valid_symbol(symbol: str) -> bool:
+
+    if not isinstance(
+        symbol,
+        str
+    ):
+        return False
+
+    symbol = symbol.strip().upper()
+
+    if not symbol:
+        return False
+
+    if symbol in BLACKLIST:
+        return False
+
+    # Avoid warrants / preferred / units / weird symbols.
+    for char in (
+        "$",
+        ".",
+        "-",
+        "/",
+        "^",
+    ):
+
+        if char in symbol:
+            return False
+
+    return True
+
+
+# ============================================================
+# LOADER
+# ============================================================
+
+def load_universe() -> List[str]:
+
+    universe = []
+
+    seen = set()
+
+    for symbol in STABLE_UNIVERSE:
 
         symbol = symbol.strip().upper()
 
-        if not symbol:
+        if symbol in seen:
             continue
 
-        # Exclude instruments that tend to cause problems
-        # for this strategy.
-        if any(ch in symbol for ch in ["$", ".", "-", "/", "^"]):
+        if not _valid_symbol(
+            symbol
+        ):
             continue
 
-        if symbol in {
-            "SPY", "QQQ", "IWM", "VTI", "VOO",
-            "DIA", "ARKK", "TQQQ", "SQQQ",
-        }:
-            continue
-
-        if symbol not in cleaned:
-            cleaned.append(symbol)
-
-    return cleaned[:MAX_UNIVERSE]
-
-
-def _load_cache() -> List[str]:
-    if not CACHE_PATH.exists():
-        return []
-
-    try:
-        df = pd.read_csv(CACHE_PATH)
-
-        if "symbol" not in df.columns:
-            return []
-
-        symbols = df["symbol"].dropna().astype(str).tolist()
-        symbols = _clean_symbols(symbols)
-
-        if symbols:
-            print(
-                f"[Universe] Cache loaded: "
-                f"{len(symbols)} symbols"
-            )
-
-        return symbols
-
-    except Exception as exc:
-        print(f"[Universe] Cache read failed: {exc}")
-        return []
-
-
-def _save_cache(symbols: List[str]) -> None:
-    try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-        pd.DataFrame({
-            "symbol": symbols
-        }).to_csv(CACHE_PATH, index=False)
-
-    except Exception as exc:
-        print(f"[Universe] Cache write failed: {exc}")
-
-
-def load_universe() -> List[str]:
-    """
-    Load a stable, deliberately small universe.
-
-    Priority:
-        1. Existing local cache
-        2. Default stable universe
-
-    We deliberately do NOT download the full Nasdaq universe
-    during every scan.
-    """
-
-    cached = _load_cache()
-
-    if cached:
-        print(
-            f"[Universe] Using cached liquid universe: "
-            f"{len(cached)} symbols"
-        )
-        return cached
-
-    symbols = _clean_symbols(DEFAULT_UNIVERSE)
-
-    _save_cache(symbols)
+        seen.add(symbol)
+        universe.append(symbol)
 
     print(
         f"[Universe] Created stable universe: "
-        f"{len(symbols)} symbols"
+        f"{len(universe)} symbols"
     )
 
-    return symbols
+    return universe
