@@ -4,11 +4,18 @@
 import google.generativeai as genai
 from utils.config import GEMINI_API_KEY
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# Configure Gemini
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    model = None
 
 def summarize_candidate(candidate: dict, analysis: dict) -> str:
     """מחזיר פסקת הסבר בעברית על המועמד"""
+    if not model:
+        return "AI summary not available (missing API key)."
+    
     prompt = f"""
     אתה אנליסט מניות מנוסה. נתונים על המניה {candidate['ticker']}:
     - מחיר נוכחי: ${candidate['price']:.2f}
@@ -27,5 +34,5 @@ def summarize_candidate(candidate: dict, analysis: dict) -> str:
     try:
         response = model.generate_content(prompt)
         return response.text.strip()
-    except:
-        return "לא ניתן היה ליצור סיכום AI כרגע."
+    except Exception as e:
+        return f"שגיאה ביצירת סיכום AI: {str(e)}"
