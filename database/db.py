@@ -38,20 +38,39 @@ def init_db():
             strategy_version TEXT,
             data_version TEXT,
             mode TEXT,
-            event_score REAL
+            opportunity_score REAL,
+            grade TEXT,
+            decision TEXT,
+            entry REAL,
+            stop REAL,
+            target_1 REAL,
+            target_2 REAL,
+            risk_per_share REAL,
+            position_size INTEGER,
+            hold_type TEXT,
+            hold_min INTEGER,
+            hold_max INTEGER,
+            risk_model TEXT,
+            spread_status TEXT
         )
     """)
 
-    # Auto-migration safety for existing tables
+    # Auto-migration for new columns (safely add if missing)
     columns_to_add = [
-        ("pm_dist_signed", "REAL"),
-        ("pm_high_dist", "REAL"),
-        ("pm_data_quality", "TEXT"),
-        ("rvol_status", "TEXT"),
-        ("catalyst_status", "TEXT"),
-        ("strategy_version", "TEXT"),
-        ("data_version", "TEXT"),
-        ("mode", "TEXT"),
+        ("grade", "TEXT"),
+        ("decision", "TEXT"),
+        ("entry", "REAL"),
+        ("stop", "REAL"),
+        ("target_1", "REAL"),
+        ("target_2", "REAL"),
+        ("risk_per_share", "REAL"),
+        ("position_size", "INTEGER"),
+        ("hold_type", "TEXT"),
+        ("hold_min", "INTEGER"),
+        ("hold_max", "INTEGER"),
+        ("risk_model", "TEXT"),
+        ("spread_status", "TEXT"),
+        ("opportunity_score", "REAL"),   # if not present
     ]
 
     cursor.execute("PRAGMA table_info(alerts)")
@@ -78,13 +97,23 @@ def save_alert(**kwargs):
             pm_volume, pm_bars, pm_high, pm_vwap,
             pm_dist_signed, pm_high_dist, pm_data_quality,
             rvol, rvol_status, catalyst_score, catalyst_status,
-            strategy_version, data_version, mode, event_score
+            strategy_version, data_version, mode,
+            opportunity_score, grade,
+            decision, entry, stop, target_1, target_2,
+            risk_per_share, position_size,
+            hold_type, hold_min, hold_max, risk_model,
+            spread_status
         ) VALUES (
             :ticker, :price, :gap_pct, :spread_pct,
             :pm_volume, :pm_bars, :pm_high, :pm_vwap,
             :pm_dist_signed, :pm_high_dist, :pm_data_quality,
             :rvol, :rvol_status, :catalyst_score, :catalyst_status,
-            :strategy_version, :data_version, :mode, :event_score
+            :strategy_version, :data_version, :mode,
+            :opportunity_score, :grade,
+            :decision, :entry, :stop, :target_1, :target_2,
+            :risk_per_share, :position_size,
+            :hold_type, :hold_min, :hold_max, :risk_model,
+            :spread_status
         )
     """, {
         "ticker": kwargs.get("ticker"),
@@ -102,10 +131,23 @@ def save_alert(**kwargs):
         "rvol_status": kwargs.get("rvol_status", "UNAVAILABLE"),
         "catalyst_score": kwargs.get("catalyst_score"),
         "catalyst_status": kwargs.get("catalyst_status", "UNAVAILABLE"),
-        "strategy_version": kwargs.get("strategy_version", "V2.14"),
-        "data_version": kwargs.get("data_version", "ALPACA_IEX_PM"),
-        "mode": kwargs.get("mode", "EXPERIMENT_V2.14"),
-        "event_score": kwargs.get("event_score", 75),
+        "strategy_version": kwargs.get("strategy_version", "V3.1"),
+        "data_version": kwargs.get("data_version", "YFINANCE_KEYLESS"),
+        "mode": kwargs.get("mode", "EXPERIMENT_V3.1"),
+        "opportunity_score": kwargs.get("opportunity_score"),
+        "grade": kwargs.get("grade"),
+        "decision": kwargs.get("decision"),
+        "entry": kwargs.get("entry"),
+        "stop": kwargs.get("stop"),
+        "target_1": kwargs.get("target_1"),
+        "target_2": kwargs.get("target_2"),
+        "risk_per_share": kwargs.get("risk_per_share"),
+        "position_size": kwargs.get("position_size"),
+        "hold_type": kwargs.get("hold_type"),
+        "hold_min": kwargs.get("hold_min"),
+        "hold_max": kwargs.get("hold_max"),
+        "risk_model": kwargs.get("risk_model"),
+        "spread_status": kwargs.get("spread_status", "UNAVAILABLE"),
     })
 
     conn.commit()
