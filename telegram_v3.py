@@ -427,69 +427,59 @@ def format_debug_report(candidate: dict) -> str:
 
 
 # ============================================================
-# V3.4 NO CANDIDATES MESSAGE
+# V3.4 NO CANDIDATES MESSAGE – בעברית מובנת
 # ============================================================
 
 def format_no_candidates_v34(date: str, now_et, learning_mode: bool, debug: bool) -> str:
-    """הודעה כאשר אין מועמדים שעברו את כל המסננים"""
+    """
+    הודעה בעברית ברורה כאשר אין מועמדים שעברו את כל המסננים.
+    כוללת הנחיות מעשיות מה לעשות.
+    """
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📊 DAYS-BOT V3.4 – סריקה")
+    lines.append("📊 DAYS-BOT V3.4 – דוח סריקה")
     lines.append(f"📅 {date}  |  🕐 {now_et.strftime('%H:%M:%S')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("")
     lines.append("😴 <b>אין מועמדויות שעברו את כל המסננים</b>")
     lines.append("")
-    lines.append("🔍 <b>סיבות אפשריות:</b>")
-    lines.append("  • Gap < 10%")
-    lines.append("  • RVOL < 3x")
-    lines.append("  • Float > 50M")
-    lines.append("  • SEC Offering detected")
-    lines.append("  • Personality = GAP_AND_CRAP")
+    lines.append("🔍 <b>למה?</b>")
+    lines.append("  • Gap קטן מ-10%")
+    lines.append("  • RVOL קטן מ-3x")
+    lines.append("  • Float גדול מ-50M")
+    lines.append("  • הנפקה פעילה (SEC)")
+    lines.append("  • היסטוריה של Gap & Crap")
     lines.append("")
     
     if learning_mode:
-        lines.append("📖 <b>LEARNING MODE פעיל</b>")
-        lines.append("  המסננים מוקלים – חלק מהמועמדים")
-        lines.append("  עדיין נפסלו בגלל תנאים קשים.")
+        lines.append("📖 <b>מצב LEARNING MODE פעיל</b>")
+        lines.append("  המסננים מוקלים – המניות נפסלו רק")
+        lines.append("  בגלל תנאים קשים במיוחד.")
+        lines.append("")
+        lines.append("💡 <b>מה לעשות?</b>")
+        lines.append("  • הפעל עם --debug כדי לראות את כל המועמדים:")
+        lines.append("    python main.py fullscan_v34 --manual --debug")
+        lines.append("  • בדוק את הלוג המלא:")
+        lines.append(f"    data/logs/daily_log_{date}.json")
+        lines.append("  • אם רוצה להקל עוד יותר – שנה ב-config.py:")
+        lines.append("    DISCOVERY_MIN_GAP = 5.0")
     else:
         lines.append("🔒 <b>מסננים מלאים</b>")
-        lines.append("  הפעל עם --debug כדי לראות את כל המועמדים:")
+        lines.append("  כדי לראות מועמדים שנפסלו:")
         lines.append("  python main.py fullscan_v34 --manual --debug")
+        lines.append("")
+        lines.append("💡 <b>איך מקלים?</b>")
+        lines.append("  ב-utils/config.py:")
+        lines.append("  • LEARNING_MODE = True")
+        lines.append("  • DISCOVERY_MIN_GAP = 5.0")
+        lines.append("  • VALIDATION_MIN_RVOL = 1.5")
     
     lines.append("")
     lines.append("📁 <b>לוג מלא</b>")
     lines.append(f"  data/logs/daily_log_{date}.json")
     lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    return "\n".join(lines)
-
-
-def format_interim_report() -> str:
-    """
-    דוח ביניים – נשלח כאשר אין מועמדים שעברו Hard Filters.
-    """
-    now_et = datetime.now(ET)
-    lines = []
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📋 DAYS-BOT V3.4 – INTERIM REPORT")
-    lines.append(f"🕐 {now_et.strftime('%H:%M:%S')} ET")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    lines.append("⚠️ No candidates passed all hard filters.")
-    lines.append("")
-    lines.append("🔍 Possible reasons:")
-    lines.append("  • Gap < 10%")
-    lines.append("  • RVOL < 3x")
-    lines.append("  • Float > 50M")
-    lines.append("  • SEC offering detected (HIGH risk)")
-    lines.append("  • Personality = GAP_AND_CRAP")
-    lines.append("")
-    lines.append("📊 Check the daily log for details:")
-    lines.append("  data/logs/daily_log_*.json")
-    lines.append("")
-    lines.append("⏳ Next scan in 15 minutes.")
+    lines.append("⏳ <b>הסריקה הבאה בעוד 15 דקות</b>")
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🤖 DAYS-BOT – Manual Execution Only")
+    lines.append("🤖 DAYS-BOT – ביצוע ידני בלבד")
     return "\n".join(lines)
