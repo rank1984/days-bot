@@ -1,55 +1,59 @@
 """
-DAYS-BOT V3.1 – Universe Loader with Cache Fallback
-====================================================
-Fetches from Nasdaq FTP, falls back to local cache if unavailable.
+DAYS-BOT V3.2 – Universe Loader (Cached, ~500 symbols)
 """
-
 import pandas as pd
-from typing import List
 from pathlib import Path
+from typing import List
 import os
 
 CACHE_PATH = Path(__file__).resolve().parent.parent / "data" / "universe_cache.csv"
 
+# רשימת מניות נזילות קבועה (ניתן להרחיב)
+DEFAULT_UNIVERSE = [
+    "AAPL","MSFT","NVDA","AMD","TSLA","AMZN","GOOGL","META","NFLX","INTC",
+    "CSCO","ORCL","IBM","CRM","NOW","ADBE","QCOM","TXN","AVGO","MU",
+    "PYPL","SQ","SHOP","UBER","LYFT","ABNB","BKNG","RBLX","ZM","DOCU",
+    "PFE","JNJ","MRK","ABBV","UNH","CVS","WBA","AMGN","GILD","BIIB",
+    "XOM","CVX","COP","SLB","OXY","EOG","MPC","PSX","VLO","HES",
+    "JPM","BAC","WFC","C","GS","MS","V","MA","AXP","COF",
+    "DIS","NKE","MCD","SBUX","PEP","KO","WMT","TGT","COST","LOW",
+    "GE","BA","CAT","DE","HON","MMM","RTX","LMT","GD","NOC",
+    "SPY","QQQ","DIA","IWM","XLF","XLK","XLE","XLV","XLI","XLP"
+]  # ~70 symbols, אבל נוסיף עוד
 
 def load_universe() -> List[str]:
-    print("[Universe] Fetching keyless universe (Nasdaq public FTP)...")
+    print("[Universe] Loading universe...")
 
+    # אם יש קובץ מטמון, טען אותו
+    if CACHE_PATH.exists():
+        try:
+            df = pd.read_csv(CACHE_PATH)
+            symbols = df['symbol'].dropna().tolist()
+            print(f"[Universe] Loaded {len(symbols)} symbols from cache.")
+            return symbols
+        except:
+            pass
+
+    # אחרת, השתמש ברשימה המוגדרת מראש + הוסף כמה מניות אקראיות מהנאסד"ק (אפשר להרחיב)
     try:
         url = "ftp://ftp.nasdaqtrader.com/SymbolDirectory/nasdaqtraded.txt"
         df = pd.read_csv(url, sep='|')
         df = df[df['Test Issue'] == 'N']
         df = df[df['ETF'] == 'N']
-
-        raw_symbols = df['Symbol'].dropna().tolist()
-        filtered_universe = []
-        for symbol in raw_symbols:
-            if isinstance(symbol, str) and not any(c in symbol for c in ['$', '.', '-']):
-                filtered_universe.append(symbol)
-
-        # Save cache for future fallback
+        # נבחר 500 מניות עם נפח ממוצע גבוה (אין לנו נתוני נפח, אז נבחר אקראית)
+        all_symbols = df['Symbol'].dropna().tolist()
+        # נסנן תווים מיוחדים
+        filtered = [s for s in all_symbols if isinstance(s, str) and not any(c in s for c in ['$','.','-'])]
+        # נחזיר 500 ראשונות (אפשר לשפר)
+        universe = filtered[:500]
+        # שמירה למטמון
         os.makedirs(CACHE_PATH.parent, exist_ok=True)
-        pd.DataFrame({"symbol": filtered_universe}).to_csv(CACHE_PATH, index=False)
-
-        print(f"[Universe] Filtered universe count: {len(filtered_universe):,}")
-        return filtered_universe
-
+        pd.DataFrame({"symbol": universe}).to_csv(CACHE_PATH, index=False)
+        print(f"[Universe] Fetched {len(universe)} symbols from Nasdaq.")
+        return universe
     except Exception as e:
-        print(f"[Universe] ❌ FTP error: {e}")
-
-        # Try to load cache
-        if CACHE_PATH.exists():
-            try:
-                df_cache = pd.read_csv(CACHE_PATH)
-                symbols = df_cache['symbol'].dropna().tolist()
-                print(f"[Universe] Loaded {len(symbols):,} symbols from cache.")
-                return symbols
-            except Exception as cache_err:
-                print(f"[Universe] Cache read failed: {cache_err}")
-        else:
-            print("[Universe] No cache file found.")
-
-        # Ultimate fallback: hardcoded list of well-known active stocks
-        fallback = ["SPY", "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "JPM", "VTI"]
-        print(f"[Universe] Using hardcoded fallback ({len(fallback)} symbols).")
-        return fallback
+        print(f"[Universe] Error: {e}. Using default list.")
+        # שימוש ברשימה קבועה
+        os.makedirs(CACHE_PATH.parent, exist_ok=True)
+        pd.DataFrame({"symbol": DEFAULT_UNIVERSE}).to_csv(CACHE_PATH, index=False)
+        return DEFAULT_UNIVERSE
