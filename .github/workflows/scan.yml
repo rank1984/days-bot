@@ -1,69 +1,76 @@
 name: DAYS-BOT V3.4 Trading Scanner
 
 on:
+
   schedule:
-    # 08:45 ET during EDT
-    - cron: "45 12 * * 1-5"
 
-    # 09:00 ET during EDT
-    - cron: "0 13 * * 1-5"
-
-    # 09:15 ET during EDT
-    - cron: "15 13 * * 1-5"
+    # 08:00–09:30 ET during EDT
+    - cron: "*/15 12 * * 1-5"
+    - cron: "0,15,30 13 * * 1-5"
 
   workflow_dispatch:
 
 jobs:
-  scan:
-    runs-on: ubuntu-latest
 
-    timeout-minutes: 12
+  scan:
+
+    runs-on: ubuntu-latest
 
     steps:
 
-      # ------------------------------------------------------
+      # ======================================================
       # CHECKOUT
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------
+
+      # ======================================================
       # PYTHON
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      # ------------------------------------------------------
+
+      # ======================================================
       # DEPENDENCIES
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Install Dependencies
         run: |
+
           python -m pip install --upgrade pip
+
           pip install -r requirements.txt
 
-      # ------------------------------------------------------
-      # DATA
-      # ------------------------------------------------------
+
+      # ======================================================
+      # DATA DIRECTORY
+      # ======================================================
 
       - name: Create Data Directory
         run: |
+
           mkdir -p data
 
-      # ------------------------------------------------------
+
+      # ======================================================
       # RUN V3.4
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Run DAYS-BOT V3.4
         env:
+
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
 
         run: |
@@ -75,6 +82,8 @@ jobs:
 
           date -u
 
+          echo ""
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
 
             echo "[Workflow] Manual execution"
@@ -83,26 +92,29 @@ jobs:
 
           else
 
-            echo "[Workflow] Scheduled execution"
+            echo "[Workflow] Scheduled LIVE execution"
 
             python main.py fullscan_v34
 
           fi
 
-      # ------------------------------------------------------
-      # ARTIFACTS
-      # ------------------------------------------------------
+
+      # ======================================================
+      # UPLOAD DATABASE
+      # ======================================================
 
       - name: Upload Experiment Database
         if: always()
+
         uses: actions/upload-artifact@v4
 
         with:
+
           name: alerts-db-v34-${{ github.run_number }}
 
           path: |
+
             data/alerts.db
-            data/universe_cache.csv
 
           if-no-files-found: warn
 
