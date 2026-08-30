@@ -1,15 +1,15 @@
-name: DAYS-BOT V3.2
+name: DAYS-BOT V3.2 Full Scan
 
 on:
   schedule:
-    # Premarket: 08:00-09:15 ET (12:00-13:15 UTC)
-    - cron: "*/15 12-13 * * 1-5"
-    # Opening confirmation: 09:35, 09:50, 10:05, 10:20... (13:35, 13:50, 14:05... UTC)
-    - cron: "35,50,5,20 13-15 * * 1-5"
+    # 08:45 ET = 12:45 UTC (EDT) / 11:45 UTC (EST) – 45 דקות לפני הפתיחה
+    - cron: "45 12 * * 1-5"
+    # 09:00 ET = 13:00 UTC (EDT) / 12:00 UTC (EST) – 30 דקות לפני הפתיחה
+    - cron: "0 13 * * 1-5"
   workflow_dispatch:
 
 jobs:
-  scan:
+  full_scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,15 +17,15 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Run
+      - name: Run Full Scan
         env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python main.py scan --manual
+            python main.py fullscan --manual
           else
-            python main.py scan
+            python main.py fullscan
           fi
