@@ -1,6 +1,5 @@
-
 """
-DAYS-BOT V3.0 – DECISION ENGINE & QUANT RISK MODE
+DAYS-BOT V3.1 – DECISION ENGINE & V3.1 TRADE PLAN
 
 Modes:
     python main.py scan
@@ -30,7 +29,9 @@ from utils.config import (
     DATA_VERSION,
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
-    GEMINI_API_KEY  # <-- REQUIRED FOR V3.0: Make sure this is in your config.py!
+    GEMINI_API_KEY,
+    ACCOUNT_SIZE,          # V3.1
+    MAX_RISK_PER_TRADE_V31 # V3.1
 )
 
 from scanner.premarket import scan_premarket
@@ -47,6 +48,13 @@ from telegram_formatter import format_no_candidates, send_message
 from risk_engine import RiskEngine
 from ai_decision import AIDecisionLayer
 from telegram_v3 import format_decision_card
+
+# ============================================================
+# V3.1 NEW IMPORTS
+# ============================================================
+from risk.trade_plan import build_trade_plan
+from telegram_v3 import format_trade_card_v31  # הפונקציה החדשה
+
 
 def scan_mode(manual: bool = False):
     init_db()
@@ -80,11 +88,11 @@ def scan_mode(manual: bool = False):
             return
 
     # ============================================================
-    # START V3.0
+    # START V3.1
     # ============================================================
 
     print("\n" + "=" * 70)
-    print(f"[Main] DAYS-BOT V3.0 DECISION ENGINE")
+    print(f"[Main] DAYS-BOT V3.1 DECISION ENGINE + TRADE PLAN")
     print(f"[Main] STRATEGY: {STRATEGY_VERSION}")
     print(f"[Main] MODE: {run_mode}")
     print(f"[Main] DATE: {today}")
@@ -108,25 +116,41 @@ def scan_mode(manual: bool = False):
         return
 
     # ============================================================
-    # SAVE TO DATABASE & WATCHLIST
+    # V3.1 TRADE PLAN GENERATION (NEW)
+    # ============================================================
+    print("\n[Main] Generating V3.1 Trade Plans for Top 20...")
+    enriched_candidates = []
+    for c in candidates[:20]:
+        plan = build_trade_plan(c)
+        # Merge plan into candidate (plan has all new fields)
+        c.update(plan)
+        # Add account size for display
+        c["account_size"] = ACCOUNT_SIZE
+        c["risk_pct"] = MAX_RISK_PER_TRADE_V31
+        enriched_candidates.append(c)
+        print(f"[TradePlan] {c['ticker']} -> {c['decision']} | Entry: {c.get('entry')} | Stop: {c.get('stop')}")
+
+    # ============================================================
+    # SAVE TO DATABASE & WATCHLIST (V3.1 enriched data)
     # ============================================================
     
     added = 0
-    for c in candidates[:10]:
+    for c in enriched_candidates[:10]:
         if "/" in c["ticker"]:
             continue
+        # Ensure version fields are correct
         c["strategy_version"] = STRATEGY_VERSION
         c["data_version"] = DATA_VERSION
         c["mode"] = run_mode
 
         wm.add_to_watchlist(c)
-        save_alert(**c)
+        save_alert(**c)  # save_alert now handles all new fields
         added += 1
 
-    print(f"\n[Main] Saved {added} candidates to Watchlist & DB.")
+    print(f"\n[Main] Saved {added} candidates to Watchlist & DB (V3.1 enriched).")
 
     # ============================================================
-    # V3.0 DECISION PIPELINE (TOP 5)
+    # V3.0 DECISION PIPELINE (TOP 5) - KEPT FOR COMPARISON
     # ============================================================
     print("\n[Main] Initiating V3.0 Quant & AI Decision Pipeline for Top 5...")
     
@@ -142,14 +166,14 @@ def scan_mode(manual: bool = False):
     print(f"[Quant] Market Regime: {regime_name} (Multiplier: {regime_mult})")
 
     # 2. Process Top 5 Candidates
-    for i, c in enumerate(candidates[:5]):
+    for i, c in enumerate(enriched_candidates[:5]):
         ticker = c['ticker']
         print(f"\n--- Processing {ticker} ({i+1}/5) ---")
         
         # Prepare Data Objects
         stock_price = c.get("price", c.get("close", 0))
-        pm_high = c.get("pm_high", stock_price * 1.02) # Fallback if missing
-        pm_vwap = c.get("pm_vwap", stock_price * 0.98) # Fallback if missing
+        pm_high = c.get("pm_high", stock_price * 1.02)
+        pm_vwap = c.get("pm_vwap", stock_price * 0.98)
         
         stock_data = {
             "ticker": ticker,
@@ -158,7 +182,7 @@ def scan_mode(manual: bool = False):
             "pm_volume": c.get("pm_volume", 0)
         }
 
-        # A. Calculate Quant Trade Plan
+        # A. Calculate Quant Trade Plan (V3.0)
         trade_plan = risk_engine.calculate_trade_plan(
             price=stock_price,
             pm_high=pm_high,
@@ -172,22 +196,30 @@ def scan_mode(manual: bool = False):
             **trade_plan
         }
 
-        # B. AI Analysis
+        # B. AI Analysis (V3.0)
         print(f"[{ticker}] Fetching AI setup evaluation...")
         ai_decision = ai_layer.analyze_setup(stock_data, quant_data)
 
-        # C. Generate & Send Telegram Card
-        print(f"[{ticker}] AI Decision: {ai_decision.get('decision')} (Score: {ai_decision.get('score')})")
-        msg = format_decision_card(stock_data, quant_data, ai_decision)
-        
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        # C. Send V3.0 Telegram Card (Legacy format)
+        print(f"[{ticker}] V3.0 AI Decision: {ai_decision.get('decision')} (Score: {ai_decision.get('score')})")
+        msg_v30 = format_decision_card(stock_data, quant_data, ai_decision)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg_v30)
+
+    # ============================================================
+    # SEND V3.1 ENRICHED TELEGRAM CARD (NEW FORMAT)
+    # ============================================================
+    print("\n[Main] Sending V3.1 Trade Plan card for Top Pick...")
+    if enriched_candidates:
+        top_pick = enriched_candidates[0]
+        msg_v31 = format_trade_card_v31(top_pick)
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg_v31)
 
     # ============================================================
     # END
     # ============================================================
 
     print("\n" + "=" * 70)
-    print(f"[Main] Scan & Decision Pipeline Complete.")
+    print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
     print("=" * 70)
 
 if __name__ == "__main__":
