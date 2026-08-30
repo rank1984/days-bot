@@ -338,3 +338,89 @@ def format_full_alert_v33(candidate: dict) -> str:
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("⚠️ MANUAL EXECUTION ONLY")
     return "\n".join(lines)
+
+
+# ============================================================
+# DEBUG REPORT – מוצגים כל המועמדים גם אם לא עברו Hard Filters
+# ============================================================
+
+def format_debug_report(candidate: dict) -> str:
+    """
+    פורמט Debug – מראה את כל המועמדים, כולל אלה שנפסלו על ידי Hard Filters.
+    """
+    lines = []
+    a = candidate.get('analysis', {})
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"🐞 DEBUG – {candidate['ticker']}")
+    lines.append(f"ציון: {candidate.get('composite_score', 0)}/100")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"💰 מחיר: ${candidate['price']:.2f}  |  Gap: {candidate['gap_pct']:+.1f}%")
+    lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  VWAP: ${candidate.get('pm_vwap', 0):.2f}")
+    lines.append(f"📦 PM Volume: {candidate['pm_volume']:,}")
+    lines.append("")
+
+    # Fundamental Data
+    float_val = a.get('float', 0)
+    short = a.get('short_interest', 0)
+    rvol = a.get('rvol', 0)
+    lines.append("📊 FUNDAMENTALS:")
+    lines.append(f"  Float: {float_val:,.0f}" if float_val else "  Float: N/A")
+    lines.append(f"  Short Interest: {short*100:.1f}%" if short else "  Short Interest: N/A")
+    lines.append(f"  RVOL: {rvol:.1f}x" if rvol else "  RVOL: N/A")
+    lines.append("")
+
+    # Personality
+    personality = a.get('personality', {})
+    if personality.get('sample_size', 0) > 0:
+        lines.append(f"🧠 Personality: {personality.get('personality', 'NEUTRAL')}")
+        lines.append(f"  Failure Rate: {personality.get('failure_rate', 0):.1f}%")
+        lines.append("")
+
+    # Catalyst
+    catalyst = a.get('catalyst', {})
+    lines.append(f"🔬 Catalyst: {catalyst.get('type', 'UNKNOWN')} (Score: {catalyst.get('score', 0)}/10)")
+
+    # Sentiment
+    sent = a.get('sentiment', {})
+    lines.append(f"💬 Sentiment: {sent.get('bull_pct', 0):.0f}% Bull / {sent.get('bear_pct', 0):.0f}% Bear")
+
+    # SEC Risk
+    sec = a.get('sec_risk', {})
+    if sec.get('has_offering'):
+        lines.append(f"⚠️ SEC: {sec.get('risk_level')} risk – {sec.get('filing_type')}")
+    else:
+        lines.append("✅ SEC: No offering detected")
+
+    # Trade Plan
+    lines.append("")
+    lines.append("🎯 TRADE PLAN (if passed):")
+    if candidate.get('entry'):
+        lines.append(f"  Entry: ${candidate['entry']:.2f} | Stop: ${candidate['stop']:.2f}")
+        lines.append(f"  T1: ${candidate['target_1']:.2f} ({candidate.get('risk_reward_1', 0):.1f}R)")
+        lines.append(f"  T2: ${candidate['target_2']:.2f} ({candidate.get('risk_reward_2', 0):.1f}R)")
+    else:
+        lines.append("  ❌ No valid trade plan")
+
+    # Hard Filters Status
+    lines.append("")
+    lines.append("🔍 HARD FILTERS STATUS:")
+    if float_val and float_val > 50_000_000:
+        lines.append("  ❌ Float > 50M")
+    else:
+        lines.append("  ✅ Float OK")
+    if candidate.get('gap_pct', 0) < 10:
+        lines.append("  ❌ Gap < 10%")
+    else:
+        lines.append("  ✅ Gap OK")
+    if rvol and rvol < 3:
+        lines.append("  ❌ RVOL < 3x")
+    else:
+        lines.append("  ✅ RVOL OK")
+    if sec.get('risk_level') == 'HIGH':
+        lines.append("  ❌ SEC HIGH risk")
+    else:
+        lines.append("  ✅ SEC OK")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
