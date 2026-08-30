@@ -4,9 +4,9 @@ import os
 # BOT VERSION / EXPERIMENT METADATA
 # ============================================================
 
-BOT_VERSION = "V3.2"
-STRATEGY_VERSION = "V3.2"
-EXPERIMENT_MODE = "V3.2_LIVE_DECISION"
+BOT_VERSION = "V3.4"
+STRATEGY_VERSION = "V3.4"
+EXPERIMENT_MODE = "V3.4_LIVE_DECISION"
 DATA_VERSION = "YFINANCE_KEYLESS"
 
 # ============================================================
@@ -20,12 +20,12 @@ ALPACA_BASE_URL = os.getenv(
     "https://api.alpaca.markets"
 )
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")   # <-- הוסף
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Gemini API Key for V3.0 AI Decision Engine
+# Gemini API Key for V3.0+ AI Decision Engine
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # ============================================================
@@ -78,9 +78,15 @@ USE_CATALYST_AS_HARD_GATE = False
 USE_PM_BARS_AS_HARD_GATE = False
 
 # ============================================================
-# ACCOUNT & POSITION SIZING (V3.1 NEW)
+# ACCOUNT & POSITION SIZING (V3.1+)
 # ============================================================
 
 ACCOUNT_SIZE = 5000.0               # $5,000 default
 MAX_RISK_PER_TRADE_V31 = 0.005      # 0.5% per trade (V3.1)
 MAX_POSITION_VALUE_PCT = 0.20       # 20% of account max position value
+
+# ============================================================
+# V3.4 LEARNING MODE
+# ============================================================
+
+LEARNING_MODE = True   # True = מקל על תנאים (ניכוי ציון במקום פסילה), False = תנאים מלאים
