@@ -1,36 +1,46 @@
 """
-DAYS-BOT V3.4
-Stable Premarket Scanner
+DAYS-BOT V3.4 – Premarket Engine
 
-Design:
-- Small universe
-- yfinance only
-- Small batches
-- Retry/backoff
-- No fake spread
-- Premarket 04:00-09:30 ET
-- Discovery first
-- PM validation second
+Rules:
+
+1. LIVE mode:
+   - today only
+   - 04:00–09:30 ET
+   - no historical substitution
+
+2. MANUAL mode:
+   - explicit --date supported
+   - historical replay supported
+
+3. No PM data = NO CANDIDATE.
+
+4. Never fabricate spread.
+
+5. Yahoo/yfinance is used only as data source.
+
+6. Invalid symbols do not kill the scan.
+
+7. Candidates are sorted deterministically.
 """
 
 from datetime import datetime, time
-from typing import List
-import time as time_module
 
-import pandas as pd
+from typing import List
+
 import pytz
+import pandas as pd
 import yfinance as yf
 
 from scanner.universe import load_universe
+
 from utils.config import (
     BOT_VERSION,
-    DATA_VERSION,
+    STRATEGY_VERSION,
+    EXPERIMENT_MODE,
     DISCOVERY_MAX_GAP,
     DISCOVERY_MAX_PRICE,
     DISCOVERY_MIN_GAP,
     DISCOVERY_MIN_PRICE,
-    EXPERIMENT_MODE,
-    STRATEGY_VERSION,
     VALIDATION_MAX_PM_DIST,
     VALIDATION_MIN_PM_BARS,
     VALIDATION_MIN_PM_VOLUME_ABS,
@@ -38,78 +48,46 @@ from utils.config import (
 )
 
 
-ET = pytz.timezone("America/New_York")
-
-PM_START = time(4, 0)
-PM_END = time(9, 30)
-
-BATCH_SIZE = 25
-MAX_RETRIES = 3
+ET = pytz.timezone(
+    "America/New_York"
+)
 
 
-def _download_batch(
-    tickers: List[str],
-    interval: str,
-    period: str,
-    prepost: bool = False,
-):
-    """
-    Download one small batch with exponential backoff.
-    """
+# ============================================================
+# HELPERS
+# ============================================================
 
-    ticker_string = " ".join(tickers)
+def _extract_ticker_df(data, ticker):
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            data = yf.download(
-                ticker_string,
-                period=period,
-                interval=interval,
-                prepost=prepost,
-                group_by="ticker",
-                progress=False,
-                threads=False,
-                auto_adjust=False,
-            )
-
-            if data is not None and not data.empty:
-                return data
-
-        except Exception as exc:
-            wait = 2 ** attempt
-
-            print(
-                f"[Yahoo] Batch failed "
-                f"(attempt {attempt + 1}/{MAX_RETRIES}): "
-                f"{exc}"
-            )
-
-            if attempt < MAX_RETRIES - 1:
-                time_module.sleep(wait)
-
-    return None
-
-
-def _extract_ticker_df(data, ticker: str):
     if data is None or data.empty:
         return None
 
     try:
-        if isinstance(data.columns, pd.MultiIndex):
-            level0 = data.columns.get_level_values(0)
 
-            if ticker not in level0:
+        if isinstance(
+            data.columns,
+            pd.MultiIndex
+        ):
+
+            # group_by="ticker"
+            if ticker in data.columns.get_level_values(0):
+
+                df = data[ticker].copy()
+
+            else:
+
                 return None
 
-            df = data[ticker].copy()
-
         else:
+
             df = data.copy()
 
         if "Close" not in df.columns:
             return None
 
-        df = df.dropna(subset=["Close"])
+        df = df.dropna(
+            subset=["Close"]
+        )
 
         if df.empty:
             return None
@@ -120,402 +98,737 @@ def _extract_ticker_df(data, ticker: str):
         return None
 
 
-def _normalize_index_to_et(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Make sure timestamps are timezone-aware and represented in ET.
-    """
+def _normalize_timezone(df):
 
-    result = df.copy()
+    if df is None or df.empty:
+        return df
 
     try:
-        if result.index.tz is None:
-            result.index = result.index.tz_localize("UTC")
 
-        result.index = result.index.tz_convert(ET)
+        if df.index.tz is None:
 
-    except Exception:
-        return pd.DataFrame()
+            df.index = df.index.tz_localize(
+                "UTC"
+            )
 
-    return result
-
-
-def _get_previous_closes(universe: List[str]):
-    """
-    Fetch daily history in small batches instead of one giant request.
-    """
-
-    result = {}
-
-    print(
-        f"[Premarket] Fetching previous closes "
-        f"for {len(universe)} symbols..."
-    )
-
-    for i in range(0, len(universe), BATCH_SIZE):
-        batch = universe[i:i + BATCH_SIZE]
-
-        data = _download_batch(
-            batch,
-            interval="1d",
-            period="5d",
-            prepost=False,
+        df.index = df.index.tz_convert(
+            ET
         )
 
-        if data is None:
-            continue
+    except Exception:
+        pass
 
-        for ticker in batch:
-            df = _extract_ticker_df(data, ticker)
+    return df
 
-            if df is None or df.empty:
-                continue
 
-            try:
-                close = df["Close"].dropna()
+def _previous_close_from_daily(
+    daily_data,
+    ticker,
+    target_date_str
+):
 
-                if not close.empty:
-                    result[ticker] = float(close.iloc[-1])
-
-            except Exception:
-                continue
-
-        # Tiny pause reduces burst pressure.
-        time_module.sleep(0.5)
-
-    print(
-        f"[Premarket] Previous closes found: "
-        f"{len(result)}"
+    df = _extract_ticker_df(
+        daily_data,
+        ticker
     )
 
-    return result
-
-
-def _calculate_pm_metrics(df_pm: pd.DataFrame):
-    if df_pm.empty:
+    if df is None:
         return None
 
-    volume = pd.to_numeric(
-        df_pm["Volume"],
-        errors="coerce"
-    ).fillna(0)
+    try:
 
-    close = pd.to_numeric(
-        df_pm["Close"],
-        errors="coerce"
-    )
+        df = df.copy()
 
-    high = pd.to_numeric(
-        df_pm["High"],
-        errors="coerce"
-    )
+        # Normalize daily dates.
+        if df.index.tz is not None:
+            dates = df.index.tz_convert(
+                ET
+            ).date
 
-    low = pd.to_numeric(
-        df_pm["Low"],
-        errors="coerce"
-    )
+        else:
+            dates = df.index.date
 
-    volume_sum = float(volume.sum())
+        target_date = datetime.strptime(
+            target_date_str,
+            "%Y-%m-%d"
+        ).date()
 
-    if volume_sum <= 0:
+        # Previous trading session only.
+        valid = df.loc[
+            [d < target_date for d in dates]
+        ]
+
+        if valid.empty:
+            return None
+
+        close = valid["Close"].dropna()
+
+        if close.empty:
+            return None
+
+        return float(close.iloc[-1])
+
+    except Exception:
         return None
 
-    pm_high = float(high.max())
-    pm_low = float(low.min())
 
-    pm_vwap = float(
-        (close * volume).sum() / volume_sum
+# ============================================================
+# MAIN
+# ============================================================
+
+def scan_premarket(
+    target_date_str: str = None,
+    manual: bool = False
+) -> List[dict]:
+
+    now_et = datetime.now(
+        ET
     )
-
-    return {
-        "pm_volume": int(volume_sum),
-        "pm_bars_count": int(len(df_pm)),
-        "pm_high": pm_high,
-        "pm_low": pm_low,
-        "pm_vwap": pm_vwap,
-    }
-
-
-def scan_premarket(target_date_str: str = None) -> List[dict]:
-
-    now_et = datetime.now(ET)
 
     if target_date_str is None:
-        target_date_str = now_et.strftime("%Y-%m-%d")
+
+        target_date_str = now_et.strftime(
+            "%Y-%m-%d"
+        )
 
     print()
     print("=" * 70)
+
     print(
         f"[Premarket] {BOT_VERSION} "
-        f"| {STRATEGY_VERSION} "
-        f"| KEYLESS YFINANCE"
+        f"| strategy={STRATEGY_VERSION}"
     )
+
     print(
         f"[Premarket] Date={target_date_str} "
         f"| ET={now_et.strftime('%Y-%m-%d %H:%M:%S')}"
     )
-    print("=" * 70)
+
+    print(
+        f"[Premarket] Mode="
+        f"{'MANUAL_REPLAY' if manual else 'LIVE'}"
+    )
+
+    print(
+        "=" * 70
+    )
+
+    # --------------------------------------------------------
+    # UNIVERSE
+    # --------------------------------------------------------
 
     universe = load_universe()
 
     if not universe:
-        print("[Premarket] ❌ Empty universe.")
+
+        print(
+            "[Premarket] ERROR: empty universe."
+        )
+
         return []
 
-    prev_closes = _get_previous_closes(universe)
+    print(
+        f"[Premarket] Universe: "
+        f"{len(universe)} symbols"
+    )
 
-    candidates = []
+    # --------------------------------------------------------
+    # DAILY DATA
+    # --------------------------------------------------------
+
+    print(
+        "[Premarket] Fetching previous closes..."
+    )
+
+    try:
+
+        daily_data = yf.download(
+            tickers=" ".join(universe),
+            period="10d",
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=True,
+            group_by="ticker",
+        )
+
+    except Exception as e:
+
+        print(
+            f"[Premarket] Daily download failed: {e}"
+        )
+
+        return []
+
+    prev_closes = {}
+
+    for ticker in universe:
+
+        close = _previous_close_from_daily(
+            daily_data,
+            ticker,
+            target_date_str
+        )
+
+        if close is not None and close > 0:
+
+            prev_closes[ticker] = close
+
+    print(
+        f"[Premarket] Previous closes found: "
+        f"{len(prev_closes)}"
+    )
+
+    # --------------------------------------------------------
+    # STATS
+    # --------------------------------------------------------
 
     stats = {
+
         "universe": len(universe),
+
         "no_previous_close": 0,
+
         "price_fail": 0,
+
         "gap_fail": 0,
+
         "pm_missing": 0,
+
         "pm_volume_fail": 0,
+
         "pm_bars_fail": 0,
+
         "vwap_fail": 0,
+
         "validated": 0,
+
     }
 
-    for i in range(0, len(universe), BATCH_SIZE):
+    validated = []
 
-        batch = universe[i:i + BATCH_SIZE]
+    # --------------------------------------------------------
+    # BATCHES
+    # --------------------------------------------------------
+
+    batch_size = 25
+
+    pm_start = time(
+        4,
+        0
+    )
+
+    pm_end = time(
+        9,
+        30
+    )
+
+    for start in range(
+        0,
+        len(universe),
+        batch_size
+    ):
+
+        batch = universe[
+            start:start + batch_size
+        ]
 
         print(
             f"[Premarket] Batch "
-            f"{i + 1}-{min(i + BATCH_SIZE, len(universe))}"
-            f"/{len(universe)}"
+            f"{start + 1}-"
+            f"{min(start + batch_size, len(universe))}/"
+            f"{len(universe)}"
         )
 
-        pm_data = _download_batch(
-            batch,
-            interval="1m",
-            period="1d",
-            prepost=True,
-        )
+        try:
 
-        if pm_data is None:
-            print("[Premarket] Batch returned no data.")
+            pm_data = yf.download(
+
+                tickers=" ".join(batch),
+
+                period="5d",
+
+                interval="1m",
+
+                prepost=True,
+
+                auto_adjust=False,
+
+                progress=False,
+
+                threads=True,
+
+                group_by="ticker",
+            )
+
+        except Exception as e:
+
+            print(
+                f"[Premarket] Batch error: {e}"
+            )
+
             continue
 
         for ticker in batch:
 
-            prev_close = prev_closes.get(ticker)
+            prev_close = prev_closes.get(
+                ticker
+            )
 
-            if prev_close is None or prev_close <= 0:
-                stats["no_previous_close"] += 1
+            if prev_close is None:
+
+                stats[
+                    "no_previous_close"
+                ] += 1
+
                 continue
 
-            df = _extract_ticker_df(pm_data, ticker)
+            df = _extract_ticker_df(
+                pm_data,
+                ticker
+            )
 
             if df is None:
-                stats["pm_missing"] += 1
+
+                stats[
+                    "pm_missing"
+                ] += 1
+
                 continue
 
-            df = _normalize_index_to_et(df)
+            df = _normalize_timezone(
+                df
+            )
 
             if df.empty:
-                stats["pm_missing"] += 1
+
+                stats[
+                    "pm_missing"
+                ] += 1
+
                 continue
 
-            # We only use the requested trading date.
+            # ------------------------------------------------
+            # TARGET DATE ONLY
+            # ------------------------------------------------
+
+            target_date = datetime.strptime(
+                target_date_str,
+                "%Y-%m-%d"
+            ).date()
+
             try:
-                df = df[
-                    df.index.strftime("%Y-%m-%d")
-                    == target_date_str
-                ]
+
+                df_target = df[
+                    df.index.date == target_date
+                ].copy()
+
             except Exception:
+
+                stats[
+                    "pm_missing"
+                ] += 1
+
                 continue
 
-            if df.empty:
-                stats["pm_missing"] += 1
+            if df_target.empty:
+
+                stats[
+                    "pm_missing"
+                ] += 1
+
                 continue
 
-            # Latest available market price.
-            price = float(df["Close"].iloc[-1])
+            # ------------------------------------------------
+            # PM WINDOW
+            # ------------------------------------------------
+
+            df_pm = df_target[
+                (
+                    df_target.index.time
+                    >= pm_start
+                )
+                &
+                (
+                    df_target.index.time
+                    < pm_end
+                )
+            ].copy()
+
+            if df_pm.empty:
+
+                stats[
+                    "pm_missing"
+                ] += 1
+
+                continue
+
+            # ------------------------------------------------
+            # CURRENT PM PRICE
+            # ------------------------------------------------
+
+            price = float(
+                df_pm["Close"].iloc[-1]
+            )
+
+            if price <= 0:
+
+                stats[
+                    "pm_missing"
+                ] += 1
+
+                continue
+
+            # ------------------------------------------------
+            # PRICE FILTER
+            # ------------------------------------------------
 
             if (
                 price < DISCOVERY_MIN_PRICE
-                or price > DISCOVERY_MAX_PRICE
+                or
+                price > DISCOVERY_MAX_PRICE
             ):
-                stats["price_fail"] += 1
+
+                stats[
+                    "price_fail"
+                ] += 1
+
                 continue
+
+            # ------------------------------------------------
+            # GAP
+            # ------------------------------------------------
 
             gap_pct = (
                 (price - prev_close)
-                / prev_close
-                * 100.0
-            )
+                /
+                prev_close
+            ) * 100.0
 
             if (
                 gap_pct < DISCOVERY_MIN_GAP
-                or gap_pct > DISCOVERY_MAX_GAP
+                or
+                gap_pct > DISCOVERY_MAX_GAP
             ):
-                stats["gap_fail"] += 1
+
+                stats[
+                    "gap_fail"
+                ] += 1
+
                 continue
 
-            # Premarket window.
-            df_pm = df[
-                (df.index.time >= PM_START)
-                & (df.index.time < PM_END)
-            ]
+            # ------------------------------------------------
+            # PM METRICS
+            # ------------------------------------------------
 
-            if df_pm.empty:
-                stats["pm_missing"] += 1
-                continue
+            pm_bars = len(
+                df_pm
+            )
 
-            metrics = _calculate_pm_metrics(df_pm)
-
-            if metrics is None:
-                stats["pm_volume_fail"] += 1
-                continue
-
-            pm_volume = metrics["pm_volume"]
-            pm_bars = metrics["pm_bars_count"]
+            pm_volume = int(
+                df_pm["Volume"]
+                .fillna(0)
+                .sum()
+            )
 
             if pm_volume < VALIDATION_MIN_PM_VOLUME_ABS:
-                stats["pm_volume_fail"] += 1
+
+                stats[
+                    "pm_volume_fail"
+                ] += 1
+
                 continue
 
             if pm_bars < VALIDATION_MIN_PM_BARS:
-                stats["pm_bars_fail"] += 1
+
+                stats[
+                    "pm_bars_fail"
+                ] += 1
+
                 continue
 
-            pm_high = metrics["pm_high"]
-            pm_low = metrics["pm_low"]
-            pm_vwap = metrics["pm_vwap"]
-
-            if pm_high <= 0 or pm_vwap <= 0:
-                stats["vwap_fail"] += 1
-                continue
-
-            pm_dist_signed = (
-                (price - pm_high)
-                / pm_high
-                * 100.0
+            pm_high = float(
+                df_pm["High"].max()
             )
 
-            if pm_dist_signed < -VALIDATION_MAX_PM_DIST:
+            pm_low = float(
+                df_pm["Low"].min()
+            )
+
+            total_volume = float(
+                df_pm["Volume"]
+                .fillna(0)
+                .sum()
+            )
+
+            if total_volume <= 0:
+
+                stats[
+                    "pm_volume_fail"
+                ] += 1
+
                 continue
+
+            pm_vwap = float(
+                (
+                    df_pm["Close"]
+                    *
+                    df_pm["Volume"]
+                ).sum()
+                /
+                total_volume
+            )
+
+            if pm_vwap <= 0:
+
+                stats[
+                    "vwap_fail"
+                ] += 1
+
+                continue
+
+            # ------------------------------------------------
+            # DISTANCE FROM PM HIGH
+            # ------------------------------------------------
+
+            pm_dist_signed = (
+                (
+                    price - pm_high
+                )
+                /
+                pm_high
+            ) * 100.0
+
+            pm_high_dist = max(
+                0.0,
+                pm_dist_signed
+            )
+
+            # ------------------------------------------------
+            # VWAP FILTER
+            # ------------------------------------------------
 
             vwap_required_price = (
                 pm_vwap
-                * (1.0 + VALIDATION_MIN_VWAP_DIST)
+                *
+                (
+                    1.0
+                    +
+                    VALIDATION_MIN_VWAP_DIST
+                )
             )
 
             if price < vwap_required_price:
-                stats["vwap_fail"] += 1
+
+                stats[
+                    "vwap_fail"
+                ] += 1
+
                 continue
 
             # ------------------------------------------------
-            # EVENT SCORE
+            # SPREAD
             # ------------------------------------------------
-
-            event_score = 0.0
-
-            event_score += min(
-                max(gap_pct, 0.0) * 2.0,
-                30.0
-            )
-
-            event_score += min(
-                (pm_volume / 100_000.0) * 20.0,
-                30.0
-            )
-
-            if pm_dist_signed >= 0:
-                event_score += 25.0
-
-            elif pm_dist_signed >= -2.0:
-                event_score += 15.0
-
-            elif pm_dist_signed >= -5.0:
-                event_score += 5.0
-
             # IMPORTANT:
-            # No fake spread bonus.
-            # yfinance bulk data does not provide reliable L1.
+            # Yahoo bulk historical data does NOT provide
+            # reliable PM bid/ask.
+            #
+            # Therefore:
+            # None = UNKNOWN
+            #
+            # Never pretend it is 0%.
+
             spread_pct = None
 
-            event_score = round(
-                min(max(event_score, 0.0), 100.0),
+            # ------------------------------------------------
+            # DATA QUALITY
+            # ------------------------------------------------
+
+            pm_data_quality = "GOOD_DATA"
+
+            # ------------------------------------------------
+            # SCORE
+            # ------------------------------------------------
+
+            score = 0.0
+
+            # Gap
+            score += min(
+                max(gap_pct, 0.0)
+                * 2.0,
+                30.0
+            )
+
+            # Volume
+            score += min(
+                (
+                    pm_volume
+                    /
+                    100_000.0
+                )
+                *
+                20.0,
+                30.0
+            )
+
+            # PMH proximity
+            if pm_dist_signed >= 0:
+
+                score += 25.0
+
+            elif pm_dist_signed >= -2:
+
+                score += 15.0
+
+            elif pm_dist_signed >= -5:
+
+                score += 5.0
+
+            # VWAP
+            if price > pm_vwap:
+
+                score += 10.0
+
+            # Data quality
+            score += 5.0
+
+            score = round(
+                min(
+                    100.0,
+                    max(
+                        0.0,
+                        score
+                    )
+                ),
                 1
             )
 
-            if event_score >= 70:
+            if score >= 80:
+
                 grade = "A"
-            elif event_score >= 55:
+
+            elif score >= 65:
+
                 grade = "B"
-            elif event_score >= 40:
+
+            elif score >= 50:
+
                 grade = "C"
+
             else:
+
                 grade = "WATCH"
 
+            # ------------------------------------------------
+            # CANDIDATE
+            # ------------------------------------------------
+
             candidate = {
+
                 "ticker": ticker,
+
                 "price": price,
+
                 "prev_close": prev_close,
+
                 "gap_pct": gap_pct,
-
-                "pm_volume": pm_volume,
-                "pm_bars": pm_bars,
-                "pm_bars_count": pm_bars,
-
-                "pm_high": pm_high,
-                "pm_low": pm_low,
-                "pm_vwap": pm_vwap,
-
-                "pm_dist_signed": pm_dist_signed,
-                "pm_high_dist": max(
-                    0.0,
-                    pm_dist_signed
-                ),
 
                 "spread_pct": spread_pct,
 
-                "pm_data_quality": "GOOD_DATA",
+                "pm_volume": pm_volume,
+
+                "pm_bars": pm_bars,
+
+                "pm_bars_count": pm_bars,
+
+                "pm_high": pm_high,
+
+                "pm_low": pm_low,
+
+                "pm_vwap": pm_vwap,
+
+                "pm_dist_signed": pm_dist_signed,
+
+                "pm_high_dist": pm_high_dist,
+
+                "pm_data_quality": pm_data_quality,
+
                 "pm_data_error": None,
 
                 "rvol": None,
+
                 "rvol_status": "UNAVAILABLE",
 
-                "event_score": event_score,
+                "event_score": score,
+
+                "score": score,
+
                 "grade": grade,
 
                 "state": "WATCH",
 
-                "mode": EXPERIMENT_MODE,
-                "strategy_version": STRATEGY_VERSION,
-                "data_version": DATA_VERSION,
+                "decision": "WATCH",
+
+                "mode": (
+                    "MANUAL_REPLAY"
+                    if manual
+                    else "LIVE"
+                ),
+
+                "strategy_version":
+                    STRATEGY_VERSION,
+
+                "data_version":
+                    "YFINANCE_KEYLESS_V34",
+
+                "scan_date":
+                    target_date_str,
+
             }
 
-            candidates.append(candidate)
-            stats["validated"] += 1
-
-            print(
-                f"[PM PASS] {ticker}"
-                f" | Price={price:.2f}"
-                f" | Gap={gap_pct:.1f}%"
-                f" | Vol={pm_volume:,}"
-                f" | PMH={pm_high:.2f}"
-                f" | VWAP={pm_vwap:.2f}"
-                f" | Score={event_score}"
+            validated.append(
+                candidate
             )
 
-        time_module.sleep(0.75)
+            stats[
+                "validated"
+            ] += 1
 
-    # ------------------------------------------------------------
+            print(
+                f"[PM PASS] "
+                f"{ticker} | "
+                f"Gap={gap_pct:+.1f}% | "
+                f"Vol={pm_volume:,} | "
+                f"PMH={pm_high:.2f} | "
+                f"VWAP={pm_vwap:.2f} | "
+                f"Score={score:.1f}"
+            )
+
+    # --------------------------------------------------------
     # FINAL SORT
-    # ------------------------------------------------------------
+    # --------------------------------------------------------
 
-    candidates.sort(
+    validated.sort(
         key=lambda x: (
-            x.get("event_score", 0.0),
-            x.get("pm_volume", 0),
-            x.get("gap_pct", 0.0),
+            x.get(
+                "event_score",
+                0
+            ),
+            x.get(
+                "pm_volume",
+                0
+            ),
+            x.get(
+                "gap_pct",
+                0
+            ),
         ),
-        reverse=True,
+        reverse=True
     )
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
 
     print()
     print("=" * 70)
@@ -523,13 +836,16 @@ def scan_premarket(target_date_str: str = None) -> List[dict]:
     print("=" * 70)
 
     for key, value in stats.items():
-        print(f"{key:20}: {value}")
+
+        print(
+            f"{key:<20}: {value}"
+        )
 
     print("=" * 70)
+
     print(
         f"[Premarket] Final candidates: "
-        f"{len(candidates)}"
+        f"{len(validated)}"
     )
 
-    # Keep enough candidates for deep analysis.
-    return candidates[:20]
+    return validated[:20]
