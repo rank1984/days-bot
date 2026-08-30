@@ -15,7 +15,7 @@ UNIVERSE = [
     "GE","BA","CAT","DE","HON","MMM","RTX","LMT","GD","NOC",
     "SPY","QQQ","DIA","IWM","XLF","XLK","XLE","XLV","XLI","XLP",
     "PLTR","SNOW","CRWD","ZS","DDOG","NET","PANW","FTNT","OKTA","MDB",
-    "SQ","SE","DASH","CPRT","ADSK","CDNS","SNPS","KLAC","LRCX","AMAT",
+    "SE","DASH","CPRT","ADSK","CDNS","SNPS","KLAC","LRCX","AMAT",
     "TMO","DHR","ISRG","SYK","MDT","BDX","BSX","ABT","EW","ZTS"
 ]  # ~110
 
