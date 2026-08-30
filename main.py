@@ -32,7 +32,8 @@ from utils.config import (
     TELEGRAM_CHAT_ID,
     GEMINI_API_KEY,
     ACCOUNT_SIZE,
-    MAX_RISK_PER_TRADE_V31
+    MAX_RISK_PER_TRADE_V31,
+    LEARNING_MODE
 )
 
 from scanner.premarket import scan_premarket
@@ -41,7 +42,7 @@ from database.db import init_db, save_alert
 from watchlist_manager import WatchlistManager
 from telegram_formatter import format_no_candidates, send_message
 from risk.trade_plan import build_trade_plan
-from telegram_v3 import format_trade_card_v31, format_full_alert_v33, format_debug_report, format_interim_report
+from telegram_v3 import format_trade_card_v31, format_full_alert_v33, format_debug_report, format_no_candidates_v34
 
 # V3.3 Full Scan
 try:
@@ -89,6 +90,7 @@ def save_daily_log(scan_type: str, candidates: list, mode: str, manual: bool, de
         "mode": mode,
         "manual": manual,
         "debug": debug,
+        "learning_mode": LEARNING_MODE,
         "candidates_count": len(candidates),
         "candidates": candidates[:20]
     }
@@ -163,7 +165,6 @@ def scan_mode(manual: bool = False, debug: bool = False):
 
     save_daily_log("scan", enriched, run_mode, manual, debug)
 
-    # שליחת טלגרם
     if enriched:
         if debug:
             for c in enriched[:5]:
@@ -208,17 +209,13 @@ def fullscan_mode(manual: bool = False, debug: bool = False):
     if debug:
         print("[Main] 🐞 DEBUG MODE – showing all candidates with details")
 
-    # נקבל את כל המועמדים (גם אלה שנפסלו) – נשתמש ב-full_scan_v33 עם flag מיוחד
-    # כרגע נשתמש בפונקציה הרגילה, ואם אין מועמדים – נשלח דוח ביניים
     top5 = full_scan_v33(manual)
     
     if not top5:
         print("[Main] No candidates passed V3.3 filters.")
-        # נשלח דוח ביניים עם המועמדים הקרובים ביותר
-        # נצטרך לקבל את כל המועמדים מה-full_scan – נשנה מעט את full_scan_v33
-        # כרגע – נשלח הודעה כללית
-        msg = "📋 DAYS-BOT V3.3 – Interim Report\n\nNo candidates passed all hard filters today.\n\nCheck the daily log for details.\n\n⏳ Next scan in 15 minutes."
+        msg = format_no_candidates_v34(today, now_et, LEARNING_MODE, debug)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        save_daily_log("fullscan", [], run_mode, manual, debug)
         return
 
     for c in top5:
@@ -268,10 +265,6 @@ def fullscan_v34_mode(manual: bool = False, debug: bool = False):
         print("[Main] 🐞 DEBUG MODE – showing all candidates with details")
 
     # נפעיל את הסריקה המלאה
-    all_candidates = full_scan_v34(manual, return_all=True)  # נשנה את הפונקציה שתחזיר את כל המועמדים
-    
-    # אם full_scan_v34 לא תומך ב-return_all, נשתמש בגישה אחרת
-    # כרגע – נניח שהיא מחזירה רק את המועמדים שעברו
     top5 = full_scan_v34(manual)
     
     # ============================================================
@@ -279,10 +272,8 @@ def fullscan_v34_mode(manual: bool = False, debug: bool = False):
     # ============================================================
     if not top5:
         print("[Main] No candidates passed V3.4 hard filters.")
-        # נשלח הודעה עם דוח ביניים
-        msg = format_interim_report()  # פונקציה חדשה ב-telegram_v3
+        msg = format_no_candidates_v34(today, now_et, LEARNING_MODE, debug)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        # נשמור לוג גם כשאין מועמדים
         save_daily_log("fullscan_v34", [], run_mode, manual, debug)
         return
 
