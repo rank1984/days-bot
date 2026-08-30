@@ -7,7 +7,7 @@ V3.1 fixes:
 - PM window uses full timestamps, UTC->ET conversion
 - price is taken from data up to now_et only
 - spread_status = "UNAVAILABLE"
-- opportunity_score replaces event_score (but we keep both for transition)
+- opportunity_score replaces event_score (kept for compatibility)
 """
 
 from datetime import datetime, time, timedelta
