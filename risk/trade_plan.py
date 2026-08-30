@@ -12,11 +12,7 @@ Calculates:
 """
 
 from typing import Dict, Any
-
-# Default config values – will be overridden by main config later
-ACCOUNT_SIZE = 5000.0
-MAX_RISK_PER_TRADE = 0.005      # 0.5%
-MAX_POSITION_VALUE_PCT = 0.20   # 20%
+from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE, MAX_POSITION_VALUE_PCT
 
 
 def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
@@ -31,6 +27,7 @@ def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
     pm_volume = candidate.get("pm_volume", 0)
     score = candidate.get("opportunity_score", 0.0)
     grade = candidate.get("grade", "WATCH")
+    gap_pct = candidate.get("gap_pct", 0.0)
 
     # --- Basic validation ---
     if pm_high <= 0 or price <= 0 or pm_vwap <= 0:
@@ -42,10 +39,6 @@ def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- Entry: 0.5% above PM High ---
     entry = pm_high * 1.005
-    if entry <= price:
-        # If already above entry, we might still wait for a pullback,
-        # but we keep the entry level as trigger.
-        pass
 
     # --- Stop: based on VWAP and range ---
     stop_candidate_1 = pm_vwap * 0.995
@@ -79,8 +72,6 @@ def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
 
     # --- Decision ---
     # BUY only if price is near entry and volume is decent.
-    # For now, we use a simple rule: if price >= entry * 0.99 and volume > 100k -> BUY SETUP
-    # But we'll output WAIT as default and let the user decide.
     if score >= 70 and pm_volume > 100000 and price >= entry * 0.99:
         decision = "BUY"
         decision_detail = "BUY SETUP – WAIT FOR TRIGGER"
@@ -122,6 +113,7 @@ def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
     result = {
         "ticker": ticker,
         "price": price,
+        "gap_pct": gap_pct,
         "entry": round(entry, 4),
         "stop": round(stop, 4),
         "target_1": round(target_1, 4),
@@ -131,8 +123,8 @@ def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "risk_dollars": round(risk_dollars, 2),
         "max_loss_dollars": round(shares * risk_per_share, 2),
         "max_position_value": round(shares * entry, 2),
-        "risk_reward_1": round(target_1 / entry, 2),
-        "risk_reward_2": round(target_2 / entry, 2),
+        "risk_reward_1": round((target_1 - entry) / risk_per_share, 1),
+        "risk_reward_2": round((target_2 - entry) / risk_per_share, 1),
         "hold_type": hold_type,
         "hold_min": hold_min,
         "hold_max": hold_max,
@@ -147,6 +139,12 @@ def build_trade_plan(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "pm_high": pm_high,
         "pm_vwap": pm_vwap,
         "pm_range": round(pm_range, 4),
+        "pm_data_quality": candidate.get("pm_data_quality", "UNKNOWN"),
+        "pm_dist_signed": candidate.get("pm_dist_signed"),
+        "spread_status": candidate.get("spread_status", "UNAVAILABLE"),
+        "strategy_version": "V3.1",
+        "data_version": "YFINANCE_KEYLESS",
+        "mode": "EXPERIMENT_V3.1",
     }
 
     return result
@@ -170,5 +168,8 @@ def _no_trade(candidate: Dict[str, Any], reason: str) -> Dict[str, Any]:
         "risk_model": None,
         "invalidation_conditions": [],
         "opportunity_score": candidate.get("opportunity_score", 0),
+        "grade": candidate.get("grade", "WATCH"),
+        "pm_data_quality": candidate.get("pm_data_quality", "UNKNOWN"),
+        "spread_status": candidate.get("spread_status", "UNAVAILABLE"),
     }
     return result
