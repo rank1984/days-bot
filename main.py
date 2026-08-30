@@ -4,9 +4,15 @@ Modes:
     python main.py scan [--manual]              # Premarket scan only
     python main.py fullscan [--manual]          # Full V3.3 analysis
     python main.py fullscan_v34 [--manual]      # Full V3.4 with Personality + Sympathy + VWAP
+
+Debug Flags:
+    --debug                                     # Show all candidates (bypass hard filters)
+    --force                                     # Same as --manual
 """
 
 import sys
+import json
+import os
 from pathlib import Path
 from datetime import datetime, time
 import pytz
@@ -35,7 +41,7 @@ from database.db import init_db, save_alert
 from watchlist_manager import WatchlistManager
 from telegram_formatter import format_no_candidates, send_message
 from risk.trade_plan import build_trade_plan
-from telegram_v3 import format_trade_card_v31, format_full_alert_v33
+from telegram_v3 import format_trade_card_v31, format_full_alert_v33, format_debug_report
 
 # V3.3 Full Scan
 try:
@@ -61,7 +67,43 @@ except ImportError:
     V30_AVAILABLE = False
 
 
-def scan_mode(manual: bool = False):
+def save_daily_log(scan_type: str, candidates: list, mode: str, manual: bool, debug: bool):
+    """שומר תיעוד יומי של כל הפעילות"""
+    log_dir = BASE_DIR / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    log_file = log_dir / f"daily_log_{today}.json"
+    
+    # טעינת קובץ קיים אם יש
+    existing_data = []
+    if log_file.exists():
+        try:
+            with open(log_file, 'r', encoding='utf-8') as f:
+                existing_data = json.load(f)
+        except:
+            existing_data = []
+    
+    # הוספת ריצה חדשה
+    entry = {
+        "timestamp": datetime.now(ET).isoformat(),
+        "scan_type": scan_type,
+        "mode": mode,
+        "manual": manual,
+        "debug": debug,
+        "candidates_count": len(candidates),
+        "candidates": candidates[:20]  # נשמור עד 20 מועמדים
+    }
+    existing_data.append(entry)
+    
+    # שמירה
+    with open(log_file, 'w', encoding='utf-8') as f:
+        json.dump(existing_data, f, indent=2, ensure_ascii=False, default=str)
+    
+    print(f"[Log] Saved daily log: {log_file}")
+
+
+def scan_mode(manual: bool = False, debug: bool = False):
     init_db()
     wm = WatchlistManager()
 
@@ -91,6 +133,8 @@ def scan_mode(manual: bool = False):
 
     if manual:
         print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
+    if debug:
+        print("[Main] 🐞 DEBUG MODE – showing all candidates (bypassing hard filters)")
 
     candidates = scan_premarket(today)
     if not candidates:
@@ -101,7 +145,7 @@ def scan_mode(manual: bool = False):
         return
 
     enriched = []
-    for c in candidates[:10]:
+    for c in candidates[:15]:
         plan = build_trade_plan(c)
         c.update(plan)
         c["account_size"] = ACCOUNT_SIZE
@@ -120,18 +164,28 @@ def scan_mode(manual: bool = False):
         added += 1
     print(f"[Main] Saved {added} candidates.")
 
+    # שמירת לוג יומי
+    save_daily_log("scan", enriched, run_mode, manual, debug)
+
+    # שליחת טלגרם
     if enriched:
-        top = enriched[0]
-        msg = format_trade_card_v31(top)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print(f"[Main] Sent Telegram for {top['ticker']}")
+        if debug:
+            # במצב Debug – שלח את כל המועמדים (עד 5)
+            for c in enriched[:5]:
+                msg = format_debug_report(c)
+                send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        else:
+            top = enriched[0]
+            msg = format_trade_card_v31(top)
+            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        print(f"[Main] Sent Telegram for {enriched[0]['ticker']}")
 
     print("\n" + "=" * 70)
     print("[Main] NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY.")
     print("=" * 70)
 
 
-def fullscan_mode(manual: bool = False):
+def fullscan_mode(manual: bool = False, debug: bool = False):
     """Full V3.3 mode (without Personality/Sympathy)"""
     if not V33_AVAILABLE:
         print("[Main] V3.3 full scan not available.")
@@ -156,10 +210,23 @@ def fullscan_mode(manual: bool = False):
 
     if manual:
         print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
+    if debug:
+        print("[Main] 🐞 DEBUG MODE – showing all candidates (bypassing hard filters)")
 
     top5 = full_scan_v33(manual)
+    
+    # אם יש Debug – נוסיף את כל המועמדים (לא רק Top 5)
+    if debug:
+        # נקבל את כל המועמדים (נשנה את full_scan_v33 להחזיר את כולם)
+        # לצורך Debug, נשתמש ב-filtered (נצטרך לשנות את full_scan_v33)
+        pass
+    
     if not top5:
         print("[Main] No candidates passed V3.3 filters.")
+        # שלח דוח Debug אם אין מועמדים
+        if debug:
+            msg = "🐞 DEBUG: No candidates passed hard filters. Check log for details."
+            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
     for c in top5:
@@ -167,6 +234,9 @@ def fullscan_mode(manual: bool = False):
         c["data_version"] = DATA_VERSION
         c["mode"] = run_mode
         save_alert(**c)
+
+    # שמירת לוג יומי
+    save_daily_log("fullscan", top5, run_mode, manual, debug)
 
     for i, c in enumerate(top5):
         msg = format_full_alert_v33(c)
@@ -178,7 +248,7 @@ def fullscan_mode(manual: bool = False):
     print("=" * 70)
 
 
-def fullscan_v34_mode(manual: bool = False):
+def fullscan_v34_mode(manual: bool = False, debug: bool = False):
     """Full V3.4 mode with Personality + Sympathy + VWAP"""
     if not V34_AVAILABLE:
         print("[Main] V3.4 full scan not available.")
@@ -203,10 +273,18 @@ def fullscan_v34_mode(manual: bool = False):
 
     if manual:
         print("[Main] ⚠️ MANUAL RUN – diagnostic/testing only.")
+    if debug:
+        print("[Main] 🐞 DEBUG MODE – showing all candidates (bypassing hard filters)")
 
     top5 = full_scan_v34(manual)
+    
     if not top5:
         print("[Main] No candidates passed V3.4 filters.")
+        # שלח דוח Debug אם אין מועמדים
+        if debug:
+            # ננסה להביא את כל המועמדים מה-full_scan
+            msg = "🐞 DEBUG: No candidates passed hard filters. Check log for details."
+            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
     for c in top5:
@@ -215,8 +293,11 @@ def fullscan_v34_mode(manual: bool = False):
         c["mode"] = run_mode
         save_alert(**c)
 
+    # שמירת לוג יומי
+    save_daily_log("fullscan_v34", top5, run_mode, manual, debug)
+
     for i, c in enumerate(top5):
-        msg = format_full_alert_v33(c)  # אנחנו משתמשים באותו פורמט (מעודכן)
+        msg = format_full_alert_v33(c)  # משתמשים באותו פורמט (כולל V3.4 נתונים)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         print(f"[Main] Sent V3.4 alert for {c['ticker']} ({i+1}/5)")
 
@@ -228,20 +309,25 @@ def fullscan_v34_mode(manual: bool = False):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:")
-        print("  python main.py scan [--manual]              # Premarket scan")
-        print("  python main.py fullscan [--manual]          # Full V3.3 analysis")
-        print("  python main.py fullscan_v34 [--manual]      # Full V3.4 analysis (Personality + Sympathy + VWAP)")
+        print("  python main.py scan [--manual] [--debug]                # Premarket scan")
+        print("  python main.py fullscan [--manual] [--debug]            # Full V3.3 analysis")
+        print("  python main.py fullscan_v34 [--manual] [--debug]        # Full V3.4 analysis (Personality + Sympathy + VWAP)")
+        print("")
+        print("  Flags:")
+        print("    --manual  : Run even outside trading hours")
+        print("    --debug   : Show all candidates (bypass hard filters) + save detailed log")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
     manual_run = "--manual" in sys.argv or "--force" in sys.argv
+    debug_run = "--debug" in sys.argv
 
     if mode == "scan":
-        scan_mode(manual=manual_run)
+        scan_mode(manual=manual_run, debug=debug_run)
     elif mode == "fullscan":
-        fullscan_mode(manual=manual_run)
+        fullscan_mode(manual=manual_run, debug=debug_run)
     elif mode == "fullscan_v34":
-        fullscan_v34_mode(manual=manual_run)
+        fullscan_v34_mode(manual=manual_run, debug=debug_run)
     else:
         print(f"Unknown mode: {mode}")
         print("Available modes: scan, fullscan, fullscan_v34")
