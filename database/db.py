@@ -70,7 +70,7 @@ def init_db():
         ("hold_max", "INTEGER"),
         ("risk_model", "TEXT"),
         ("spread_status", "TEXT"),
-        ("opportunity_score", "REAL"),   # if not present
+        ("opportunity_score", "REAL"),
     ]
 
     cursor.execute("PRAGMA table_info(alerts)")
@@ -142,7 +142,7 @@ def save_alert(**kwargs):
         "target_1": kwargs.get("target_1"),
         "target_2": kwargs.get("target_2"),
         "risk_per_share": kwargs.get("risk_per_share"),
-        "position_size": kwargs.get("position_size"),
+        "position_size": kwargs.get("position_size") or kwargs.get("position_shares"),
         "hold_type": kwargs.get("hold_type"),
         "hold_min": kwargs.get("hold_min"),
         "hold_max": kwargs.get("hold_max"),
