@@ -1,31 +1,109 @@
-name: DAYS-BOT V3.2 Full Scan
+name: DAYS-BOT V3.4 Trading Scanner
 
 on:
   schedule:
-    # 08:45 ET = 12:45 UTC (EDT) / 11:45 UTC (EST) – 45 דקות לפני הפתיחה
+    # 08:45 ET during EDT
     - cron: "45 12 * * 1-5"
-    # 09:00 ET = 13:00 UTC (EDT) / 12:00 UTC (EST) – 30 דקות לפני הפתיחה
+
+    # 09:00 ET during EDT
     - cron: "0 13 * * 1-5"
+
+    # 09:15 ET during EDT
+    - cron: "15 13 * * 1-5"
+
   workflow_dispatch:
 
 jobs:
-  full_scan:
+  scan:
     runs-on: ubuntu-latest
+
+    timeout-minutes: 12
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      # ------------------------------------------------------
+      # CHECKOUT
+      # ------------------------------------------------------
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------
+      # PYTHON
+      # ------------------------------------------------------
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install -r requirements.txt
-      - name: Run Full Scan
+          python-version: "3.11"
+          cache: "pip"
+
+      # ------------------------------------------------------
+      # DEPENDENCIES
+      # ------------------------------------------------------
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ------------------------------------------------------
+      # DATA
+      # ------------------------------------------------------
+
+      - name: Create Data Directory
+        run: |
+          mkdir -p data
+
+      # ------------------------------------------------------
+      # RUN V3.4
+      # ------------------------------------------------------
+
+      - name: Run DAYS-BOT V3.4
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
         run: |
+
+          echo "=============================================="
+          echo "DAYS-BOT V3.4"
+          echo "TRADING SCANNER"
+          echo "=============================================="
+
+          date -u
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python main.py fullscan --manual
+
+            echo "[Workflow] Manual execution"
+
+            python main.py fullscan_v34 --manual
+
           else
-            python main.py fullscan
+
+            echo "[Workflow] Scheduled execution"
+
+            python main.py fullscan_v34
+
           fi
+
+      # ------------------------------------------------------
+      # ARTIFACTS
+      # ------------------------------------------------------
+
+      - name: Upload Experiment Database
+        if: always()
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: alerts-db-v34-${{ github.run_number }}
+
+          path: |
+            data/alerts.db
+            data/universe_cache.csv
+
+          if-no-files-found: warn
+
+          retention-days: 30
