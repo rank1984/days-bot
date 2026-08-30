@@ -3,7 +3,7 @@ V3.2 Trade Plan – Entry, Stop, Targets, Position, Hold Time
 """
 from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
-def build_trade_plan(candidate, confirmed_price=None):
+def build_trade_plan(candidate):
     price = candidate.get('price', 0)
     pm_high = candidate.get('pm_high', 0)
     pm_vwap = candidate.get('pm_vwap', 0)
@@ -15,7 +15,7 @@ def build_trade_plan(candidate, confirmed_price=None):
         return {"decision": "NO TRADE", "reason": "Missing PM data"}
 
     # Entry – 0.5% מעל PM High (או המחיר הנוכחי אם גבוה יותר)
-    entry = max(pm_high * 1.005, price)  # אם כבר מעל, ניקח את המחיר הנוכחי
+    entry = max(pm_high * 1.005, price)
 
     # Stop – מבוסס על VWAP ו-range
     pm_range = pm_high - pm_low if pm_low else pm_high * 0.02
