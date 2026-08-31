@@ -3,6 +3,7 @@ V3.4 Full Scan – Analyzes candidates, computes composite score, returns Top 5
 Always returns at least some candidates (fallback)
 """
 from scanner.analyzers.float_analyzer import get_float_and_short
+from scanner.scoring_engine import calculate_composite_score
 from scanner.analyzers.sec_analyzer import check_offering_risk
 from scanner.analyzers.catalyst_analyzer import classify_catalyst
 from scanner.analyzers.sentiment_social import get_stocktwits_sentiment
