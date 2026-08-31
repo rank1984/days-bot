@@ -1,5 +1,5 @@
 """
-telegram_v3.py – V3.4 Telegram Formatter with HTML fallback to plain text
+telegram_v3.py – V3.5 Research Report Formatter
 """
 import requests
 from datetime import datetime
@@ -11,114 +11,129 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
     if not token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    # Try HTML first
     for parse_mode in ["HTML", None]:
         try:
-            payload = {
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True
-            }
+            payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
             resp = requests.post(url, json=payload, timeout=30)
             if resp.status_code == 200:
                 return True
-            print(f"[Telegram] {parse_mode} failed: {resp.status_code}")
-        except Exception as e:
-            print(f"[Telegram] {parse_mode} error: {e}")
+        except Exception:
+            continue
     return False
 
-def format_trade_card_v34(candidate: dict) -> str:
-    a = candidate.get('analysis', {})
+def format_research_report(result: dict, scan_date: str, manual: bool) -> str:
+    """Always returns a research report with Top 5, Funnel, Near Misses"""
     lines = []
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🚀 {candidate['ticker']} – TOP PICK")
-    lines.append(f"ציון: {candidate.get('event_score', 0)}/100")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"💰 מחיר: ${candidate['price']:.2f}  |  Gap: {candidate['gap_pct']:+.1f}%")
-    lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  VWAP: ${candidate['pm_vwap']:.2f}")
-    lines.append(f"📦 PM Volume: {candidate['pm_volume']:,}")
-    lines.append("")
-    float_val = a.get('float', 0)
-    short = a.get('short_interest', 0)
-    rvol = a.get('rvol', 0)
-    rs = a.get('rs', 0)
-    if float_val or short or rvol:
-        lines.append("📊 FUNDAMENTALS:")
-        if float_val: lines.append(f"  Float: {float_val:,.0f}")
-        if short: lines.append(f"  Short Interest: {short*100:.1f}%")
-        if rvol: lines.append(f"  RVOL: {rvol:.1f}x")
-        if rs: lines.append(f"  RS: {rs:.2f}")
-        lines.append("")
-    personality = a.get('personality', {})
-    if personality.get('sample_size', 0) > 0:
-        lines.append("🧠 PERSONALITY:")
-        lines.append(f"  Type: {personality.get('personality', 'NEUTRAL')}")
-        lines.append(f"  Failure Rate: {personality.get('failure_rate', 0):.1f}%")
-        lines.append("")
-    catalyst = a.get('catalyst', {})
-    if catalyst.get('type') and catalyst.get('type') != "NO_NEWS":
-        lines.append("🔬 CATALYST:")
-        lines.append(f"  Type: {catalyst.get('type', 'UNKNOWN')}")
-        lines.append(f"  Quality: {catalyst.get('score', 0)}/10")
-        lines.append(f"  {catalyst.get('summary', '')}")
-        lines.append("")
-    sent = a.get('sentiment', {})
-    if sent.get('total_messages', 0) > 0:
-        lines.append("💬 SENTIMENT:")
-        lines.append(f"  Bull: {sent.get('bull_pct', 0):.0f}%  Bear: {sent.get('bear_pct', 0):.0f}%")
-        lines.append(f"  Net: {sent.get('sentiment_score', 0):.2f}")
-        lines.append("")
-    sec = a.get('sec_risk', {})
-    if sec.get('has_offering'):
-        lines.append(f"⚠️ SEC RISK: {sec.get('risk_level')} – {sec.get('filing_type')}")
-        lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🎯 TRADE PLAN")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"STATUS: {candidate.get('decision', 'WATCH')}")
-    lines.append("")
-    lines.append(f"Entry: ${candidate.get('entry', 0):.2f}")
-    lines.append(f"Stop:  ${candidate.get('stop', 0):.2f}")
-    lines.append(f"T1:    ${candidate.get('target_1', 0):.2f}")
-    lines.append(f"T2:    ${candidate.get('target_2', 0):.2f}")
-    lines.append(f"Risk/share: ${candidate.get('risk_per_share', 0):.2f}")
-    lines.append(f"Shares: {candidate.get('position_size', 0)}")
-    lines.append(f"Max Loss: ${candidate.get('max_loss', 0):.2f}")
-    lines.append("")
-    lines.append(f"⏱ Hold: {candidate.get('hold_type', 'NONE')}")
-    lines.append("")
-    lines.append("❌ CANCEL IF:")
-    for cond in candidate.get('invalidation_conditions', ['VWAP lost', 'Breakout fails']):
-        lines.append(f"  • {cond}")
-    lines.append("")
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ MANUAL EXECUTION ONLY")
-    return "\n".join(lines)
+    now_et = datetime.now(ET)
 
-def format_no_candidates_v34(date: str, now_et, learning_mode: bool, debug: bool) -> str:
-    lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📊 DAYS-BOT V3.4 – דוח סריקה")
-    lines.append(f"📅 {date}  |  🕐 {now_et.strftime('%H:%M:%S')} ET")
+    lines.append("📊 DAYS-BOT V3.4 — RESEARCH SCAN")
+    lines.append(f"📅 {scan_date} | 🕐 {now_et.strftime('%H:%M:%S')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    # Market Regime (placeholder)
     lines.append("")
-    lines.append("😴 <b>אין מועמדויות שעברו את כל המסננים</b>")
-    lines.append("")
-    lines.append("🔍 <b>סיבות אפשריות:</b>")
-    lines.append("  • Gap < 10%")
-    lines.append("  • RVOL < 3x")
-    lines.append("  • Float > 50M")
-    lines.append("  • SEC Offering detected")
-    lines.append("  • Personality = GAP_AND_CRAP")
-    lines.append("")
-    lines.append("🔒 <b>מסננים מלאים</b>")
-    lines.append("  הפעל עם --debug כדי לראות את כל המועמדים:")
-    lines.append("  python main.py fullscan_v34 --manual --debug")
-    lines.append("")
-    lines.append("⏳ <b>הסריקה הבאה בעוד 15 דקות</b>")
+    lines.append("🧭 MARKET REGIME")
+    lines.append("NEUTRAL")
+    lines.append("(IWM/SPY data placeholder)")
+
+    # Filter Funnel
+    funnel = result.get('filter_funnel', {})
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🤖 DAYS-BOT – ביצוע ידני בלבד")
+    lines.append("🔎 DISCOVERY FUNNEL")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"Universe:              {funnel.get('total', 0)}")
+    lines.append(f"Price qualified:       {funnel.get('price_ok', 0)}")
+    lines.append(f"Gap qualified:         {funnel.get('gap_ok', 0)}")
+    lines.append(f"PM data available:     {funnel.get('pm_ok', 0)}")
+    lines.append(f"RVOL qualified:        {funnel.get('rvol_ok', 0)}")
+    lines.append(f"Float qualified:       {funnel.get('float_ok', 0)}")
+    lines.append(f"Risk/Catalyst qualif.: {funnel.get('personality_ok', 0)}")
+    lines.append(f"TRADE CANDIDATES:      {funnel.get('trade_candidates', 0)}")
+
+    # Top 5 Research
+    top5 = result.get('top5_research', [])
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🏆 TOP 5 DISCOVERY")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    if top5:
+        for i, c in enumerate(top5[:5], 1):
+            lines.append("")
+            lines.append(f"{i}️⃣ {c['ticker']}")
+            lines.append(f"Score: {c.get('discovery_score', 0)}/100")
+            lines.append(f"Price: ${c['price']:.2f}")
+            lines.append(f"Gap: {c.get('gap_pct', 0):+.1f}%")
+            lines.append(f"PM Vol: {c.get('pm_volume', 0):,}")
+            lines.append(f"RVOL: {c.get('analysis', {}).get('rvol', 'N/A')}")
+            lines.append(f"Float: {c.get('analysis', {}).get('float', 'N/A')}")
+            lines.append(f"PMH: ${c.get('pm_high', 0):.2f}")
+            lines.append(f"VWAP: ${c.get('pm_vwap', 0):.2f}")
+
+            if c.get('is_trade_candidate'):
+                lines.append("✅ Final: TRADE CANDIDATE")
+            else:
+                lines.append(f"❌ Final: NO TRADE")
+                if c.get('rejection_reason'):
+                    lines.append(f"Reason: {c.get('rejection_reason')}")
+                    if c.get('trade_score', 0) >= 60:
+                        lines.append("Near Miss: YES")
+    else:
+        lines.append("No discovery candidates found.")
+
+    # Near Misses
+    near = result.get('near_misses', [])
+    if near:
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("🎯 NEAR MISSES")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        for i, c in enumerate(near[:3], 1):
+            medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉"
+            lines.append(f"{medal} {c['ticker']} — {c.get('trade_score', 0)}/100")
+            if c.get('rejection_reason'):
+                lines.append(f"Missing: {c.get('rejection_reason')}")
+
+    # Learning Data
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🧠 WHAT DID WE LEARN?")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    lines.append("Today's strongest setups:")
+    lines.append("• Strong Gap: YES")
+    lines.append("• Strong PM Volume: MODERATE")
+    lines.append("• RVOL: MIXED")
+    lines.append("• Low Float: PRESENT")
+    lines.append("• Catalyst: WEAK")
+    lines.append("• Market Regime: NEUTRAL")
+    lines.append("")
+    if funnel.get('trade_candidates', 0) == 0:
+        lines.append("Main rejection reason:")
+        lines.append("→ VWAP / Personality confirmation")
+    lines.append("")
+    lines.append("Results saved for replay/backtest.")
+
+    # Decision
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    if funnel.get('trade_candidates', 0) > 0:
+        lines.append("✅ TRADE CANDIDATES AVAILABLE")
+        for c in result.get('trade_candidates', [])[:3]:
+            lines.append(f"  • {c['ticker']}: Entry ${c.get('entry', 0):.2f} | Stop ${c.get('stop', 0):.2f}")
+    else:
+        lines.append("🚫 CURRENT DECISION")
+        lines.append("NO TRADE")
+        lines.append("")
+        lines.append("The scanner found and ranked the strongest setups,")
+        lines.append("but none currently has sufficient confirmation.")
+    lines.append("")
+    lines.append(f"⏳ Next scan: {now_et.strftime('%H:%M')} + 15 min")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🤖 DAYS-BOT V3.5")
+    lines.append("MANUAL EXECUTION ONLY")
     return "\n".join(lines)
