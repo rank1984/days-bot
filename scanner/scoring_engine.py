@@ -1,135 +1,105 @@
 """
-Scoring Engine V3.4 – ציון משוקלל עם Hard Filters ו-Learning Mode
+V3.5 Scoring Engine – Computes Discovery, Analysis, Trade Scores with Rejection Reasons
 """
 from utils.config import LEARNING_MODE
 
-
-def calculate_composite_score(candidate: dict, analysis: dict) -> float:
+def calculate_scores(candidate: dict, analysis: dict) -> dict:
     """
-    מחשב ציון מורכב לפי:
-    - Gap, Volume, PM Distance
-    - RVOL, Float, Short Interest
-    - Catalyst Quality, Sentiment
-    - SEC Risk (הפחתה)
-    
-    LEARNING_MODE: True = ניכוי ציון במקום פסילה
+    Returns: {
+        discovery_score: float,
+        analysis_score: float,
+        trade_score: float,
+        rejection_reason: str or None,
+        is_trade_candidate: bool
+    }
     """
-    score = 0.0
+    result = {
+        "discovery_score": candidate.get('discovery_score', 0),
+        "analysis_score": 0,
+        "trade_score": 0,
+        "rejection_reason": None,
+        "is_trade_candidate": False,
+    }
 
-    # 1. Gap (0-30)
-    gap = candidate.get('gap_pct', 0)
-    score += min(max(gap, 0) * 2, 30)
-
-    # 2. PM Volume (0-25)
-    pm_vol = candidate.get('pm_volume', 0)
-    score += min((pm_vol / 100_000) * 15, 25)
-
-    # 3. PM Distance (0-20)
-    dist = candidate.get('pm_dist_signed', -100)
-    if dist >= 0:
-        score += 20
-    elif dist >= -2:
-        score += 12
-    elif dist >= -5:
-        score += 5
-
-    # 4. RVOL (0-15)
-    rvol = analysis.get('rvol', 0)
-    if rvol:
-        if rvol >= 10:
-            score += 15
-        elif rvol >= 5:
-            score += 10
-        elif rvol >= 3:
-            score += 5
-
-    # 5. Float (0-15) – נמוך יותר = טוב יותר
+    # Analysis Score (based on all metrics)
+    score = 0
     float_val = analysis.get('float', 0)
-    if float_val:
-        if float_val < 5_000_000:
-            score += 15
-        elif float_val < 10_000_000:
-            score += 12
-        elif float_val < 20_000_000:
-            score += 8
-        elif float_val < 50_000_000:
-            score += 4
-
-    # 6. Short Interest (0-15)
     short = analysis.get('short_interest', 0)
-    if short:
-        if short >= 0.25:   # >25%
-            score += 15
-        elif short >= 0.15: # >15%
-            score += 10
-        elif short >= 0.10:
-            score += 5
-
-    # 7. Catalyst Quality (0-20)
-    catalyst = analysis.get('catalyst', {})
-    cat_score = catalyst.get('score', 0)
-    score += cat_score * 2  # 1-10 -> 2-20
-
-    # 8. Sentiment (0-10)
+    rvol = analysis.get('rvol', 0)
+    catalyst = analysis.get('catalyst', {}).get('score', 0)
     sentiment = analysis.get('sentiment', {}).get('sentiment_score', 0)
-    if sentiment:
-        score += (sentiment + 1) * 5  # -1..1 -> 0..10
-
-    # ============================================================
-    # RISK CHECKS – הפחתת ציון
-    # ============================================================
-
-    # SEC Offering
-    if analysis.get('sec_risk', {}).get('has_offering'):
-        risk_level = analysis['sec_risk'].get('risk_level', 'LOW')
-        if risk_level == 'HIGH':
-            score -= 30
-        elif risk_level == 'MEDIUM':
-            score -= 20
-        else:
-            score -= 10
-
-    # ============================================================
-    # HARD FILTERS – עם Learning Mode
-    # ============================================================
-    
-    # Float: אם > 50M
-    if float_val and float_val > 50_000_000:
-        if LEARNING_MODE:
-            score -= 25  # רק ניכוי ב-Learning Mode
-        else:
-            score = -999  # פסילה מלאה
-    
-    # Gap: אם < 10%
-    if gap < 10:
-        if LEARNING_MODE:
-            score -= 20
-        else:
-            score = -999
-    
-    # RVOL: אם < 3x
-    if rvol and rvol < 3:
-        if LEARNING_MODE:
-            score -= 20
-        else:
-            score = -999
-    
-    # Short Interest: אם < 5% (אין squeeze potential)
-    if short and short < 0.05:
-        if LEARNING_MODE:
-            score -= 10
-        else:
-            score = -999
-    
-    # Personality: GAP_AND_CRAP
     personality = analysis.get('personality', {}).get('personality', 'NEUTRAL')
-    if personality == "GAP_AND_CRAP":
-        if LEARNING_MODE:
-            score -= 30
-        else:
-            score = -999
+    sec_risk = analysis.get('sec_risk', {}).get('risk_level', 'LOW')
 
-    # ============================================================
-    # Normalize
-    # ============================================================
-    return round(max(0, min(100, score)), 1)
+    # Float
+    if float_val and float_val < 5_000_000:
+        score += 15
+    elif float_val and float_val < 10_000_000:
+        score += 10
+    elif float_val and float_val < 20_000_000:
+        score += 5
+    elif float_val and float_val > 50_000_000:
+        score -= 10
+
+    # Short Interest
+    if short and short > 0.25:
+        score += 15
+    elif short and short > 0.15:
+        score += 10
+
+    # RVOL
+    if rvol and rvol > 5:
+        score += 15
+    elif rvol and rvol > 3:
+        score += 8
+    elif rvol and rvol < 2:
+        score -= 5
+
+    # Catalyst
+    score += catalyst * 2
+
+    # Sentiment
+    if sentiment:
+        score += sentiment * 5
+
+    # Personality
+    if personality == "STRONG_FOLLOWER":
+        score += 10
+    elif personality == "GAP_AND_CRAP":
+        score -= 20
+
+    # SEC Risk
+    if sec_risk == "HIGH":
+        score -= 30
+    elif sec_risk == "MEDIUM":
+        score -= 15
+
+    result["analysis_score"] = round(max(0, min(100, score)), 1)
+
+    # Trade Score = weighted combination
+    trade_score = (result["discovery_score"] * 0.4) + (result["analysis_score"] * 0.6)
+    result["trade_score"] = round(trade_score, 1)
+
+    # Determine if trade candidate
+    rejection_reasons = []
+
+    # Hard checks
+    if float_val and float_val > 50_000_000:
+        rejection_reasons.append("Float > 50M")
+    if candidate.get('gap_pct', 0) < 10:
+        rejection_reasons.append("Gap < 10%")
+    if rvol and rvol < 3:
+        rejection_reasons.append("RVOL < 3x")
+    if sec_risk == "HIGH":
+        rejection_reasons.append("SEC HIGH risk")
+    if personality == "GAP_AND_CRAP":
+        rejection_reasons.append("Personality = GAP_AND_CRAP")
+
+    if rejection_reasons and not LEARNING_MODE:
+        result["rejection_reason"] = " | ".join(rejection_reasons)
+        result["is_trade_candidate"] = False
+    else:
+        result["is_trade_candidate"] = True
+        result["rejection_reason"] = None
+
+    return result
