@@ -1,5 +1,5 @@
 """
-DAYS-BOT V3.4 – Main Entry (Always sends Telegram, even with no candidates)
+DAYS-BOT V3.5 – Research Engine (Always sends Research Report)
 """
 import sys
 from pathlib import Path
@@ -18,11 +18,10 @@ from utils.config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 )
 from scanner.premarket import scan_premarket
-from scanner.full_scan_v34 import full_scan_v34
+from scanner.full_scan_v35 import full_scan_v35
 from scanner.universe import load_universe
 from database.db import init_db, save_alert
-from watchlist_manager import WatchlistManager
-from telegram_v3 import send_message, format_trade_card_v34, format_no_candidates_v34
+from telegram_v3 import send_message, format_research_report
 from risk.trade_plan_v34 import build_trade_plan
 
 
@@ -36,9 +35,8 @@ def resolve_scan_date(manual=False, requested_date=None):
     return now.strftime("%Y-%m-%d")
 
 
-def run_fullscan_v34(manual=False, requested_date=None):
+def run_research(manual=False, requested_date=None):
     init_db()
-    wm = WatchlistManager()
     now_et = datetime.now(ET)
     scan_date = resolve_scan_date(manual, requested_date)
 
@@ -51,43 +49,37 @@ def run_fullscan_v34(manual=False, requested_date=None):
             return
 
     print("\n" + "="*74)
-    print("DAYS-BOT V3.4 – FULLSCAN")
+    print(f"DAYS-BOT V3.5 – RESEARCH ENGINE")
     print(f"Date: {scan_date} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("="*74)
 
+    # Discovery
     candidates = scan_premarket(scan_date, manual)
     if not candidates:
-        msg = format_no_candidates_v34(scan_date, now_et, learning_mode=False, debug=False)
+        # Send empty research report
+        empty_result = {
+            "top5_research": [],
+            "trade_candidates": [],
+            "filter_funnel": {"total": 0},
+            "near_misses": []
+        }
+        msg = format_research_report(empty_result, scan_date, manual)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        print("[Main] No candidates – sent notification.")
+        print("[Main] No candidates – sent empty research report.")
         return
 
-    # Full analysis
-    top5 = full_scan_v34(candidates, manual)
+    # Full Research
+    result = full_scan_v35(candidates, manual)
 
-    if not top5:
-        # Fallback: use best candidates from premarket
-        top5 = candidates[:5]
-        for c in top5:
-            c['composite_score'] = c.get('event_score', 0)
-            c['analysis'] = {}
-
-    # Apply trade plans
-    for c in top5:
-        plan = build_trade_plan(c, ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT)
-        c.update(plan)
-        c["account_size"] = ACCOUNT_SIZE
-        c["risk_pct"] = MAX_RISK_PER_TRADE_V31
-        c["strategy_version"] = STRATEGY_VERSION
-        c["mode"] = "MANUAL_REPLAY" if manual else "LIVE"
+    # Save to DB (even rejected ones for learning)
+    for c in result.get('top5_research', []):
         save_alert(**c)
 
-    # Send Telegram
-    for c in top5[:3]:
-        msg = format_trade_card_v34(c)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    # Send Research Report
+    msg = format_research_report(result, scan_date, manual)
+    send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    print(f"[Main] Sent {len(top5[:3])} alerts.")
+    print(f"[Main] Sent research report.")
     print("="*74)
     print("⚠️ NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY")
     print("="*74)
@@ -95,7 +87,7 @@ def run_fullscan_v34(manual=False, requested_date=None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py fullscan_v34 [--manual] [--date YYYY-MM-DD]")
+        print("Usage: python main.py fullscan_v35 [--manual] [--date YYYY-MM-DD]")
         sys.exit(1)
 
     manual = "--manual" in sys.argv
@@ -104,4 +96,4 @@ if __name__ == "__main__":
         idx = sys.argv.index("--date")
         requested_date = sys.argv[idx+1] if idx+1 < len(sys.argv) else None
 
-    run_fullscan_v34(manual, requested_date)
+    run_research(manual, requested_date)
