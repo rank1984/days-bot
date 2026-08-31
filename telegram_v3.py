@@ -43,126 +43,195 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 
 
 # ============================================================
-# RESEARCH REPORT (V3.5)
+# RESEARCH REPORT (V3.5) – FULLY IN HEBREW
 # ============================================================
 
 def format_research_report(result: dict, now_et: datetime) -> str:
     """
-    Full research report with Top 5, Funnel, Near Misses, Market Regime, Decision.
-    Always sent, even when there are no trade candidates.
+    Full research report in Hebrew with:
+    - Market Regime
+    - Discovery Funnel
+    - Top 5 Discovery (with details)
+    - Near Misses
+    - Trade Candidates
+    - Decision
+    - Recommendations
     """
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📊 DAYS-BOT V3.5 – RESEARCH SCAN")
-    lines.append(f"📅 {now_et.strftime('%Y-%m-%d')} | 🕐 {now_et.strftime('%H:%M')} ET")
+    lines.append("📊 DAYS-BOT V3.5 – דוח מחקר יומי")
+    lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
-    # Market Regime
+    # ============================================================
+    # MARKET REGIME
+    # ============================================================
     regime = result.get('regime', {})
-    lines.append("🧭 MARKET REGIME")
-    lines.append(regime.get('description', 'Unknown'))
+    lines.append("🧭 מצב השוק")
+    if regime.get('description') and "Could not" not in regime['description']:
+        lines.append(f"  {regime['description']}")
+    else:
+        lines.append("  ⚠️ לא ניתן לקבל נתוני שוק כרגע (סוף שבוע או מחוץ לשעות המסחר)")
     lines.append("")
 
-    # Discovery Funnel
+    # ============================================================
+    # DISCOVERY FUNNEL
+    # ============================================================
     funnel = result.get('funnel', {})
+    universe = funnel.get('universe', 0)
+    discovery = funnel.get('discovery', 0)
+    analysis = funnel.get('analysis', 0)
+    trade = funnel.get('trade', 0)
+
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🔎 DISCOVERY FUNNEL")
+    lines.append("🔎 משפך הגילוי")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"Universe:              {funnel.get('universe', 0)}")
-    lines.append(f"Discovery qualified:   {funnel.get('discovery', 0)}")
-    lines.append(f"Analysis qualified:    {funnel.get('analysis', 0)}")
-    lines.append(f"Trade Candidates:      {funnel.get('trade', 0)}")
+    lines.append(f"📌 סה\"כ מניות בסורק:        {universe}")
+    lines.append(f"📌 עברו שלב גילוי:          {discovery}")
+    lines.append(f"📌 עברו ניתוח מעמיק:        {analysis}")
+    lines.append(f"📌 מועמדים למסחר:           {trade}")
     lines.append("")
 
-    # Top 5 Discovery
+    # ============================================================
+    # TOP 5 DISCOVERY
+    # ============================================================
     top5 = result.get('top5', [])
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🏆 TOP 5 DISCOVERY")
+    lines.append("🏆 חמשת המועמדים המובילים")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
-    for i, c in enumerate(top5, 1):
-        a = c.get('analysis', {})
-        lines.append(f"{i}️⃣ {c['ticker']}")
-        lines.append(f"Score: {c.get('composite_score', c.get('event_score', 0))}/100")
-        lines.append(f"Price: ${c['price']:.2f} | Gap: {c['gap_pct']:+.1f}%")
-        lines.append(f"PM Vol: {c.get('pm_volume', 0):,}")
-        if a.get('rvol'):
-            lines.append(f"RVOL: {a['rvol']:.1f}x")
-        if a.get('float'):
-            lines.append(f"Float: {a['float']:,.0f}")
-        if a.get('short_interest'):
-            lines.append(f"Short Interest: {a['short_interest']*100:.1f}%")
-        lines.append(f"PMH: ${c.get('pm_high', 0):.2f} | VWAP: ${c.get('pm_vwap', 0):.2f}")
+    if top5:
+        for i, c in enumerate(top5, 1):
+            a = c.get('analysis', {})
+            score = c.get('composite_score', c.get('event_score', 0))
+            ticker = c['ticker']
+            price = c.get('price', 0)
+            gap = c.get('gap_pct', 0)
+            pm_vol = c.get('pm_volume', 0)
+            pm_high = c.get('pm_high', 0)
+            pm_vwap = c.get('pm_vwap', 0)
+            rvol = a.get('rvol', 0)
+            float_val = a.get('float', 0)
+            short = a.get('short_interest', 0)
 
-        # Status
-        if c.get('plan_valid', False):
-            lines.append("✅ FINAL: TRADE CANDIDATE")
-        else:
-            reason = "Not qualified"
-            if a.get('personality', {}).get('personality') == "GAP_AND_CRAP":
-                reason = "Personality = GAP_AND_CRAP"
-            elif a.get('sec_risk', {}).get('has_offering'):
-                reason = "SEC risk detected"
-            elif a.get('rvol', 0) < 3:
-                reason = "RVOL below threshold"
-            elif c.get('pm_dist_signed', 0) < 0:
-                reason = "Below PM High"
-            lines.append(f"❌ FINAL: NO TRADE – {reason}")
+            lines.append(f"{i}️⃣ {ticker}")
+            lines.append(f"   ציון: {score:.0f}/100")
+            lines.append(f"   מחיר: ${price:.2f} | Gap: {gap:+.1f}%")
+            lines.append(f"   נפח PM: {pm_vol:,}")
+            if rvol:
+                lines.append(f"   RVOL: {rvol:.1f}x")
+            if float_val:
+                lines.append(f"   Float: {float_val:,.0f}")
+            if short:
+                lines.append(f"   Short Interest: {short*100:.1f}%")
+            lines.append(f"   PM High: ${pm_high:.2f} | VWAP: ${pm_vwap:.2f}")
+
+            # Final status
+            if c.get('plan_valid', False):
+                lines.append("   ✅ סופי: מועמד למסחר")
+            else:
+                reason = "לא עבר את כל המסננים"
+                if a.get('personality', {}).get('personality') == "GAP_AND_CRAP":
+                    reason = "אופי המניה: GAP_AND_CRAP (נוטה לקרוס)"
+                elif a.get('sec_risk', {}).get('has_offering'):
+                    reason = "סיכון SEC – הנפקה פעילה"
+                elif rvol and rvol < 3:
+                    reason = "RVOL נמוך מ-3x"
+                elif c.get('pm_dist_signed', 0) < 0:
+                    reason = "מחיר מתחת ל-PM High"
+                elif gap < 10:
+                    reason = "גאפ נמוך מ-10%"
+                lines.append(f"   ❌ סופי: לא למסחר – {reason}")
+            lines.append("")
+    else:
+        lines.append("😴 לא נמצאו מועמדים בשלב הגילוי")
+        lines.append("")
+        lines.append("   סיבות אפשריות:")
+        lines.append("   • מחוץ לשעות המסחר (הסריקה פועלת 08:00–09:30 ET)")
+        lines.append("   • אין מניות עם גאפ משמעותי היום")
+        lines.append("   • יום מסחר חלש או ללא חדשות")
         lines.append("")
 
-    # Near Misses
+    # ============================================================
+    # NEAR MISSES
+    # ============================================================
     near_misses = result.get('near_misses', [])
     if near_misses:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🎯 NEAR MISSES")
+        lines.append("🎯 כמעט ועברו")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         for nm in near_misses:
-            lines.append(f"🥇 {nm['ticker']} — {nm['score']}/100")
-            lines.append(f"Missing: {nm['reason']}")
+            lines.append(f"🥇 {nm['ticker']} – ציון: {nm['score']:.0f}/100")
+            lines.append(f"   חסר: {nm['reason']}")
             lines.append("")
 
-    # Trade Candidates (if any)
+    # ============================================================
+    # TRADE CANDIDATES
+    # ============================================================
     trade_candidates = result.get('trade_candidates', [])
     if trade_candidates:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("✅ TRADE CANDIDATES")
+        lines.append("✅ מועמדים למסחר")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         for c in trade_candidates[:3]:
-            lines.append(f"• {c['ticker']} – Entry: ${c.get('entry', 0):.2f} | Stop: ${c.get('stop', 0):.2f}")
-            lines.append(f"  T1: ${c.get('target_1', 0):.2f} | T2: ${c.get('target_2', 0):.2f} | Shares: {c.get('position_size', 0)}")
+            lines.append(f"• {c['ticker']}")
+            lines.append(f"  כניסה: ${c.get('entry', 0):.2f} | סטופ: ${c.get('stop', 0):.2f}")
+            lines.append(f"  יעד 1: ${c.get('target_1', 0):.2f} | יעד 2: ${c.get('target_2', 0):.2f}")
+            lines.append(f"  מניות: {c.get('position_size', 0)}")
+            lines.append("")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🚫 DECISION: NO TRADE")
-        lines.append("No setup met all confirmation criteria.")
-        lines.append("The Top 5 above are the strongest discoveries.")
+        lines.append("🚫 החלטה: אין מסחר")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("אף מועמד לא עבר את כל תנאי האישור.")
+        lines.append("המועמדים המובילים למעלה הם החזקים ביותר שנמצאו,")
+        lines.append("אך חסר להם אישור סופי (VWAP, פריצה, נפח).")
+        lines.append("")
+
+    # ============================================================
+    # LEARNING INSIGHTS
+    # ============================================================
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📖 מה למדנו היום?")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    if discovery == 0:
+        lines.append("• אין מועמדים – כנראה יום שקט או מחוץ לשעות הפעילות")
+        lines.append("• מומלץ לבדוק שוב ב-08:45–09:15 ET")
+    elif trade == 0 and discovery > 0:
+        lines.append(f"• נמצאו {discovery} מועמדים אך כולם נפסלו")
+        lines.append("• הסיבות העיקריות: RVOL נמוך, SEC, או Personality")
+        lines.append("• ייתכן שצריך להקל על המסננים בימים שקטים")
+    else:
+        lines.append(f"• נמצאו {trade} מועמדים למסחר")
+        lines.append("• בדוק את הפרטים בטלגרם והחלט על ביצוע")
 
     lines.append("")
-    lines.append("⏳ Next scan: 09:30 ET")
+    lines.append("⏳ הסריקה הבאה בעוד 15 דקות")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🤖 DAYS-BOT V3.5 – MANUAL EXECUTION ONLY")
+    lines.append("⚠️ ביצוע ידני בלבד – הבוט אינו מבצע פקודות")
     return "\n".join(lines)
 
 
 # ============================================================
-# V3.4 TRADE CARD
+# V3.4 TRADE CARD (in Hebrew)
 # ============================================================
 
 def format_trade_card_v34(candidate: dict) -> str:
     """
-    Detailed trade card for a single candidate.
-    Used for top pick when trade candidates exist.
+    Detailed trade card for a single candidate in Hebrew.
     """
     a = candidate.get('analysis', {})
     lines = []
 
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"🚀 {candidate['ticker']} – TOP PICK")
+    lines.append(f"🚀 {candidate['ticker']} – ההמלצה המובילה")
     lines.append(f"ציון: {candidate.get('event_score', 0)}/100")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     lines.append(f"💰 מחיר: ${candidate['price']:.2f}  |  Gap: {candidate['gap_pct']:+.1f}%")
     lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  VWAP: ${candidate['pm_vwap']:.2f}")
-    lines.append(f"📦 PM Volume: {candidate['pm_volume']:,}")
+    lines.append(f"📦 נפח PM: {candidate['pm_volume']:,}")
     lines.append("")
 
     # Fundamentals
@@ -171,7 +240,7 @@ def format_trade_card_v34(candidate: dict) -> str:
     rvol = a.get('rvol', 0)
     rs = a.get('rs', 0)
     if float_val or short or rvol:
-        lines.append("📊 FUNDAMENTALS:")
+        lines.append("📊 נתונים בסיסיים:")
         if float_val:
             lines.append(f"  Float: {float_val:,.0f}")
         if short:
@@ -179,75 +248,75 @@ def format_trade_card_v34(candidate: dict) -> str:
         if rvol:
             lines.append(f"  RVOL: {rvol:.1f}x")
         if rs:
-            lines.append(f"  RS: {rs:.2f}")
+            lines.append(f"  חוזק יחסי: {rs:.2f}")
         lines.append("")
 
     # Personality
     personality = a.get('personality', {})
     if personality.get('sample_size', 0) > 0:
-        lines.append("🧠 PERSONALITY:")
-        lines.append(f"  Type: {personality.get('personality', 'NEUTRAL')}")
-        lines.append(f"  Failure Rate: {personality.get('failure_rate', 0):.1f}%")
+        lines.append("🧠 אופי המניה:")
+        lines.append(f"  סוג: {personality.get('personality', 'NEUTRAL')}")
+        lines.append(f"  אחוז כישלון היסטורי: {personality.get('failure_rate', 0):.1f}%")
         lines.append("")
 
     # Catalyst
     catalyst = a.get('catalyst', {})
     if catalyst.get('type') and catalyst.get('type') != "NO_NEWS":
-        lines.append("🔬 CATALYST:")
-        lines.append(f"  Type: {catalyst.get('type', 'UNKNOWN')}")
-        lines.append(f"  Quality: {catalyst.get('score', 0)}/10")
+        lines.append("🔬 קטליזטור:")
+        lines.append(f"  סוג: {catalyst.get('type', 'UNKNOWN')}")
+        lines.append(f"  איכות: {catalyst.get('score', 0)}/10")
         lines.append(f"  {catalyst.get('summary', '')}")
         lines.append("")
 
     # Sentiment
     sent = a.get('sentiment', {})
     if sent.get('total_messages', 0) > 0:
-        lines.append("💬 SENTIMENT:")
-        lines.append(f"  Bull: {sent.get('bull_pct', 0):.0f}%  Bear: {sent.get('bear_pct', 0):.0f}%")
-        lines.append(f"  Net: {sent.get('sentiment_score', 0):.2f}")
+        lines.append("💬 סנטימנט:")
+        lines.append(f"  שוורי: {sent.get('bull_pct', 0):.0f}%  דובי: {sent.get('bear_pct', 0):.0f}%")
+        lines.append(f"  נטו: {sent.get('sentiment_score', 0):.2f}")
         lines.append("")
 
     # SEC Risk
     sec = a.get('sec_risk', {})
     if sec.get('has_offering'):
-        lines.append(f"⚠️ SEC RISK: {sec.get('risk_level')} – {sec.get('filing_type')}")
+        lines.append(f"⚠️ סיכון SEC: {sec.get('risk_level')} – {sec.get('filing_type')}")
         lines.append("")
 
     # Sympathy Plays
     sympathy = a.get('sympathy', [])
     if sympathy:
-        lines.append("🔄 SYMPATHY PLAYS:")
+        lines.append("🔄 מניות נלוות (אותו סקטור):")
         for s in sympathy[:3]:
-            lines.append(f"  • {s['ticker']} – ${s['price']:.2f} (vol: {s.get('pm_volume', 0):,})")
+            lines.append(f"  • {s['ticker']} – ${s['price']:.2f} (נפח: {s.get('pm_volume', 0):,})")
         lines.append("")
 
     # Trade Plan
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🎯 TRADE PLAN")
+    lines.append("🎯 תוכנית מסחר")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append(f"STATUS: {candidate.get('decision', 'WATCH')}")
+    lines.append(f"סטטוס: {candidate.get('decision', 'WATCH')}")
     lines.append("")
-    lines.append(f"Entry: ${candidate.get('entry', 0):.2f}")
-    lines.append(f"Stop:  ${candidate.get('stop', 0):.2f}")
-    lines.append(f"T1:    ${candidate.get('target_1', 0):.2f}")
-    lines.append(f"T2:    ${candidate.get('target_2', 0):.2f}")
-    lines.append(f"Risk/share: ${candidate.get('risk_per_share', 0):.2f}")
-    lines.append(f"Shares: {candidate.get('position_size', 0)}")
-    lines.append(f"Max Loss: ${candidate.get('max_loss', 0):.2f}")
+    lines.append(f"כניסה: ${candidate.get('entry', 0):.2f}")
+    lines.append(f"סטופ:  ${candidate.get('stop', 0):.2f}")
+    lines.append(f"יעד 1: ${candidate.get('target_1', 0):.2f}")
+    lines.append(f"יעד 2: ${candidate.get('target_2', 0):.2f}")
+    lines.append(f"סיכון למניה: ${candidate.get('risk_per_share', 0):.2f}")
+    lines.append(f"מניות מומלצות: {candidate.get('position_size', 0)}")
+    lines.append(f"הפסד מקסימלי: ${candidate.get('max_loss', 0):.2f}")
     lines.append("")
-    lines.append(f"⏱ Hold: {candidate.get('hold_type', 'NONE')}")
+    lines.append(f"⏱ זמן החזקה: {candidate.get('hold_type', 'NONE')}")
     lines.append("")
-    lines.append("❌ CANCEL IF:")
-    for cond in candidate.get('invalidation_conditions', ['VWAP lost', 'Breakout fails']):
+    lines.append("❌ תנאי ביטול:")
+    for cond in candidate.get('invalidation_conditions', ['VWAP נשבר', 'פריצה נכשלת']):
         lines.append(f"  • {cond}")
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ MANUAL EXECUTION ONLY")
+    lines.append("⚠️ ביצוע ידני בלבד")
     return "\n".join(lines)
 
 
 # ============================================================
-# NO CANDIDATES (Fallback)
+# NO CANDIDATES (Fallback – Hebrew)
 # ============================================================
 
 def format_no_candidates_v34(date: str, now_et: datetime, learning_mode: bool, debug: bool) -> str:
@@ -256,25 +325,29 @@ def format_no_candidates_v34(date: str, now_et: datetime, learning_mode: bool, d
     """
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📊 DAYS-BOT V3.4 – דוח סריקה")
+    lines.append("📊 DAYS-BOT V3.5 – דוח סריקה")
     lines.append(f"📅 {date}  |  🕐 {now_et.strftime('%H:%M:%S')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("")
-    lines.append("😴 <b>אין מועמדויות שעברו את כל המסננים</b>")
+    lines.append("😴 לא נמצאו מועמדים למסחר")
     lines.append("")
-    lines.append("🔍 <b>סיבות אפשריות:</b>")
-    lines.append("  • Gap < 10%")
-    lines.append("  • RVOL < 3x")
-    lines.append("  • Float > 50M")
-    lines.append("  • SEC Offering detected")
-    lines.append("  • Personality = GAP_AND_CRAP")
+    lines.append("🔍 סיבות אפשריות:")
+    lines.append("  • מחוץ לשעות הפעילות (08:00–09:30 ET)")
+    lines.append("  • אין מניות עם גאפ משמעותי")
+    lines.append("  • RVOL נמוך מ-3x")
+    lines.append("  • Float גדול מ-50M")
+    lines.append("  • הנפקה פעילה (SEC)")
+    lines.append("  • אופי המניה GAP_AND_CRAP")
     lines.append("")
-    lines.append("🔒 <b>מסננים מלאים</b>")
-    lines.append("  הפעל עם --debug כדי לראות את כל המועמדים:")
-    lines.append("  python main.py fullscan_v34 --manual --debug")
+    if learning_mode:
+        lines.append("📖 מצב למידה פעיל – המסננים מוקלים")
+    else:
+        lines.append("🔒 מסננים מלאים")
+        lines.append("  להפעלת Debug: python main.py fullscan_v34 --manual --debug")
     lines.append("")
-    lines.append("⏳ <b>הסריקה הבאה בעוד 15 דקות</b>")
+    lines.append("📁 לוג מלא: data/logs/")
     lines.append("")
+    lines.append("⏳ הסריקה הבאה בעוד 15 דקות")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("🤖 DAYS-BOT – ביצוע ידני בלבד")
     return "\n".join(lines)
@@ -296,13 +369,13 @@ def format_debug_report(candidate: dict) -> str:
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append(f"💰 מחיר: ${candidate['price']:.2f}  |  Gap: {candidate['gap_pct']:+.1f}%")
     lines.append(f"📊 PM High: ${candidate['pm_high']:.2f}  |  VWAP: ${candidate['pm_vwap']:.2f}")
-    lines.append(f"📦 PM Volume: {candidate['pm_volume']:,}")
+    lines.append(f"📦 נפח PM: {candidate['pm_volume']:,}")
     lines.append("")
 
     float_val = a.get('float', 0)
     short = a.get('short_interest', 0)
     rvol = a.get('rvol', 0)
-    lines.append("📊 FUNDAMENTALS:")
+    lines.append("📊 נתונים בסיסיים:")
     lines.append(f"  Float: {float_val:,.0f}" if float_val else "  Float: N/A")
     lines.append(f"  Short Interest: {short*100:.1f}%" if short else "  Short Interest: N/A")
     lines.append(f"  RVOL: {rvol:.1f}x" if rvol else "  RVOL: N/A")
@@ -322,20 +395,20 @@ def format_debug_report(candidate: dict) -> str:
     lines.append(f"⚠️ SEC Risk: {sec.get('risk_level', 'NONE')} – {sec.get('filing_type', 'No filing')}")
     lines.append("")
 
-    lines.append("🎯 TRADE PLAN:")
+    lines.append("🎯 תוכנית מסחר:")
     if candidate.get('entry'):
-        lines.append(f"  Entry: ${candidate['entry']:.2f} | Stop: ${candidate['stop']:.2f}")
-        lines.append(f"  T1: ${candidate['target_1']:.2f} ({candidate.get('risk_reward_1', 0):.1f}R)")
-        lines.append(f"  T2: ${candidate['target_2']:.2f} ({candidate.get('risk_reward_2', 0):.1f}R)")
-        lines.append(f"  Shares: {candidate.get('position_size', 0)}")
+        lines.append(f"  כניסה: ${candidate['entry']:.2f} | סטופ: ${candidate['stop']:.2f}")
+        lines.append(f"  יעד 1: ${candidate['target_1']:.2f} ({candidate.get('risk_reward_1', 0):.1f}R)")
+        lines.append(f"  יעד 2: ${candidate['target_2']:.2f} ({candidate.get('risk_reward_2', 0):.1f}R)")
+        lines.append(f"  מניות: {candidate.get('position_size', 0)}")
     else:
-        lines.append("  ❌ No valid trade plan")
+        lines.append("  ❌ אין תוכנית מסחר תקפה")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     return "\n".join(lines)
 
 
 # ============================================================
-# LEGACY FORMAT (V3.0 / V3.1 / V3.2 – kept for compatibility)
+# LEGACY FORMATS (V3.0–V3.2 – kept for compatibility)
 # ============================================================
 
 def format_decision_card(stock_data: dict, quant_data: dict, ai_decision: dict) -> str:
