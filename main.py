@@ -1,5 +1,5 @@
 """
-DAYS-BOT V4.0 – Research Engine (Intraday + Swing)
+DAYS-BOT V4.0 – RESEARCH ENGINE (Intraday + Swing)
 """
 import sys
 from pathlib import Path
@@ -11,9 +11,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 ET = pytz.timezone("America/New_York")
 
-from utils.config import (
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
-)
+from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 from scanner.premarket import scan_premarket
 from scanner.full_scan_v34 import full_scan_v34
 from scanner.swing_engine import calculate_swing_score
@@ -30,7 +28,6 @@ def run_fullscan_v34(manual=False):
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("="*74)
 
-    # 1. Discovery
     candidates = scan_premarket(now_et.strftime("%Y-%m-%d"), manual)
     if not candidates:
         print("[Main] No candidates found.")
@@ -38,16 +35,14 @@ def run_fullscan_v34(manual=False):
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
-    # 2. Full Analysis (Intraday)
+    # Full analysis
     top20 = full_scan_v34(candidates, manual)
 
-    # 3. Swing Analysis for Top 20
+    # Swing analysis
     for c in top20:
         swing = calculate_swing_score(c)
         c['swing_score'] = swing.get('swing_score', 0)
         c['swing_data'] = swing
-        c['trade_type'] = "WATCH"
-
         intraday_score = c.get('composite_score', 0)
         swing_score = c.get('swing_score', 0)
 
@@ -64,7 +59,7 @@ def run_fullscan_v34(manual=False):
 
         save_alert(**c)
 
-    # 4. Send Telegram
+    # Send Telegram
     msg = format_research_report(top20, now_et)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
