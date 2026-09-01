@@ -1,9 +1,9 @@
 """
-DAYS-BOT V3.5 – Research Engine (Always sends detailed report)
+DAYS-BOT V3.5 – Research Engine (Intraday + Swing)
 """
 import sys
 from pathlib import Path
-from datetime import datetime, time, timedelta
+from datetime import datetime
 import pytz
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -12,39 +12,63 @@ sys.path.insert(0, str(BASE_DIR))
 ET = pytz.timezone("America/New_York")
 
 from utils.config import (
-    BOT_VERSION, STRATEGY_VERSION, ACCOUNT_SIZE,
-    MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 )
-from scanner.research_engine import run_research_engine
+from scanner.premarket import scan_premarket
+from scanner.full_scan_v34 import full_scan_v34
+from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
 from telegram_v3 import send_message, format_research_report
 
 
-def run_fullscan_v34(manual=False, requested_date=None):
+def run_fullscan_v34(manual=False):
     init_db()
     now_et = datetime.now(ET)
 
     print("\n" + "="*74)
-    print("DAYS-BOT V3.5 – RESEARCH ENGINE")
+    print("DAYS-BOT V3.5 – RESEARCH ENGINE (Intraday + Swing)")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("="*74)
 
-    # Run research engine
-    result = run_research_engine()
+    # 1. Discovery
+    candidates = scan_premarket(now_et.strftime("%Y-%m-%d"), manual)
+    if not candidates:
+        print("[Main] No candidates found.")
+        msg = "😴 לא נמצאו מועמדים היום. בדוק שוב ב-08:45 ET."
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        return
 
-    # Save all candidates to DB
-    for c in result.get('all_candidates', []):
-        try:
-            save_alert(**c)
-        except:
-            pass
+    # 2. Full Analysis (Intraday)
+    top20 = full_scan_v34(candidates, manual)
 
-    # Send research report (always)
-    msg = format_research_report(result, now_et)
+    # 3. Swing Analysis for Top 20
+    for c in top20:
+        swing = calculate_swing_score(c)
+        c['swing_score'] = swing.get('swing_score', 0)
+        c['swing_data'] = swing
+        c['trade_type'] = "WATCH"
+
+        # Determine trade type based on scores
+        intraday_score = c.get('composite_score', 0)
+        swing_score = c.get('swing_score', 0)
+
+        if intraday_score >= 75 and swing_score >= 70:
+            c['trade_type'] = "BOTH"
+        elif intraday_score >= 75:
+            c['trade_type'] = "INTRADAY"
+        elif swing_score >= 70:
+            c['trade_type'] = "SWING_1_3D"
+        elif intraday_score >= 60 or swing_score >= 60:
+            c['trade_type'] = "WATCH"
+        else:
+            c['trade_type'] = "NO_TRADE"
+
+        save_alert(**c)
+
+    # 4. Send Telegram
+    msg = format_research_report(top20, now_et)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    print(f"[Main] Sent research report.")
     print("="*74)
     print("⚠️ NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY")
     print("="*74)
