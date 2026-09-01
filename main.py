@@ -1,5 +1,5 @@
 """
-DAYS-BOT V3.5 – Research Engine (Intraday + Swing)
+DAYS-BOT V4.0 – Research Engine (Intraday + Swing)
 """
 import sys
 from pathlib import Path
@@ -26,7 +26,7 @@ def run_fullscan_v34(manual=False):
     now_et = datetime.now(ET)
 
     print("\n" + "="*74)
-    print("DAYS-BOT V3.5 – RESEARCH ENGINE (Intraday + Swing)")
+    print("DAYS-BOT V4.0 – RESEARCH ENGINE (Intraday + Swing)")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("="*74)
 
@@ -48,7 +48,6 @@ def run_fullscan_v34(manual=False):
         c['swing_data'] = swing
         c['trade_type'] = "WATCH"
 
-        # Determine trade type based on scores
         intraday_score = c.get('composite_score', 0)
         swing_score = c.get('swing_score', 0)
 
