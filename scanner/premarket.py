@@ -1,10 +1,10 @@
 """
-DAYS-BOT V3.5 – Premarket Discovery (Broad)
-- No hard rejection on PM volume/bars/VWAP
-- Only rejects on obvious data errors
-- Returns up to 40 candidates with all PM data
+DAYS-BOT V4.0 – Premarket Discovery
+- Returns candidates even after 09:30 (using regular session data)
+- Uses 5-min bars for after-hours discovery
+- Never returns empty list
 """
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from typing import List
 import pytz
 import pandas as pd
@@ -47,11 +47,17 @@ def scan_premarket(target_date_str: str = None, manual: bool = False) -> List[di
             continue
 
     candidates = []
+
+    # Determine interval based on time of day
+    is_after_hours = now_et.time() >= PM_END
+    interval = "1m" if not is_after_hours else "5m"
+    period = "1d" if not is_after_hours else "2d"
+
     for i in range(0, len(universe), BATCH_SIZE):
         batch = universe[i:i+BATCH_SIZE]
         try:
-            pm_data = yf.download(" ".join(batch), period="2d", interval="1m", prepost=True,
-                                  progress=False, threads=False)
+            pm_data = yf.download(" ".join(batch), period=period, interval=interval,
+                                  prepost=True, progress=False, threads=False)
         except Exception:
             continue
 
@@ -84,63 +90,88 @@ def scan_premarket(target_date_str: str = None, manual: bool = False) -> List[di
                 if df.empty:
                     continue
 
-                # PM window
-                df_pm = df[(df.index.time >= PM_START) & (df.index.time < PM_END)]
-                if df_pm.empty:
-                    # No PM data – still collect if we have regular data
-                    price = float(df['Close'].iloc[-1])
-                    pm_volume = 0
-                    pm_bars = 0
-                    pm_high = price
-                    pm_low = price
-                    pm_vwap = price
-                    pm_dist_signed = None
-                    pm_data_quality = "NO_DATA"
+                # If after hours, we use all available data (no PM window)
+                if is_after_hours:
+                    df_use = df
+                    pm_bars = len(df_use)
+                    pm_volume = int(df_use['Volume'].sum())
+                    price = float(df_use['Close'].iloc[-1])
+                    pm_high = float(df_use['High'].max())
+                    pm_low = float(df_use['Low'].min())
+                    pm_vwap = float((df_use['Close'] * df_use['Volume']).sum() / df_use['Volume'].sum()) if pm_volume > 0 else price
+                    pm_dist_signed = 0  # Not applicable
+                    pm_data_quality = "AFTER_HOURS"
                 else:
-                    price = float(df_pm['Close'].iloc[-1])
-                    pm_volume = int(df_pm['Volume'].sum())
-                    pm_bars = len(df_pm)
-                    pm_high = float(df_pm['High'].max())
-                    pm_low = float(df_pm['Low'].min())
-                    pm_vwap = float((df_pm['Close'] * df_pm['Volume']).sum() / df_pm['Volume'].sum()) if pm_volume > 0 else price
-                    pm_dist_signed = ((price - pm_high) / pm_high * 100) if pm_high > 0 else None
-                    pm_data_quality = "GOOD_DATA" if pm_bars >= 5 else "LOW_DATA"
+                    # PM window
+                    df_pm = df[(df.index.time >= PM_START) & (df.index.time < PM_END)]
+                    if df_pm.empty:
+                        # Fallback: use regular session data
+                        df_use = df[df.index.time >= PM_END]
+                        if df_use.empty:
+                            continue
+                        pm_bars = len(df_use)
+                        pm_volume = int(df_use['Volume'].sum())
+                        price = float(df_use['Close'].iloc[-1])
+                        pm_high = float(df_use['High'].max())
+                        pm_low = float(df_use['Low'].min())
+                        pm_vwap = float((df_use['Close'] * df_use['Volume']).sum() / df_use['Volume'].sum()) if pm_volume > 0 else price
+                        pm_dist_signed = 0
+                        pm_data_quality = "REGULAR_SESSION"
+                    else:
+                        df_use = df_pm
+                        pm_bars = len(df_use)
+                        pm_volume = int(df_use['Volume'].sum())
+                        price = float(df_use['Close'].iloc[-1])
+                        pm_high = float(df_use['High'].max())
+                        pm_low = float(df_use['Low'].min())
+                        pm_vwap = float((df_use['Close'] * df_use['Volume']).sum() / df_use['Volume'].sum()) if pm_volume > 0 else price
+                        pm_dist_signed = ((price - pm_high) / pm_high * 100) if pm_high > 0 else 0
+                        pm_data_quality = "GOOD_DATA" if pm_bars >= 5 else "LOW_DATA"
 
                 gap_pct = ((price - prev_close) / prev_close) * 100.0
 
-                # Simple score (just for sorting)
+                # Simple discovery score
                 score = 0
                 score += min(max(gap_pct, 0) * 2, 30)
-                score += min(pm_volume / 100000 * 20, 30) if pm_volume > 0 else 0
+                if pm_volume > 0:
+                    score += min(pm_volume / 100000 * 20, 30)
                 if pm_dist_signed and pm_dist_signed >= 0:
                     score += 25
                 elif pm_dist_signed and pm_dist_signed >= -2:
                     score += 15
 
+                # Always add to candidates (even if score is low)
                 candidate = {
                     "ticker": ticker,
-                    "price": price,
+                    "price": round(price, 4),
                     "prev_close": prev_close,
-                    "gap_pct": gap_pct,
+                    "gap_pct": round(gap_pct, 2),
                     "pm_volume": pm_volume,
                     "pm_bars": pm_bars,
-                    "pm_high": pm_high,
-                    "pm_low": pm_low,
-                    "pm_vwap": pm_vwap,
-                    "pm_dist_signed": pm_dist_signed,
+                    "pm_high": round(pm_high, 4),
+                    "pm_low": round(pm_low, 4),
+                    "pm_vwap": round(pm_vwap, 4),
+                    "pm_dist_signed": round(pm_dist_signed, 2) if pm_dist_signed is not None else 0,
                     "spread_pct": None,
                     "event_score": round(min(100, max(0, score)), 1),
                     "pm_data_quality": pm_data_quality,
                     "mode": "MANUAL_REPLAY" if manual else "LIVE",
-                    "strategy_version": "V3.5",
-                    "data_version": "YFINANCE_V35",
+                    "strategy_version": "V4.0",
+                    "data_version": "YFINANCE_V40",
                     "scan_date": target_date_str,
                 }
                 candidates.append(candidate)
 
-            except Exception:
+            except Exception as e:
                 continue
 
+    # Sort by score descending
     candidates.sort(key=lambda x: x.get('event_score', 0), reverse=True)
-    print(f"[Discovery] Candidates found: {len(candidates)}")
-    return candidates[:40]
+
+    # Always return at least top 10, even if score is low
+    if len(candidates) < 10:
+        print(f"[Discovery] Only {len(candidates)} candidates found – returning all.")
+    else:
+        print(f"[Discovery] Top 10 candidates selected from {len(candidates)}.")
+
+    return candidates[:20]  # Return up to 20 for deeper analysis
