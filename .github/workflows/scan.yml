@@ -1,41 +1,90 @@
-name: DAYS-BOT V3.4 Trading Scanner
+name: DAYS-BOT V3.5 Research Scanner
 
 on:
   schedule:
-    # 08:45 ET, 09:00 ET, 09:15 ET (UTC: 12:45, 13:00, 13:15)
-    - cron: "45 12 * * 1-5"
-    - cron: "0 13 * * 1-5"
-    - cron: "15 13 * * 1-5"
+    - cron: "45 8 * * 1-5"
+      timezone: "America/New_York"
+
+    - cron: "0 9 * * 1-5"
+      timezone: "America/New_York"
+
+    - cron: "15 9 * * 1-5"
+      timezone: "America/New_York"
+
   workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+
+    timeout-minutes: 10
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install dependencies
+
+      - name: Install Dependencies
         run: |
-          pip install --upgrade pip
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Run V3.4 Scanner
+
+      - name: Create Data Directory
+        run: |
+          mkdir -p data
+
+      - name: Show Runtime Information
+        run: |
+          echo "=============================================="
+          echo "DAYS-BOT V3.5"
+          echo "RESEARCH ENGINE"
+          echo "=============================================="
+          echo "UTC:"
+          date -u
+          echo ""
+          echo "New York:"
+          TZ=America/New_York date
+          echo ""
+          echo "Git SHA:"
+          git rev-parse HEAD
+          echo ""
+          echo "Branch:"
+          git branch --show-current
+          echo "=============================================="
+
+      - name: Run DAYS-BOT V3.5
         env:
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
         run: |
+          echo "[Workflow] Starting DAYS-BOT V3.5"
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "[Workflow] MANUAL execution"
             python main.py fullscan_v34 --manual
           else
+            echo "[Workflow] SCHEDULED execution"
             python main.py fullscan_v34
           fi
-      - uses: actions/upload-artifact@v4
+
+          echo "[Workflow] Scanner finished."
+
+      - name: Upload Database
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: alerts-db-v34
-          path: data/alerts.db
+          name: days-bot-v35-db-${{ github.run_number }}
+          path: |
+            data/alerts.db
+            data/*.json
+            data/*.csv
+          if-no-files-found: warn
           retention-days: 30
