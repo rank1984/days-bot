@@ -4,87 +4,40 @@ on:
   schedule:
     - cron: "45 8 * * 1-5"
       timezone: "America/New_York"
-
     - cron: "0 9 * * 1-5"
       timezone: "America/New_York"
-
     - cron: "15 9 * * 1-5"
       timezone: "America/New_York"
-
   workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-
-    timeout-minutes: 10
-
+    timeout-minutes: 12
     steps:
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install Dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Create Data Directory
-        run: |
-          mkdir -p data
-
-      - name: Show Runtime Information
-        run: |
-          echo "=============================================="
-          echo "DAYS-BOT V3.5"
-          echo "RESEARCH ENGINE"
-          echo "=============================================="
-          echo "UTC:"
-          date -u
-          echo ""
-          echo "New York:"
-          TZ=America/New_York date
-          echo ""
-          echo "Git SHA:"
-          git rev-parse HEAD
-          echo ""
-          echo "Branch:"
-          git branch --show-current
-          echo "=============================================="
-
-      - name: Run DAYS-BOT V3.5
+      - run: mkdir -p data
+      - name: Run V3.5 Scanner
         env:
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
         run: |
-          echo "[Workflow] Starting DAYS-BOT V3.5"
-
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "[Workflow] MANUAL execution"
             python main.py fullscan_v34 --manual
           else
-            echo "[Workflow] SCHEDULED execution"
             python main.py fullscan_v34
           fi
-
-          echo "[Workflow] Scanner finished."
-
-      - name: Upload Database
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: days-bot-v35-db-${{ github.run_number }}
-          path: |
-            data/alerts.db
-            data/*.json
-            data/*.csv
-          if-no-files-found: warn
+          name: alerts-db-v35
+          path: data/alerts.db
           retention-days: 30
