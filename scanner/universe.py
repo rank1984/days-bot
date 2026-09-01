@@ -4,7 +4,6 @@ No FTP, no 429, just stable list.
 """
 from typing import List
 
-# 400 liquid US stocks (S&P 400 + active names)
 STABLE_UNIVERSE = [
     # Mega/Large Cap
     "AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "GOOG", "TSLA",
@@ -19,7 +18,7 @@ STABLE_UNIVERSE = [
     "DDOG", "MDB", "SHOP", "RIVN", "LCID", "F", "GM", "MRNA", "BNTX",
     "CRSP", "GILD", "REGN", "VRTX", "COIN", "HOOD", "MSTR", "SOFI",
     "RBLX", "ROKU", "SNAP", "PINS", "SPOT", "DKNG", "CELH", "DASH",
-    "WBD", "PARA", "UBER", "LYFT", "GRAB", "DIDI", "BABA", "JD", "PDD",
+    "WBD", "PARA", "UBER", "LYFT", "GRAB", "BABA", "JD", "PDD",
     "BIDU", "TME", "NTES", "SE", "SHOP", "CPRT", "ADSK", "CDNS", "SNPS",
     "ANSS", "DT", "TYL", "PTC", "PLTR", "SNOW", "CRWD", "ZS", "NET",
     "DDOG", "MDB", "OKTA", "FTNT", "PANW", "JNPR", "FFIV", "AKAM", "VRSN",
@@ -33,7 +32,7 @@ STABLE_UNIVERSE = [
     "BIO", "RGEN", "REPL", "SRPT", "SAGE", "AXSM", "IONS", "ALNY", "NBIX",
     "EXEL", "INCY", "REGN", "VRTX", "BIIB", "GILD", "AMGN", "MRNA", "BNTX",
     "NVAX", "NOVAVAX", "PFE", "MRK", "ABBV", "BMY", "JNJ", "LLY", "SNY", "AZN",
-    # Technology (more)
+    # Technology
     "DELL", "HPQ", "HPE", "IBM", "CSCO", "JNPR", "NTAP", "PSTG", "WDC", "STX",
     "SEAGATE", "WDC", "SMCI", "DELL", "HPE", "IBM", "CSCO", "JNPR", "NTAP", "PSTG",
     "WDC", "STX", "SEAGATE", "WDC", "SMCI", "DELL", "HPE", "IBM", "CSCO", "JNPR",
@@ -50,7 +49,6 @@ STABLE_UNIVERSE = [
     # Energy
     "XOM", "CVX", "COP", "SLB", "OXY", "EOG", "MPC", "PSX", "VLO", "HES",
     "APA", "DVN", "FANG", "CTRA", "EQT", "RRC", "AR", "SWN", "CHK", "CLR",
-    # ETFs excluded intentionally
 ]
 
 BLACKLIST = {"SPY", "QQQ", "IWM", "BITF", "MPLN", "SQ"}
