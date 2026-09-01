@@ -1,5 +1,5 @@
 """
-telegram_v3.py – V3.5 Telegram Formatter
+telegram_v3.py – V4.0 Telegram Formatter
 """
 import requests
 from datetime import datetime
@@ -32,7 +32,7 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 def format_research_report(candidates: list, now_et: datetime) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚀 DAYS-BOT V3.5 – RESEARCH SCAN")
+    lines.append("🚀 DAYS-BOT V4.0 – RESEARCH SCAN")
     lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
@@ -44,11 +44,7 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("⚠️ ביצוע ידני בלבד")
         return "\n".join(lines)
 
-    # Filter candidates with trade potential
-    trade_candidates = [c for c in candidates if c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']]
-    watch_candidates = [c for c in candidates if c.get('trade_type') == 'WATCH']
-
-    # Top 5 by composite score
+    # Top 5
     candidates_sorted = sorted(candidates, key=lambda x: x.get('composite_score', 0), reverse=True)
     top5 = candidates_sorted[:5]
 
@@ -65,53 +61,45 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("")
 
     # Best Intraday
-    intraday_best = next((c for c in trade_candidates if c.get('trade_type') in ['INTRADAY', 'BOTH']), None)
-    if intraday_best:
+    trade_candidates = [c for c in candidates if c.get('trade_type') in ['INTRADAY', 'BOTH']]
+    if trade_candidates:
+        best_intraday = trade_candidates[0]
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("🟢 BEST INTRADAY")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"{intraday_best['ticker']}")
-        lines.append(f"Score: {intraday_best.get('composite_score', 0):.0f}/100")
-        lines.append(f"Entry: ${intraday_best.get('entry', 0):.2f}")
-        lines.append(f"Stop:  ${intraday_best.get('stop', 0):.2f}")
-        lines.append(f"T1:    ${intraday_best.get('target_1', 0):.2f}")
-        lines.append(f"T2:    ${intraday_best.get('target_2', 0):.2f}")
-        lines.append(f"Risk:  ${intraday_best.get('risk_per_share', 0):.2f}/share")
-        lines.append(f"Shares: {intraday_best.get('position_size', 0)}")
+        lines.append(f"{best_intraday['ticker']}")
+        lines.append(f"Score: {best_intraday.get('composite_score', 0):.0f}/100")
+        lines.append(f"Entry: ${best_intraday.get('entry', 0):.2f}")
+        lines.append(f"Stop:  ${best_intraday.get('stop', 0):.2f}")
+        lines.append(f"T1:    ${best_intraday.get('target_1', 0):.2f}")
+        lines.append(f"T2:    ${best_intraday.get('target_2', 0):.2f}")
+        lines.append(f"Risk:  ${best_intraday.get('risk_per_share', 0):.2f}/share")
+        lines.append(f"Shares: {best_intraday.get('position_size', 0)}")
         lines.append("")
 
     # Best Swing
-    swing_best = next((c for c in trade_candidates if c.get('trade_type') in ['SWING_1_3D', 'BOTH']), None)
-    if swing_best:
-        swing_data = swing_best.get('swing_data', {})
+    swing_candidates = [c for c in candidates if c.get('trade_type') in ['SWING_1_3D', 'BOTH']]
+    if swing_candidates:
+        best_swing = swing_candidates[0]
+        swing_data = best_swing.get('swing_data', {})
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("🟣 BEST SWING (1–3 DAYS)")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"{swing_best['ticker']}")
-        lines.append(f"Swing Score: {swing_best.get('swing_score', 0):.0f}/100")
-        lines.append(f"Entry: ${swing_best.get('entry', 0):.2f}")
-        lines.append(f"Stop:  ${swing_best.get('stop', 0):.2f}")
-        lines.append(f"T1:    ${swing_best.get('target_1', 0):.2f}")
-        lines.append(f"T2:    ${swing_best.get('target_2', 0):.2f}")
+        lines.append(f"{best_swing['ticker']}")
+        lines.append(f"Swing Score: {best_swing.get('swing_score', 0):.0f}/100")
+        lines.append(f"Entry: ${best_swing.get('entry', 0):.2f}")
+        lines.append(f"Stop:  ${best_swing.get('stop', 0):.2f}")
+        lines.append(f"T1:    ${best_swing.get('target_1', 0):.2f}")
+        lines.append(f"T2:    ${best_swing.get('target_2', 0):.2f}")
         lines.append(f"Trend: {'🟢' if swing_data.get('above_20') else '🔴'} Above 20 EMA")
         lines.append(f"RS vs SPY: {swing_data.get('rs_vs_spy', 0):.1f}%")
         lines.append(f"Structure: {swing_data.get('structure', 'N/A')}")
         lines.append("")
 
-    # Watchlist
-    if watch_candidates:
-        lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🟡 WATCHLIST")
-        lines.append("━━━━━━━━━━━━━━━━━━━━")
-        for c in watch_candidates[:3]:
-            lines.append(f"• {c['ticker']} – {c.get('composite_score', 0):.0f}/100")
-        lines.append("")
-
     # Decision
-    if trade_candidates:
+    if trade_candidates or swing_candidates:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("✅ DECISION: TRADE OPPORTUNITIES FOUND")
-        lines.append("Check the best Intraday and Swing above.")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("🚫 DECISION: NO TRADE TODAY")
