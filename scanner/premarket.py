@@ -1,29 +1,17 @@
 """
 DAYS-BOT V4.1 – Premarket Discovery
 
-Uses Alpaca Market Data API instead of yfinance.
+Primary market-data source:
+Alpaca Market Data / IEX.
 
-Flow:
-    Universe
-       ↓
-    Alpaca snapshots
-       ↓
-    Fast candidates
-       ↓
-    Alpaca 1-minute bars
-       ↓
-    Premarket metrics
-       ↓
-    Top 40
-
-Missing PM data does NOT destroy the entire scan.
+No yfinance.
 """
 
-from datetime import datetime, timedelta, time
-from typing import List, Dict
+from datetime import datetime, time
+from typing import Dict, List
 
-import requests
 import pytz
+import requests
 
 from scanner.universe import load_universe
 from scanner.discovery_fast import fast_discovery
@@ -31,35 +19,33 @@ from utils.config import (
     ALPACA_API_KEY,
     ALPACA_SECRET_KEY,
     ALPACA_DATA_URL,
+    DISCOVERY_MIN_GAP,
+    MAX_DISCOVERY_CANDIDATES,
 )
 
 
 ET = pytz.timezone("America/New_York")
+UTC = pytz.utc
 
 PM_START = time(4, 0)
 PM_END = time(9, 30)
 
-BAR_BATCH_SIZE = 100
-
-SESSION = requests.Session()
-
-SESSION.headers.update({
-    "APCA-API-KEY-ID": ALPACA_API_KEY,
-    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-    "User-Agent": "DAYS-BOT/4.1",
-})
+BATCH_SIZE = 40
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+def _headers() -> Dict[str, str]:
+    return {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
 
-def _chunked(items, size):
+
+def _chunks(items: List[str], size: int):
     for i in range(0, len(items), size):
         yield items[i:i + size]
 
 
-def _safe_float(value, default=None):
+def _safe_float(value, default=0.0):
     try:
         if value is None:
             return default
@@ -72,194 +58,96 @@ def _safe_int(value, default=0):
     try:
         if value is None:
             return default
-        return int(float(value))
+        return int(value)
     except Exception:
         return default
 
 
-def _is_in_pm_window(now_et):
-    return (
-        PM_START <= now_et.time() < PM_END
-    )
-
-
-def _get_previous_trading_day(
-    target_date_str: str
-) -> str:
-
-    target = datetime.strptime(
-        target_date_str,
-        "%Y-%m-%d"
-    )
-
-    # Enough for weekends.
-    day = target - timedelta(days=1)
-
-    while day.weekday() >= 5:
-        day -= timedelta(days=1)
-
-    return day.strftime("%Y-%m-%d")
-
-
-# ============================================================
-# ALPACA BARS
-# ============================================================
-
-def _get_bars(
-    symbols: List[str],
-    start_et: datetime,
-    end_et: datetime,
-) -> Dict[str, List[dict]]:
-
-    if not symbols:
-        return {}
-
-    url = (
-        f"{ALPACA_DATA_URL}"
-        "/v2/stocks/bars"
-    )
-
-    # Alpaca accepts RFC3339 timestamps.
-    start_utc = start_et.astimezone(
-        pytz.UTC
-    ).isoformat()
-
-    end_utc = end_et.astimezone(
-        pytz.UTC
-    ).isoformat()
-
-    params = {
-        "symbols": ",".join(symbols),
-        "timeframe": "1Min",
-        "start": start_utc,
-        "end": end_utc,
-        "feed": "iex",
-        "limit": 10000,
-        "adjustment": "raw",
-    }
-
-    try:
-        response = SESSION.get(
-            url,
-            params=params,
-            timeout=20
-        )
-
-        if response.status_code != 200:
-            print(
-                "[Premarket] Alpaca bars HTTP "
-                f"{response.status_code}: "
-                f"{response.text[:200]}"
-            )
-            return {}
-
-        data = response.json()
-
-        return data.get("bars", {}) or {}
-
-    except Exception as e:
-        print(
-            f"[Premarket] Bars error: {e}"
-        )
-        return {}
-
-
-# ============================================================
-# BUILD PM METRICS
-# ============================================================
-
-def _build_pm_candidate(
-    base: dict,
-    bars: List[dict]
+def _parse_bars(
+    ticker: str,
+    bars: list,
+    prev_close: float,
+    target_date: str,
+    manual: bool,
 ) -> dict | None:
 
     if not bars:
         return None
 
-    clean_bars = []
+    pm_bars = []
 
     for bar in bars:
+
         try:
-            timestamp = bar.get("t")
+            ts = pd_timestamp(bar.get("t"))
 
-            if not timestamp:
+            ts_et = ts.astimezone(ET)
+
+            if ts_et.date().isoformat() != target_date:
                 continue
-
-            dt = datetime.fromisoformat(
-                timestamp.replace("Z", "+00:00")
-            )
-
-            dt_et = dt.astimezone(ET)
 
             if not (
                 PM_START
-                <= dt_et.time()
+                <= ts_et.time()
                 < PM_END
             ):
                 continue
 
-            close = _safe_float(bar.get("c"))
-
-            high = _safe_float(bar.get("h"))
-            low = _safe_float(bar.get("l"))
-
-            volume = _safe_int(bar.get("v"))
-
-            if close is None:
-                continue
-
-            clean_bars.append({
-                "close": close,
-                "high": high if high is not None else close,
-                "low": low if low is not None else close,
-                "volume": volume,
-            })
+            pm_bars.append(bar)
 
         except Exception:
             continue
 
-    if not clean_bars:
+    if not pm_bars:
         return None
 
-    price = clean_bars[-1]["close"]
+    closes = [
+        _safe_float(x.get("c"))
+        for x in pm_bars
+    ]
 
-    pm_volume = sum(
-        x["volume"]
-        for x in clean_bars
-    )
+    highs = [
+        _safe_float(x.get("h"))
+        for x in pm_bars
+    ]
 
-    pm_high = max(
-        x["high"]
-        for x in clean_bars
-    )
+    lows = [
+        _safe_float(x.get("l"))
+        for x in pm_bars
+    ]
 
-    pm_low = min(
-        x["low"]
-        for x in clean_bars
-    )
+    volumes = [
+        _safe_int(x.get("v"))
+        for x in pm_bars
+    ]
+
+    closes = [x for x in closes if x > 0]
+    highs = [x for x in highs if x > 0]
+    lows = [x for x in lows if x > 0]
+
+    if not closes or prev_close <= 0:
+        return None
+
+    price = closes[-1]
+    pm_high = max(highs) if highs else price
+    pm_low = min(lows) if lows else price
+    pm_volume = sum(volumes)
 
     if pm_volume > 0:
-        pm_vwap = (
-            sum(
-                x["close"] * x["volume"]
-                for x in clean_bars
-            )
-            / pm_volume
+        weighted = sum(
+            float(bar.get("c", 0))
+            * _safe_int(bar.get("v"))
+            for bar in pm_bars
         )
+        pm_vwap = weighted / pm_volume
     else:
         pm_vwap = price
-
-    prev_close = base.get(
-        "prev_close"
-    )
-
-    if not prev_close or prev_close <= 0:
-        return None
 
     gap_pct = (
         (price - prev_close)
         / prev_close
-    ) * 100.0
+        * 100.0
+    )
 
     pm_dist_signed = (
         (price - pm_high)
@@ -269,98 +157,131 @@ def _build_pm_candidate(
         else 0.0
     )
 
-    # --------------------------------------------------------
-    # Better PM score
-    # --------------------------------------------------------
-
     score = 0.0
 
-    # Gap
     score += min(
-        max(gap_pct, 0) * 2.0,
-        30.0
+        max(gap_pct, 0) * 2,
+        30,
     )
 
-    # Volume
     score += min(
-        pm_volume / 100_000.0 * 4.0,
-        25.0
+        pm_volume / 100_000 * 15,
+        30,
     )
 
-    # Near PM high
     if pm_high > 0:
-        distance = abs(
-            (price - pm_high)
-            / pm_high
-            * 100.0
-        )
-
-        if distance <= 0.5:
+        if price >= pm_high * 0.995:
             score += 25
-        elif distance <= 1.0:
-            score += 20
-        elif distance <= 2.0:
-            score += 15
-        elif distance <= 5.0:
-            score += 8
+        elif price >= pm_high * 0.98:
+            score += 18
+        elif price >= pm_high * 0.95:
+            score += 10
 
-    # Price above PM VWAP
-    if pm_vwap > 0:
-        if price >= pm_vwap:
-            score += 15
-        elif price >= pm_vwap * 0.99:
-            score += 7
+    if pm_volume >= 500_000:
+        score += 10
+    elif pm_volume >= 100_000:
+        score += 5
 
-    score = round(
-        min(max(score, 0), 100),
-        1
-    )
-
-    result = dict(base)
-
-    result.update({
+    return {
+        "ticker": ticker,
         "price": price,
         "prev_close": prev_close,
         "gap_pct": round(gap_pct, 2),
-
         "pm_volume": pm_volume,
-        "pm_bars": len(clean_bars),
-
+        "pm_bars": len(pm_bars),
         "pm_high": pm_high,
         "pm_low": pm_low,
         "pm_vwap": pm_vwap,
-
         "pm_dist_signed": round(
             pm_dist_signed,
-            3
+            3,
         ),
-
-        "event_score": score,
-
+        "spread_pct": None,
+        "event_score": round(
+            min(100, max(0, score)),
+            1,
+        ),
         "pm_data_quality": (
             "GOOD_DATA"
-            if len(clean_bars) >= 5
+            if len(pm_bars) >= 5
             else "LOW_DATA"
         ),
-
-        "market_data_source": "ALPACA_IEX",
-
+        "mode": (
+            "MANUAL_REPLAY"
+            if manual
+            else "LIVE"
+        ),
         "strategy_version": "V4.1",
-        "data_version": "ALPACA_IEX_PM_V41",
-
-        "source": "PM",
-    })
-
-    return result
+        "data_version": "ALPACA_IEX_V41",
+        "scan_date": target_date,
+        "source": "ALPACA_PREMARKET",
+    }
 
 
-# ============================================================
-# PREMARKET SCAN
-# ============================================================
+def pd_timestamp(value):
+    """
+    Convert Alpaca ISO timestamp to timezone-aware datetime.
+    """
+
+    if isinstance(value, datetime):
+        ts = value
+    else:
+        raw = str(value)
+
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+
+        ts = datetime.fromisoformat(raw)
+
+    if ts.tzinfo is None:
+        ts = UTC.localize(ts)
+
+    return ts
+
+
+def _get_previous_close(
+    session: requests.Session,
+    ticker: str,
+) -> float:
+
+    url = (
+        f"{ALPACA_DATA_URL}/v2/stocks/"
+        f"{ticker}/bars"
+    )
+
+    try:
+        response = session.get(
+            url,
+            params={
+                "timeframe": "1Day",
+                "limit": 5,
+                "feed": "iex",
+            },
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            return 0.0
+
+        data = response.json()
+
+        bars = data.get("bars", [])
+
+        if len(bars) < 1:
+            return 0.0
+
+        # Last regular daily bar is normally previous close
+        return _safe_float(
+            bars[-1].get("c")
+        )
+
+    except Exception:
+        return 0.0
+
 
 def scan_premarket(
     target_date_str: str = None,
-    manual: bool = False
+    manual: bool = False,
 ) -> List[dict]:
 
     now_et = datetime.now(ET)
@@ -370,166 +291,188 @@ def scan_premarket(
             "%Y-%m-%d"
         )
 
-    in_pm = _is_in_pm_window(now_et)
+    in_pm = (
+        PM_START
+        <= now_et.time()
+        < PM_END
+    )
 
     print(
-        f"[Discovery] Premarket scan "
-        f"{target_date_str} | "
-        f"ET: {now_et.strftime('%H:%M:%S')} | "
+        f"[Discovery] Premarket scan for "
+        f"{target_date_str} | ET: "
+        f"{now_et.strftime('%H:%M:%S')} | "
         f"PM window: {in_pm}"
     )
 
-    # --------------------------------------------------------
-    # Outside PM
-    # --------------------------------------------------------
-
+    # Outside PM -> use fast discovery.
     if not in_pm:
-
         print(
-            "[Discovery] Outside PM window "
-            "– using Alpaca fast discovery."
+            "[Discovery] Outside PM window – "
+            "using Alpaca fast discovery."
         )
+        return fast_discovery()
 
-        candidates = fast_discovery()
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        print(
+            "[Discovery] Missing Alpaca credentials."
+        )
+        return fast_discovery()
 
-        for c in candidates:
-            c["mode"] = (
-                "MANUAL_REPLAY"
-                if manual
-                else "LIVE"
-            )
-
-        return candidates
-
-    # --------------------------------------------------------
-    # Stage 1
-    # --------------------------------------------------------
-
-    universe = load_universe(
-        max_symbols=300
-    )
+    universe = load_universe()
 
     if not universe:
-        return []
+        return fast_discovery()
 
-    # Fast discovery gets the relevant 30.
-    discovery_candidates = fast_discovery(
-        universe
-    )
-
-    if not discovery_candidates:
-        print(
-            "[Discovery] No fast candidates."
-        )
-        return []
-
-    # --------------------------------------------------------
-    # Stage 2
-    # --------------------------------------------------------
-
-    # Don't hit PM bars for 300 symbols.
-    # Only top 40.
-    discovery_candidates = (
-        discovery_candidates[:40]
-    )
-
-    start_et = datetime.strptime(
-        target_date_str + " 04:00:00",
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    end_et = datetime.strptime(
-        target_date_str + " 09:30:00",
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    start_et = ET.localize(start_et)
-    end_et = ET.localize(end_et)
-
-    symbols = [
-        c["ticker"]
-        for c in discovery_candidates
-    ]
-
-    bars_by_symbol = {}
-
-    for batch in _chunked(
-        symbols,
-        BAR_BATCH_SIZE
-    ):
-
-        batch_bars = _get_bars(
-            batch,
-            start_et,
-            end_et
-        )
-
-        bars_by_symbol.update(
-            batch_bars
-        )
-
-    # --------------------------------------------------------
-    # Build candidates
-    # --------------------------------------------------------
+    session = requests.Session()
+    session.headers.update(_headers())
 
     candidates = []
 
-    for base in discovery_candidates:
+    # --------------------------------------------------------
+    # First obtain previous closes.
+    # Limited number to avoid unnecessary API load.
+    # --------------------------------------------------------
 
-        ticker = base["ticker"]
+    discovery_base = universe[:300]
 
-        bars = bars_by_symbol.get(
+    prev_closes = {}
+
+    for ticker in discovery_base:
+
+        prev = _get_previous_close(
+            session,
             ticker,
-            []
         )
 
-        candidate = _build_pm_candidate(
-            base,
-            bars
-        )
-
-        # IMPORTANT:
-        # Missing PM data does NOT kill
-        # the candidate.
-        if candidate is None:
-
-            candidate = dict(base)
-
-            candidate.update({
-                "pm_data_quality":
-                    "UNKNOWN",
-
-                "pm_bars": 0,
-
-                "pm_high":
-                    base.get("price"),
-
-                "pm_low":
-                    base.get("price"),
-
-                "pm_vwap":
-                    base.get("price"),
-
-                "pm_dist_signed": 0.0,
-
-                "source":
-                    "PM_FALLBACK",
-
-                "data_warning":
-                    "Premarket bars unavailable",
-            })
-
-        candidate["mode"] = (
-            "MANUAL_REPLAY"
-            if manual
-            else "LIVE"
-        )
-
-        candidates.append(candidate)
+        if prev > 0:
+            prev_closes[ticker] = prev
 
     # --------------------------------------------------------
-    # Sort
+    # Get 1-minute bars.
     # --------------------------------------------------------
+
+    bars_url = (
+        f"{ALPACA_DATA_URL}/v2/stocks/bars"
+    )
+
+    for batch in _chunks(
+        list(prev_closes.keys()),
+        BATCH_SIZE,
+    ):
+
+        try:
+
+            start_et = ET.localize(
+                datetime.strptime(
+                    f"{target_date_str} 04:00:00",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+            )
+
+            end_et = ET.localize(
+                datetime.strptime(
+                    f"{target_date_str} 09:30:00",
+                    "%Y-%m-%d %H:%M:%S",
+                )
+            )
+
+            response = session.get(
+                bars_url,
+                params={
+                    "symbols": ",".join(batch),
+                    "timeframe": "1Min",
+                    "start": start_et.astimezone(
+                        UTC
+                    ).isoformat(),
+                    "end": end_et.astimezone(
+                        UTC
+                    ).isoformat(),
+                    "limit": 10000,
+                    "feed": "iex",
+                    "adjustment": "raw",
+                },
+                timeout=30,
+            )
+
+            if response.status_code != 200:
+                print(
+                    "[Discovery] PM bars HTTP "
+                    f"{response.status_code}"
+                )
+                continue
+
+            payload = response.json()
+
+            bars_by_symbol = payload.get(
+                "bars",
+                {},
+            )
+
+            for ticker in batch:
+
+                try:
+                    bars = bars_by_symbol.get(
+                        ticker,
+                        [],
+                    )
+
+                    candidate = _parse_bars(
+                        ticker=ticker,
+                        bars=bars,
+                        prev_close=prev_closes.get(
+                            ticker,
+                            0.0,
+                        ),
+                        target_date=target_date_str,
+                        manual=manual,
+                    )
+
+                    if not candidate:
+                        continue
+
+                    # Do not eliminate candidates only because
+                    # PM volume is weak. Discovery is permissive.
+                    if (
+                        abs(candidate["gap_pct"])
+                        < DISCOVERY_MIN_GAP
+                    ):
+                        continue
+
+                    candidates.append(candidate)
+
+                except Exception as e:
+                    print(
+                        f"[Discovery] {ticker} "
+                        f"parse error: {e}"
+                    )
+
+        except Exception as e:
+            print(
+                f"[Discovery] PM request error: {e}"
+            )
+
+    # --------------------------------------------------------
+    # Fallback
+    # --------------------------------------------------------
+
+    if not candidates:
+        print(
+            "[Discovery] No PM candidates – "
+            "using Alpaca fast discovery fallback."
+        )
+
+        fallback = fast_discovery()
+
+        # Mark source clearly.
+        for candidate in fallback:
+            candidate["source"] = (
+                "ALPACA_FAST_FALLBACK"
+            )
+            candidate["pm_data_quality"] = (
+                "UNKNOWN_PM_DATA"
+            )
+
+        return fallback
 
     candidates.sort(
         key=lambda x: (
@@ -537,7 +480,7 @@ def scan_premarket(
             x.get("gap_pct", 0),
             x.get("pm_volume", 0),
         ),
-        reverse=True
+        reverse=True,
     )
 
     print(
@@ -545,4 +488,6 @@ def scan_premarket(
         f"{len(candidates)}"
     )
 
-    return candidates[:40]
+    return candidates[
+        :MAX_DISCOVERY_CANDIDATES
+    ]
