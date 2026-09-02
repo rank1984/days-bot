@@ -1,28 +1,19 @@
 """
-DAYS-BOT V4.1 – Fast Discovery Engine
+DAYS-BOT V4.1 – Fast Discovery
 
-Primary market-data source:
-    Alpaca Market Data API / IEX
+Uses Alpaca Market Data snapshots instead of yfinance.
 
-Purpose:
-- Scan a clean universe quickly.
-- Find daily movers.
-- Find price + previous close.
-- Calculate gap.
-- Calculate basic liquidity.
-- NEVER fail the entire scan because one symbol fails.
-
-This module is recommendation-only.
-It does NOT execute orders.
+Goal:
+- Quickly find actual movers.
+- Avoid yfinance 429 / crumb / delisted errors.
+- Return candidates even when some fields are missing.
 """
 
-import requests
-import time
-
-from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from datetime import datetime
+from typing import Dict, List
 
 import pytz
+import requests
 
 from scanner.universe import load_universe
 from utils.config import (
@@ -32,38 +23,37 @@ from utils.config import (
     DISCOVERY_MIN_PRICE,
     DISCOVERY_MAX_PRICE,
     DISCOVERY_MIN_GAP,
-    DISCOVERY_MAX_GAP,
     DISCOVERY_MIN_VOLUME,
+    MAX_DISCOVERY_CANDIDATES,
 )
 
 
 ET = pytz.timezone("America/New_York")
 
+SNAPSHOT_URL = (
+    f"{ALPACA_DATA_URL}/v2/stocks/snapshots"
+)
 
-# ============================================================
-# ALPACA SESSION
-# ============================================================
-
-SESSION = requests.Session()
-
-SESSION.headers.update({
-    "APCA-API-KEY-ID": ALPACA_API_KEY,
-    "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
-    "User-Agent": "DAYS-BOT/4.1",
-})
+BATCH_SIZE = 200
 
 
-# ============================================================
-# HELPERS
-# ============================================================
+def _headers() -> Dict[str, str]:
+    return {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+    }
 
-def _safe_float(value, default=None):
+
+def _chunks(items: List[str], size: int):
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
+def _safe_float(value, default=0.0):
     try:
         if value is None:
             return default
-
         return float(value)
-
     except Exception:
         return default
 
@@ -72,362 +62,242 @@ def _safe_int(value, default=0):
     try:
         if value is None:
             return default
-
-        return int(float(value))
-
+        return int(value)
     except Exception:
         return default
 
 
-def _chunked(items, size):
-    for i in range(0, len(items), size):
-        yield items[i:i + size]
+def _score_snapshot(
+    price: float,
+    gap_pct: float,
+    volume: int,
+    spread_pct: float,
+) -> float:
 
+    score = 0.0
 
-def _alpaca_available() -> bool:
-    return bool(
-        ALPACA_API_KEY and
-        ALPACA_SECRET_KEY
+    # Gap
+    if gap_pct > 0:
+        score += min(gap_pct * 2.0, 35.0)
+
+    # Volume
+    if volume > 0:
+        score += min(
+            (volume / 100_000.0) * 10.0,
+            30.0,
+        )
+
+    # Price
+    if DISCOVERY_MIN_PRICE <= price <= DISCOVERY_MAX_PRICE:
+        score += 10.0
+
+    # Spread
+    if spread_pct <= 1.0:
+        score += 15.0
+    elif spread_pct <= 2.0:
+        score += 8.0
+
+    # Stronger gap bonus
+    if gap_pct >= 10:
+        score += 10.0
+    elif gap_pct >= 5:
+        score += 5.0
+
+    return round(
+        max(0.0, min(100.0, score)),
+        1,
     )
 
 
-# ============================================================
-# SNAPSHOT REQUEST
-# ============================================================
+def _parse_snapshot(
+    ticker: str,
+    snapshot: dict,
+    now_et: datetime,
+) -> dict | None:
 
-def _get_snapshots(
-    symbols: List[str]
-) -> Dict[str, Any]:
+    latest_trade = snapshot.get("latestTrade") or {}
+    latest_quote = snapshot.get("latestQuote") or {}
 
-    if not _alpaca_available():
-        print("[FastDiscovery] Alpaca credentials missing")
-        return {}
+    daily_bar = snapshot.get("dailyBar") or {}
+    prev_daily_bar = snapshot.get("prevDailyBar") or {}
 
-    if not symbols:
-        return {}
+    price = _safe_float(
+        latest_trade.get("p"),
+        _safe_float(daily_bar.get("c")),
+    )
 
-    url = f"{ALPACA_DATA_URL}/v2/stocks/snapshots"
+    prev_close = _safe_float(
+        prev_daily_bar.get("c")
+    )
 
-    params = {
-        "symbols": ",".join(symbols),
-        "feed": "iex",
+    if prev_close <= 0:
+        prev_close = _safe_float(
+            daily_bar.get("o")
+        )
+
+    if price <= 0 or prev_close <= 0:
+        return None
+
+    gap_pct = (
+        (price - prev_close)
+        / prev_close
+        * 100.0
+    )
+
+    volume = _safe_int(
+        daily_bar.get("v")
+    )
+
+    bid = _safe_float(
+        latest_quote.get("bp")
+    )
+
+    ask = _safe_float(
+        latest_quote.get("ap")
+    )
+
+    spread_pct = 0.0
+
+    if bid > 0 and ask > 0 and ask >= bid:
+        mid = (bid + ask) / 2.0
+
+        if mid > 0:
+            spread_pct = (
+                (ask - bid)
+                / mid
+                * 100.0
+            )
+
+    # Hard discovery filters.
+    if price < DISCOVERY_MIN_PRICE:
+        return None
+
+    if price > DISCOVERY_MAX_PRICE:
+        return None
+
+    if abs(gap_pct) < DISCOVERY_MIN_GAP:
+        return None
+
+    if volume < DISCOVERY_MIN_VOLUME:
+        # Keep the candidate if the gap is exceptional.
+        if abs(gap_pct) < 10:
+            return None
+
+    score = _score_snapshot(
+        price=price,
+        gap_pct=gap_pct,
+        volume=volume,
+        spread_pct=spread_pct,
+    )
+
+    return {
+        "ticker": ticker,
+        "price": price,
+        "prev_close": prev_close,
+        "gap_pct": round(gap_pct, 2),
+        "pm_volume": volume,
+        "pm_bars": 0,
+        "pm_high": price,
+        "pm_low": price,
+        "pm_vwap": price,
+        "pm_dist_signed": 0.0,
+        "spread_pct": round(spread_pct, 3),
+        "bid": bid,
+        "ask": ask,
+        "event_score": score,
+        "pm_data_quality": "SNAPSHOT_DATA",
+        "mode": "LIVE",
+        "strategy_version": "V4.1",
+        "data_version": "ALPACA_IEX_V41",
+        "scan_date": now_et.strftime("%Y-%m-%d"),
+        "source": "ALPACA_SNAPSHOT",
     }
 
-    try:
-        response = SESSION.get(
-            url,
-            params=params,
-            timeout=15
-        )
 
-        if response.status_code != 200:
-            print(
-                "[FastDiscovery] Alpaca snapshot HTTP "
-                f"{response.status_code}: "
-                f"{response.text[:200]}"
-            )
-            return {}
+def fast_discovery() -> List[dict]:
 
-        data = response.json()
+    now_et = datetime.now(ET)
 
-        return data if isinstance(data, dict) else {}
-
-    except Exception as e:
-        print(
-            f"[FastDiscovery] Snapshot error: {e}"
-        )
-        return {}
-
-
-# ============================================================
-# DISCOVERY
-# ============================================================
-
-def fast_discovery(
-    universe: List[str] | None = None
-) -> List[dict]:
-
-    if universe is None:
-        universe = load_universe(
-            max_symbols=300
-        )
+    universe = load_universe()
 
     if not universe:
         print("[FastDiscovery] Empty universe")
         return []
 
-    print(
-        "[FastDiscovery] "
-        f"Scanning {len(universe)} symbols via Alpaca IEX..."
-    )
-
-    if not _alpaca_available():
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print(
-            "[FastDiscovery] ERROR: "
-            "ALPACA_API_KEY / ALPACA_SECRET_KEY missing"
+            "[FastDiscovery] Missing ALPACA_API_KEY "
+            "or ALPACA_SECRET_KEY"
         )
         return []
 
-    candidates = []
-
-    chunks = list(
-        _chunked(universe, 200)
+    print(
+        f"[FastDiscovery] Scanning "
+        f"{len(universe)} symbols via Alpaca..."
     )
 
-    for chunk_index, batch in enumerate(chunks, start=1):
+    candidates = []
 
-        print(
-            f"[FastDiscovery] Batch "
-            f"{chunk_index}/{len(chunks)} "
-            f"({len(batch)} symbols)"
-        )
+    session = requests.Session()
+    session.headers.update(_headers())
 
-        snapshots = _get_snapshots(batch)
+    for batch in _chunks(universe, BATCH_SIZE):
 
-        if not snapshots:
-            continue
+        try:
+            response = session.get(
+                SNAPSHOT_URL,
+                params={
+                    "symbols": ",".join(batch),
+                    "feed": "iex",
+                },
+                timeout=20,
+            )
 
-        for ticker, snapshot in snapshots.items():
-
-            try:
-                latest_trade = (
-                    snapshot.get("latestTrade") or {}
+            if response.status_code != 200:
+                print(
+                    "[FastDiscovery] Alpaca HTTP "
+                    f"{response.status_code}: "
+                    f"{response.text[:200]}"
                 )
-
-                latest_quote = (
-                    snapshot.get("latestQuote") or {}
-                )
-
-                daily_bar = (
-                    snapshot.get("dailyBar") or {}
-                )
-
-                previous_bar = (
-                    snapshot.get("prevDailyBar") or {}
-                )
-
-                price = _safe_float(
-                    latest_trade.get("p")
-                )
-
-                if price is None:
-                    price = _safe_float(
-                        daily_bar.get("c")
-                    )
-
-                prev_close = _safe_float(
-                    previous_bar.get("c")
-                )
-
-                if prev_close is None:
-                    prev_close = _safe_float(
-                        daily_bar.get("o")
-                    )
-
-                if price is None or prev_close is None:
-                    continue
-
-                if prev_close <= 0:
-                    continue
-
-                gap_pct = (
-                    (price - prev_close)
-                    / prev_close
-                ) * 100.0
-
-                # ------------------------------------------------
-                # Daily volume
-                # ------------------------------------------------
-
-                volume = _safe_int(
-                    daily_bar.get("v")
-                )
-
-                # ------------------------------------------------
-                # Dollar volume
-                # ------------------------------------------------
-
-                dollar_volume = (
-                    price * volume
-                )
-
-                # ------------------------------------------------
-                # Quote / spread
-                # ------------------------------------------------
-
-                bid = _safe_float(
-                    latest_quote.get("bp")
-                )
-
-                ask = _safe_float(
-                    latest_quote.get("ap")
-                )
-
-                spread_pct = None
-
-                if (
-                    bid is not None and
-                    ask is not None and
-                    bid > 0 and
-                    ask >= bid
-                ):
-                    mid = (bid + ask) / 2.0
-
-                    if mid > 0:
-                        spread_pct = (
-                            (ask - bid) / mid
-                        ) * 100.0
-
-                # ------------------------------------------------
-                # Price gate
-                # ------------------------------------------------
-
-                if price < DISCOVERY_MIN_PRICE:
-                    continue
-
-                if price > DISCOVERY_MAX_PRICE:
-                    continue
-
-                # ------------------------------------------------
-                # Volume gate
-                # ------------------------------------------------
-
-                if volume < DISCOVERY_MIN_VOLUME:
-                    continue
-
-                # ------------------------------------------------
-                # Gap gate
-                # ------------------------------------------------
-
-                if gap_pct < DISCOVERY_MIN_GAP:
-                    continue
-
-                if gap_pct > DISCOVERY_MAX_GAP:
-                    continue
-
-                # ------------------------------------------------
-                # Quick score
-                # ------------------------------------------------
-
-                score = 0.0
-
-                # Gap contribution: 0–35
-                score += min(
-                    max(gap_pct, 0.0) * 2.0,
-                    35.0
-                )
-
-                # Volume contribution: 0–25
-                volume_score = min(
-                    volume / 100_000.0 * 5.0,
-                    25.0
-                )
-
-                score += volume_score
-
-                # Dollar volume: 0–20
-                dollar_score = min(
-                    dollar_volume / 5_000_000.0 * 5.0,
-                    20.0
-                )
-
-                score += dollar_score
-
-                # Spread: 0–10
-                if spread_pct is None:
-                    score += 3.0
-                elif spread_pct <= 1.0:
-                    score += 10.0
-                elif spread_pct <= 2.0:
-                    score += 7.0
-                elif spread_pct <= 3.0:
-                    score += 3.0
-
-                # Strong gap bonus: 0–10
-                if gap_pct >= 10:
-                    score += 10
-                elif gap_pct >= 7:
-                    score += 7
-                elif gap_pct >= 5:
-                    score += 4
-
-                score = round(
-                    min(max(score, 0), 100),
-                    1
-                )
-
-                candidate = {
-                    "ticker": ticker.upper(),
-                    "price": price,
-                    "prev_close": prev_close,
-
-                    "gap_pct": round(
-                        gap_pct,
-                        2
-                    ),
-
-                    "pm_volume": volume,
-
-                    "daily_volume": volume,
-
-                    "dollar_volume": round(
-                        dollar_volume,
-                        2
-                    ),
-
-                    "bid": bid,
-                    "ask": ask,
-
-                    "spread_pct": (
-                        round(spread_pct, 3)
-                        if spread_pct is not None
-                        else None
-                    ),
-
-                    "pm_high": price,
-                    "pm_low": price,
-                    "pm_vwap": price,
-
-                    "pm_dist_signed": 0.0,
-
-                    "event_score": score,
-
-                    "pm_data_quality": (
-                        "DAILY_DISCOVERY"
-                    ),
-
-                    "market_data_source": "ALPACA_IEX",
-
-                    "mode": "LIVE",
-
-                    "strategy_version": "V4.1",
-                    "data_version": "ALPACA_IEX_V41",
-
-                    "scan_date": (
-                        datetime.now(ET)
-                        .strftime("%Y-%m-%d")
-                    ),
-
-                    "source": "FAST_DISCOVERY",
-                }
-
-                candidates.append(candidate)
-
-            except Exception as e:
-                # One bad ticker NEVER kills the scan.
                 continue
 
-        # Small pause protects API.
-        if chunk_index < len(chunks):
-            time.sleep(0.15)
+            payload = response.json()
+
+            snapshots = payload.get(
+                "snapshots",
+                {},
+            )
+
+            for ticker, snapshot in snapshots.items():
+
+                try:
+                    candidate = _parse_snapshot(
+                        ticker,
+                        snapshot,
+                        now_et,
+                    )
+
+                    if candidate:
+                        candidates.append(candidate)
+
+                except Exception as e:
+                    print(
+                        f"[FastDiscovery] "
+                        f"{ticker} parse error: {e}"
+                    )
+
+        except Exception as e:
+            print(
+                f"[FastDiscovery] Request error: {e}"
+            )
 
     candidates.sort(
         key=lambda x: (
             x.get("event_score", 0),
-            x.get("gap_pct", 0),
-            x.get("dollar_volume", 0),
+            abs(x.get("gap_pct", 0)),
+            x.get("pm_volume", 0),
         ),
-        reverse=True
+        reverse=True,
     )
 
     print(
@@ -435,4 +305,4 @@ def fast_discovery(
         f"{len(candidates)} candidates"
     )
 
-    return candidates[:30]
+    return candidates[:MAX_DISCOVERY_CANDIDATES]
