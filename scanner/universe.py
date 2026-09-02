@@ -2,24 +2,22 @@
 DAYS-BOT V4.1 – Dynamic Universe Builder
 
 Purpose:
-- Build a clean, usable US equity universe.
-- DO NOT use yfinance here.
-- Nasdaq Trader = symbol directory.
-- Finnhub news = dynamic additions.
-- Cached universe = emergency fallback.
+- Build a clean stock universe.
+- Do NOT use yfinance for discovery.
+- Nasdaq symbol directory is used only as a symbol source.
+- Finnhub news symbols are optional enrichment.
+- Alpaca is responsible for actual market-data discovery.
 
-Important:
-This module does NOT determine movers.
-It only builds the universe that Discovery will scan.
+The universe is intentionally limited because the expensive analyzers
+run only on the best candidates.
 """
 
 import re
-import requests
-import pandas as pd
-
-from datetime import datetime
 from pathlib import Path
 from typing import List, Set
+
+import pandas as pd
+import requests
 
 from utils.config import FINNHUB_API_KEY
 
@@ -28,26 +26,48 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_PATH = BASE_DIR / "data" / "universe_cache.csv"
 
 NASDAQ_URL = (
-    "https://www.nasdaqtrader.com/"
-    "dynamic/SymDir/nasdaqtraded.txt"
+    "https://www.nasdaqtrader.com/dynamic/SymDir/"
+    "nasdaqtraded.txt"
 )
 
-EXCLUDED_ETFS = {
-    "SPY", "QQQ", "IWM", "VTI", "VOO", "DIA", "ARKK",
-    "TQQQ", "SQQQ", "UVXY", "SOXL", "SOXS"
+EXCLUDED_SYMBOLS = {
+    "SPY",
+    "QQQ",
+    "IWM",
+    "VTI",
+    "VOO",
+    "DIA",
+    "ARKK",
+    "UVXY",
+    "SQQQ",
+    "TQQQ",
 }
 
-COMMON_FALSE_POSITIVES = {
-    "THE", "FOR", "AND", "WITH", "THIS", "THAT", "FROM",
-    "WILL", "HAVE", "MORE", "NEW", "YORK", "MARKET",
-    "STOCK", "NASDAQ", "NYSE", "CEO", "CFO", "IPO",
-    "AI", "USA", "SEC", "FDA", "US", "UK"
+COMMON_WORDS = {
+    "THE",
+    "FOR",
+    "AND",
+    "WITH",
+    "THIS",
+    "THAT",
+    "FROM",
+    "WILL",
+    "HAVE",
+    "MORE",
+    "NEW",
+    "YORK",
+    "MARKET",
+    "STOCK",
+    "NASDAQ",
+    "NYSE",
+    "CEO",
+    "CFO",
+    "NEWS",
+    "INC",
+    "CORP",
+    "COMPANY",
 }
 
-
-# ============================================================
-# CLEAN SYMBOL
-# ============================================================
 
 def _clean_symbol(symbol: str) -> str | None:
     if not symbol:
@@ -61,74 +81,63 @@ def _clean_symbol(symbol: str) -> str | None:
     if len(s) < 1 or len(s) > 5:
         return None
 
-    if any(c in s for c in ["$", ".", "-", "/", "^", " "]):
+    if s in EXCLUDED_SYMBOLS:
         return None
 
-    if not re.fullmatch(r"[A-Z]{1,5}", s):
+    if any(c in s for c in [".", "$", "-", "/", "^", " "]):
         return None
 
-    if s in EXCLUDED_ETFS:
+    if not re.fullmatch(r"[A-Z]+", s):
         return None
 
     return s
 
 
-# ============================================================
-# NASDAQ SYMBOL DIRECTORY
-# ============================================================
-
 def get_nasdaq_universe() -> List[str]:
     """
-    Download Nasdaq Trader symbol directory.
+    Get clean US-listed symbols from Nasdaq Trader.
 
-    We intentionally do NOT use FTP and do not use yfinance.
+    This is a SYMBOL DIRECTORY only.
+    It is NOT market-data discovery.
     """
 
     try:
         response = requests.get(
             NASDAQ_URL,
-            timeout=15,
-            headers={
-                "User-Agent": "DAYS-BOT/4.1"
-            }
+            timeout=20,
+            headers={"User-Agent": "DAYS-BOT/4.1"},
         )
 
         response.raise_for_status()
 
-        text = response.text
-
-        # Nasdaq file is pipe-separated.
         from io import StringIO
 
         df = pd.read_csv(
-            StringIO(text),
+            StringIO(response.text),
             sep="|",
-            dtype=str
+            dtype=str,
         )
 
-        # Remove possible footer row.
-        if "Symbol" not in df.columns:
-            raise ValueError("Nasdaq file missing Symbol column")
-
-        df = df[df["Symbol"].notna()]
-
         if "Test Issue" in df.columns:
-            df = df[df["Test Issue"].fillna("N") == "N"]
+            df = df[df["Test Issue"] == "N"]
 
         if "ETF" in df.columns:
-            df = df[df["ETF"].fillna("N") == "N"]
+            df = df[df["ETF"] == "N"]
+
+        if "NextShares" in df.columns:
+            df = df[df["NextShares"] == "N"]
 
         symbols = []
 
-        for raw in df["Symbol"]:
+        for raw in df.get("Symbol", []):
             symbol = _clean_symbol(raw)
 
             if symbol:
                 symbols.append(symbol)
 
-        symbols = sorted(set(symbols))
+        symbols = list(dict.fromkeys(symbols))
 
-        print(f"[Universe] Nasdaq clean symbols: {len(symbols)}")
+        print(f"[Universe] Nasdaq base: {len(symbols)} symbols")
 
         return symbols
 
@@ -137,19 +146,14 @@ def get_nasdaq_universe() -> List[str]:
         return []
 
 
-# ============================================================
-# FINNHUB NEWS SYMBOLS
-# ============================================================
-
 def get_news_symbols() -> List[str]:
     """
-    Extract symbols from Finnhub news.
+    Optional Finnhub news enrichment.
 
-    News symbols are additions, not the entire universe.
+    Failure here must never break discovery.
     """
 
     if not FINNHUB_API_KEY:
-        print("[Universe] Finnhub key missing – news layer skipped")
         return []
 
     try:
@@ -158,16 +162,9 @@ def get_news_symbols() -> List[str]:
             f"?category=general&token={FINNHUB_API_KEY}"
         )
 
-        response = requests.get(
-            url,
-            timeout=10,
-            headers={"User-Agent": "DAYS-BOT/4.1"}
-        )
+        response = requests.get(url, timeout=10)
 
         if response.status_code != 200:
-            print(
-                f"[Universe] Finnhub HTTP {response.status_code}"
-            )
             return []
 
         data = response.json()
@@ -175,34 +172,19 @@ def get_news_symbols() -> List[str]:
         symbols: Set[str] = set()
 
         for item in data[:50]:
-            headline = item.get("headline", "") or ""
-            summary = item.get("summary", "") or ""
+            text = (
+                str(item.get("headline", ""))
+                + " "
+                + str(item.get("summary", ""))
+            ).upper()
 
-            # Prefer Finnhub-provided related symbols if present.
-            related = item.get("related", "")
+            found = re.findall(r"\b[A-Z]{2,5}\b", text)
 
-            if related:
-                for s in str(related).split(","):
-                    cleaned = _clean_symbol(s)
-                    if cleaned:
-                        symbols.add(cleaned)
+            for raw in found:
+                symbol = _clean_symbol(raw)
 
-            # Secondary extraction from headline/summary.
-            text = f"{headline} {summary}"
-
-            found = re.findall(
-                r"\b[A-Z]{1,5}\b",
-                text
-            )
-
-            for s in found:
-                if s in COMMON_FALSE_POSITIVES:
-                    continue
-
-                cleaned = _clean_symbol(s)
-
-                if cleaned:
-                    symbols.add(cleaned)
+                if symbol and symbol not in COMMON_WORDS:
+                    symbols.add(symbol)
 
         result = sorted(symbols)
 
@@ -215,189 +197,141 @@ def get_news_symbols() -> List[str]:
         return []
 
 
-# ============================================================
-# CACHE
-# ============================================================
-
-def load_cached_universe() -> List[str]:
-    try:
-        if not CACHE_PATH.exists():
-            return []
-
-        df = pd.read_csv(CACHE_PATH)
-
-        if "symbol" not in df.columns:
-            return []
-
-        symbols = []
-
-        for raw in df["symbol"].dropna():
-            symbol = _clean_symbol(raw)
-
-            if symbol:
-                symbols.append(symbol)
-
-        symbols = list(dict.fromkeys(symbols))
-
-        print(
-            f"[Universe] Loaded {len(symbols)} symbols from cache"
-        )
-
-        return symbols
-
-    except Exception as e:
-        print(f"[Universe] Cache load error: {e}")
-        return []
-
-
-def save_universe(symbols: List[str]) -> None:
-    try:
-        CACHE_PATH.parent.mkdir(
-            parents=True,
-            exist_ok=True
-        )
-
-        pd.DataFrame({
-            "symbol": symbols
-        }).to_csv(
-            CACHE_PATH,
-            index=False
-        )
-
-    except Exception as e:
-        print(f"[Universe] Cache save error: {e}")
-
-
-# ============================================================
-# STATIC FALLBACK
-# ============================================================
-
-def get_static_fallback() -> List[str]:
+def _static_fallback() -> List[str]:
     """
-    Emergency symbols only.
+    Emergency fallback.
 
-    This is NOT the main scanner universe.
+    These symbols are NOT trade recommendations.
+    They only prevent a completely empty universe.
     """
 
     return [
-        "AAPL", "MSFT", "NVDA", "AMZN", "META",
-        "GOOGL", "TSLA", "AMD", "NFLX", "ORCL",
-        "QCOM", "INTC", "MU", "AMAT",
-        "SMCI", "MRVL", "ON", "PLTR",
-        "SNOW", "CRWD", "NET", "DDOG",
-        "MDB", "SHOP", "RIVN",
-        "COIN", "HOOD", "MSTR",
-        "SOFI", "RBLX", "ROKU", "SNAP",
-        "DKNG", "CELH", "BABA", "JD",
-        "PDD", "BIDU", "SE", "GRAB"
+        "AAPL",
+        "AMD",
+        "AMZN",
+        "BAC",
+        "BBAI",
+        "CCL",
+        "CLSK",
+        "DKNG",
+        "F",
+        "HOOD",
+        "INTC",
+        "MARA",
+        "META",
+        "MSTR",
+        "MU",
+        "NIO",
+        "NVDA",
+        "PLTR",
+        "RIVN",
+        "SOFI",
+        "TSLA",
+        "UBER",
+        "WBD",
+        "XPEV",
     ]
 
 
-# ============================================================
-# MAIN BUILDER
-# ============================================================
+def build_universe(max_symbols: int = 500) -> List[str]:
+    print("[Universe] Building clean dynamic universe...")
 
-def build_universe(
-    max_symbols: int = 300
-) -> List[str]:
-
-    print("[Universe] Building V4.1 universe...")
-
-    all_symbols: Set[str] = set()
-
-    # --------------------------------------------------------
-    # 1. Nasdaq directory
-    # --------------------------------------------------------
+    symbols: Set[str] = set()
 
     base = get_nasdaq_universe()
 
-    # Keep a reasonably large clean pool.
-    # Discovery will rank it using market data.
-    for symbol in base[:1500]:
-        all_symbols.add(symbol)
+    # Take a broad but bounded sample.
+    symbols.update(base[:3000])
 
-    # --------------------------------------------------------
-    # 2. News additions
-    # --------------------------------------------------------
+    news_symbols = get_news_symbols()
+    symbols.update(news_symbols)
 
-    news = get_news_symbols()
-
-    for symbol in news[:150]:
-        all_symbols.add(symbol)
-
-    # --------------------------------------------------------
-    # 3. Clean
-    # --------------------------------------------------------
+    if len(symbols) < 100:
+        symbols.update(_static_fallback())
 
     cleaned = []
 
-    for symbol in all_symbols:
-        symbol = _clean_symbol(symbol)
+    for symbol in symbols:
+        clean = _clean_symbol(symbol)
 
-        if symbol and symbol not in cleaned:
-            cleaned.append(symbol)
+        if clean and clean not in cleaned:
+            cleaned.append(clean)
 
-    # Deterministic ordering.
+        if len(cleaned) >= max_symbols:
+            break
+
     cleaned = sorted(cleaned)
 
-    # --------------------------------------------------------
-    # 4. Cache
-    # --------------------------------------------------------
-
-    if len(cleaned) >= 100:
-        result = cleaned[:max_symbols]
-
-        save_universe(result)
-
-        print(
-            f"[Universe] Final V4.1 universe: "
-            f"{len(result)} symbols"
-        )
-
-        return result
-
-    # --------------------------------------------------------
-    # 5. Cache fallback
-    # --------------------------------------------------------
-
-    cached = load_cached_universe()
-
-    if cached:
-        return cached[:max_symbols]
-
-    # --------------------------------------------------------
-    # 6. Static fallback
-    # --------------------------------------------------------
-
-    fallback = get_static_fallback()
-
     print(
-        f"[Universe] Using static fallback: "
-        f"{len(fallback)} symbols"
+        f"[Universe] Final dynamic universe: "
+        f"{len(cleaned)} symbols"
     )
 
-    return fallback[:max_symbols]
+    try:
+        CACHE_PATH.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        pd.DataFrame(
+            {"symbol": cleaned}
+        ).to_csv(
+            CACHE_PATH,
+            index=False,
+        )
+
+    except Exception as e:
+        print(f"[Universe] Cache write warning: {e}")
+
+    return cleaned
 
 
-# ============================================================
-# PUBLIC ENTRY POINT
-# ============================================================
-
-def load_universe(
-    max_symbols: int = 300
-) -> List[str]:
+def load_universe() -> List[str]:
+    """
+    Build fresh universe.
+    If external source fails, use cache.
+    If cache fails, use static fallback.
+    """
 
     try:
-        return build_universe(max_symbols)
+        universe = build_universe()
+
+        if universe:
+            return universe
 
     except Exception as e:
         print(f"[Universe] Build failed: {e}")
 
-        cached = load_cached_universe()
+    try:
+        if CACHE_PATH.exists():
+            df = pd.read_csv(CACHE_PATH)
 
-        if cached:
-            return cached[:max_symbols]
+            if "symbol" in df.columns:
+                symbols = []
 
-        fallback = get_static_fallback()
+                for raw in df["symbol"].dropna():
+                    symbol = _clean_symbol(raw)
 
-        return fallback[:max_symbols]
+                    if symbol:
+                        symbols.append(symbol)
+
+                symbols = list(dict.fromkeys(symbols))
+
+                if symbols:
+                    print(
+                        f"[Universe] Loaded "
+                        f"{len(symbols)} symbols from cache"
+                    )
+                    return symbols[:500]
+
+    except Exception as e:
+        print(f"[Universe] Cache read warning: {e}")
+
+    fallback = _static_fallback()
+
+    print(
+        f"[Universe] Emergency fallback: "
+        f"{len(fallback)} symbols"
+    )
+
+    return fallback
