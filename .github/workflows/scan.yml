@@ -1,43 +1,66 @@
-name: DAYS-BOT V3.5 Research Scanner
+name: DAYS-BOT V4.1 Research Scanner
 
 on:
   schedule:
     - cron: "45 8 * * 1-5"
       timezone: "America/New_York"
+
     - cron: "0 9 * * 1-5"
       timezone: "America/New_York"
+
     - cron: "15 9 * * 1-5"
       timezone: "America/New_York"
+
   workflow_dispatch:
 
 jobs:
   scan:
+
     runs-on: ubuntu-latest
+
     timeout-minutes: 12
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: |
+
+      - name: Install dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - run: mkdir -p data
-      - name: Run V3.5 Scanner
+
+      - name: Prepare data directory
+        run: |
+          mkdir -p data
+
+      - name: Run DAYS-BOT V4.1
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python main.py fullscan_v34 --manual
           else
             python main.py fullscan_v34
           fi
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload alerts database
+        uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alerts-db-v35
+          name: alerts-db-v41
           path: data/alerts.db
           retention-days: 30
