@@ -1,134 +1,337 @@
-import os
+"""
+DAYS-BOT V4.1 – Dynamic Universe Builder
 
-# ============================================================
-# DAYS-BOT V4.1 – CENTRAL CONFIG
-# ============================================================
+Purpose:
+- Build a clean stock universe.
+- Do NOT use yfinance for discovery.
+- Nasdaq symbol directory is used only as a symbol source.
+- Finnhub news symbols are optional enrichment.
+- Alpaca is responsible for actual market-data discovery.
 
-BOT_VERSION = "V4.1"
-STRATEGY_VERSION = "V4.1"
-EXPERIMENT_MODE = "V4.1_LIVE_RESEARCH"
-DATA_VERSION = "ALPACA_IEX_V41"
+The universe is intentionally limited because the expensive analyzers
+run only on the best candidates.
+"""
 
-# ------------------------------------------------------------
-# API KEYS
-# ------------------------------------------------------------
+import re
+from pathlib import Path
+from typing import List, Set
 
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY", "")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY", "")
+import pandas as pd
+import requests
 
-# Trading API – NOT USED FOR AUTOMATIC ORDERS
-ALPACA_BASE_URL = os.getenv(
-    "ALPACA_BASE_URL",
-    "https://paper-api.alpaca.markets"
+from utils.config import FINNHUB_API_KEY
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+CACHE_PATH = BASE_DIR / "data" / "universe_cache.csv"
+
+NASDAQ_URL = (
+    "https://www.nasdaqtrader.com/dynamic/SymDir/"
+    "nasdaqtraded.txt"
 )
 
-# Market Data API
-ALPACA_DATA_URL = os.getenv(
-    "ALPACA_DATA_URL",
-    "https://data.alpaca.markets"
-)
+EXCLUDED_SYMBOLS = {
+    "SPY",
+    "QQQ",
+    "IWM",
+    "VTI",
+    "VOO",
+    "DIA",
+    "ARKK",
+    "UVXY",
+    "SQQQ",
+    "TQQQ",
+}
 
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+COMMON_WORDS = {
+    "THE",
+    "FOR",
+    "AND",
+    "WITH",
+    "THIS",
+    "THAT",
+    "FROM",
+    "WILL",
+    "HAVE",
+    "MORE",
+    "NEW",
+    "YORK",
+    "MARKET",
+    "STOCK",
+    "NASDAQ",
+    "NYSE",
+    "CEO",
+    "CFO",
+    "NEWS",
+    "INC",
+    "CORP",
+    "COMPANY",
+}
 
-# ------------------------------------------------------------
-# DISCOVERY
-# ------------------------------------------------------------
 
-DISCOVERY_MIN_PRICE = 1.00
-DISCOVERY_MAX_PRICE = 30.00
+def _clean_symbol(symbol: str) -> str | None:
+    if not symbol:
+        return None
 
-# Lowered from 5% so the scanner can discover useful setups.
-DISCOVERY_MIN_GAP = 3.0
-DISCOVERY_MAX_GAP = 100.0
+    s = str(symbol).strip().upper()
 
-DISCOVERY_MIN_VOLUME = 50_000
-DISCOVERY_MIN_PM_VOLUME = 50_000
+    if not s:
+        return None
 
-MAX_DISCOVERY_CANDIDATES = 40
-MAX_ANALYSIS_CANDIDATES = 25
-TOP_RESEARCH_CANDIDATES = 5
+    if len(s) < 1 or len(s) > 5:
+        return None
 
-# ------------------------------------------------------------
-# VALIDATION
-# ------------------------------------------------------------
+    if s in EXCLUDED_SYMBOLS:
+        return None
 
-VALIDATION_MAX_SPREAD = 2.0
-VALIDATION_MIN_PM_VOLUME_ABS = 100_000
-VALIDATION_MIN_PM_BARS = 5
-VALIDATION_MAX_PM_DIST = 5.0
-VALIDATION_MIN_VWAP_DIST = 0.0
-VALIDATION_MIN_RVOL = 0.0
-VALIDATION_MIN_CATALYST_SCORE = 0
+    if any(c in s for c in [".", "$", "-", "/", "^", " "]):
+        return None
 
-# IMPORTANT:
-# These remain soft signals during research.
-USE_RVOL_AS_HARD_GATE = False
-USE_CATALYST_AS_HARD_GATE = False
-USE_PM_BARS_AS_HARD_GATE = False
-USE_FLOAT_AS_HARD_GATE = False
-USE_PERSONALITY_AS_HARD_GATE = False
+    if not re.fullmatch(r"[A-Z]+", s):
+        return None
 
-# ------------------------------------------------------------
-# RISK / ACCOUNT
-# ------------------------------------------------------------
+    return s
 
-ACCOUNT_SIZE = 5000.0
 
-# Preserve existing risk configuration.
-MAX_RISK_PER_TRADE_V31 = 0.005
-MAX_POSITION_VALUE_PCT = 0.20
+def get_nasdaq_universe() -> List[str]:
+    """
+    Get clean US-listed symbols from Nasdaq Trader.
 
-MAX_ACTIVE_TRADES = 3
-MAX_TRADES_PER_DAY = 5
-MAX_DAILY_LOSS = 0.03
+    This is a SYMBOL DIRECTORY only.
+    It is NOT market-data discovery.
+    """
 
-MAX_RISK_PER_TRADE = 0.005
+    try:
+        response = requests.get(
+            NASDAQ_URL,
+            timeout=20,
+            headers={"User-Agent": "DAYS-BOT/4.1"},
+        )
 
-# ------------------------------------------------------------
-# TRADE ECONOMICS
-# ------------------------------------------------------------
+        response.raise_for_status()
 
-MIN_NET_PROFIT_PCT = 1.5
+        from io import StringIO
 
-# Blink / Israel cost model.
-# Keep configurable; do not hardcode tax assumptions in strategy logic.
-BLINK_FEE_PER_SHARE = 0.01
-BLINK_MIN_FEE = 1.50
-BLINK_MAX_FEE_PCT = 0.018
+        df = pd.read_csv(
+            StringIO(response.text),
+            sep="|",
+            dtype=str,
+        )
 
-ISRAEL_CAPITAL_GAINS_TAX_RATE = float(
-    os.getenv("ISRAEL_CAPITAL_GAINS_TAX_RATE", "0.25")
-)
+        if "Test Issue" in df.columns:
+            df = df[df["Test Issue"] == "N"]
 
-ESTIMATED_SLIPPAGE_PCT = 0.15
+        if "ETF" in df.columns:
+            df = df[df["ETF"] == "N"]
 
-# ------------------------------------------------------------
-# MARKET REGIME
-# ------------------------------------------------------------
+        if "NextShares" in df.columns:
+            df = df[df["NextShares"] == "N"]
 
-REGIME_FAVORABLE_MULTIPLIER = 1.00
-REGIME_NEUTRAL_MULTIPLIER = 0.75
-REGIME_HOSTILE_MULTIPLIER = 0.50
+        symbols = []
 
-# ------------------------------------------------------------
-# DATA QUALITY
-# ------------------------------------------------------------
+        for raw in df.get("Symbol", []):
+            symbol = _clean_symbol(raw)
 
-MIN_DATA_QUALITY = 0.70
+            if symbol:
+                symbols.append(symbol)
 
-# ------------------------------------------------------------
-# LEARNING / RESEARCH
-# ------------------------------------------------------------
+        symbols = list(dict.fromkeys(symbols))
 
-EXPERIMENT_MODE_ACTIVE = True
-LEARNING_MODE = True
+        print(f"[Universe] Nasdaq base: {len(symbols)} symbols")
 
-# ------------------------------------------------------------
-# EXECUTION SAFETY
-# ------------------------------------------------------------
+        return symbols
 
-# DAYS-BOT never places live orders.
-AUTO_EXECUTION_ENABLED = False
+    except Exception as e:
+        print(f"[Universe] Nasdaq error: {e}")
+        return []
+
+
+def get_news_symbols() -> List[str]:
+    """
+    Optional Finnhub news enrichment.
+
+    Failure here must never break discovery.
+    """
+
+    if not FINNHUB_API_KEY:
+        return []
+
+    try:
+        url = (
+            "https://finnhub.io/api/v1/news"
+            f"?category=general&token={FINNHUB_API_KEY}"
+        )
+
+        response = requests.get(url, timeout=10)
+
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+
+        symbols: Set[str] = set()
+
+        for item in data[:50]:
+            text = (
+                str(item.get("headline", ""))
+                + " "
+                + str(item.get("summary", ""))
+            ).upper()
+
+            found = re.findall(r"\b[A-Z]{2,5}\b", text)
+
+            for raw in found:
+                symbol = _clean_symbol(raw)
+
+                if symbol and symbol not in COMMON_WORDS:
+                    symbols.add(symbol)
+
+        result = sorted(symbols)
+
+        print(f"[Universe] News symbols: {len(result)}")
+
+        return result
+
+    except Exception as e:
+        print(f"[Universe] News error: {e}")
+        return []
+
+
+def _static_fallback() -> List[str]:
+    """
+    Emergency fallback.
+
+    These symbols are NOT trade recommendations.
+    They only prevent a completely empty universe.
+    """
+
+    return [
+        "AAPL",
+        "AMD",
+        "AMZN",
+        "BAC",
+        "BBAI",
+        "CCL",
+        "CLSK",
+        "DKNG",
+        "F",
+        "HOOD",
+        "INTC",
+        "MARA",
+        "META",
+        "MSTR",
+        "MU",
+        "NIO",
+        "NVDA",
+        "PLTR",
+        "RIVN",
+        "SOFI",
+        "TSLA",
+        "UBER",
+        "WBD",
+        "XPEV",
+    ]
+
+
+def build_universe(max_symbols: int = 500) -> List[str]:
+    print("[Universe] Building clean dynamic universe...")
+
+    symbols: Set[str] = set()
+
+    base = get_nasdaq_universe()
+
+    # Take a broad but bounded sample.
+    symbols.update(base[:3000])
+
+    news_symbols = get_news_symbols()
+    symbols.update(news_symbols)
+
+    if len(symbols) < 100:
+        symbols.update(_static_fallback())
+
+    cleaned = []
+
+    for symbol in symbols:
+        clean = _clean_symbol(symbol)
+
+        if clean and clean not in cleaned:
+            cleaned.append(clean)
+
+        if len(cleaned) >= max_symbols:
+            break
+
+    cleaned = sorted(cleaned)
+
+    print(
+        f"[Universe] Final dynamic universe: "
+        f"{len(cleaned)} symbols"
+    )
+
+    try:
+        CACHE_PATH.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        pd.DataFrame(
+            {"symbol": cleaned}
+        ).to_csv(
+            CACHE_PATH,
+            index=False,
+        )
+
+    except Exception as e:
+        print(f"[Universe] Cache write warning: {e}")
+
+    return cleaned
+
+
+def load_universe() -> List[str]:
+    """
+    Build fresh universe.
+    If external source fails, use cache.
+    If cache fails, use static fallback.
+    """
+
+    try:
+        universe = build_universe()
+
+        if universe:
+            return universe
+
+    except Exception as e:
+        print(f"[Universe] Build failed: {e}")
+
+    try:
+        if CACHE_PATH.exists():
+            df = pd.read_csv(CACHE_PATH)
+
+            if "symbol" in df.columns:
+                symbols = []
+
+                for raw in df["symbol"].dropna():
+                    symbol = _clean_symbol(raw)
+
+                    if symbol:
+                        symbols.append(symbol)
+
+                symbols = list(dict.fromkeys(symbols))
+
+                if symbols:
+                    print(
+                        f"[Universe] Loaded "
+                        f"{len(symbols)} symbols from cache"
+                    )
+                    return symbols[:500]
+
+    except Exception as e:
+        print(f"[Universe] Cache read warning: {e}")
+
+    fallback = _static_fallback()
+
+    print(
+        f"[Universe] Emergency fallback: "
+        f"{len(fallback)} symbols"
+    )
+
+    return fallback
