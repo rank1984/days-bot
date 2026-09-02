@@ -1,143 +1,329 @@
 """
-DAYS-BOT V3.5 – Scoring Engine
-Computes composite score for each candidate based on multiple factors.
+DAYS-BOT V4.1 – Deterministic Scoring Engine
+
+Important:
+This is ranking logic, NOT an automatic trading engine.
+
+Missing data = neutral / unknown.
+It must NOT automatically destroy the candidate.
 """
 
 from utils.config import LEARNING_MODE
 
 
-def calculate_composite_score(candidate: dict, analysis: dict) -> float:
-    """
-    Calculate a composite score (0-100) for ranking candidates.
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
 
-    Factors:
-    - Gap (0-30)
-    - PM Volume (0-25)
-    - PM Distance (0-20)
-    - RVOL (0-15)
-    - Float (0-15)
-    - Short Interest (0-15)
-    - Catalyst Quality (0-20)
-    - Sentiment (0-10)
 
-    Penalties:
-    - SEC Offering: -10 to -30
-    - Personality GAP_AND_CRAP: -30
-    - Float > 50M: -25
-    - Gap < 10%: -20
-    - RVOL < 3: -20
-    - Short < 5%: -10
-    """
+def _score_gap(gap):
+    gap = _safe_float(gap)
+
+    if gap >= 20:
+        return 30
+    if gap >= 15:
+        return 27
+    if gap >= 10:
+        return 23
+    if gap >= 7:
+        return 18
+    if gap >= 5:
+        return 13
+    if gap >= 3:
+        return 8
+    if gap > 0:
+        return 4
+
+    return 0
+
+
+def _score_volume(volume):
+    volume = _safe_float(volume)
+
+    if volume >= 2_000_000:
+        return 25
+    if volume >= 1_000_000:
+        return 22
+    if volume >= 500_000:
+        return 18
+    if volume >= 250_000:
+        return 14
+    if volume >= 100_000:
+        return 9
+    if volume >= 50_000:
+        return 5
+
+    return 0
+
+
+def _score_pm_distance(dist):
+    dist = _safe_float(dist, -100)
+
+    if dist >= -0.5:
+        return 20
+    if dist >= -1:
+        return 17
+    if dist >= -2:
+        return 14
+    if dist >= -3:
+        return 9
+    if dist >= -5:
+        return 5
+
+    return 0
+
+
+def _score_rvol(rvol):
+    rvol = _safe_float(rvol)
+
+    if rvol >= 5:
+        return 15
+    if rvol >= 3:
+        return 13
+    if rvol >= 2:
+        return 10
+    if rvol >= 1.5:
+        return 7
+    if rvol >= 1:
+        return 4
+
+    # Unknown / unavailable
+    if rvol == 0:
+        return 0
+
+    return 0
+
+
+def _score_float(float_val):
+    float_val = _safe_float(float_val)
+
+    if float_val <= 0:
+        return 0
+
+    if float_val < 5_000_000:
+        return 15
+
+    if float_val < 10_000_000:
+        return 13
+
+    if float_val < 20_000_000:
+        return 11
+
+    if float_val < 50_000_000:
+        return 7
+
+    if float_val < 100_000_000:
+        return 3
+
+    return 0
+
+
+def _score_short(short):
+    short = _safe_float(short)
+
+    # Support both decimal and percentage formats.
+    if short > 1:
+        short = short / 100.0
+
+    if short >= 0.25:
+        return 15
+
+    if short >= 0.15:
+        return 11
+
+    if short >= 0.10:
+        return 8
+
+    if short >= 0.05:
+        return 5
+
+    if short > 0:
+        return 2
+
+    return 0
+
+
+def _score_catalyst(catalyst):
+    if not isinstance(catalyst, dict):
+        return 0
+
+    score = _safe_float(
+        catalyst.get("score"),
+        0,
+    )
+
+    # Support analyzers returning 0-10 or 0-100.
+    if score > 10:
+        score = score / 10.0
+
+    return max(
+        0,
+        min(20, score * 2),
+    )
+
+
+def _score_sentiment(sentiment):
+    if not isinstance(sentiment, dict):
+        return 0
+
+    value = _safe_float(
+        sentiment.get(
+            "sentiment_score",
+            0,
+        )
+    )
+
+    # Expected -1 to +1.
+    if -1 <= value <= 1:
+        return max(
+            0,
+            min(10, (value + 1) * 5),
+        )
+
+    # If analyzer returns 0-100.
+    if 0 <= value <= 100:
+        return max(
+            0,
+            min(10, value / 10),
+        )
+
+    return 0
+
+
+def calculate_composite_score(
+    candidate: dict,
+    analysis: dict,
+) -> float:
+
+    # ========================================================
+    # POSITIVE SCORE
+    # ========================================================
+
     score = 0.0
 
-    # 1. Gap (0-30)
-    gap = candidate.get('gap_pct', 0)
-    score += min(max(gap, 0) * 2, 30)
+    gap = _safe_float(
+        candidate.get("gap_pct")
+    )
 
-    # 2. PM Volume (0-25)
-    pm_vol = candidate.get('pm_volume', 0)
-    score += min((pm_vol / 100_000) * 15, 25)
+    pm_volume = _safe_float(
+        candidate.get("pm_volume")
+    )
 
-    # 3. PM Distance (0-20)
-    dist = candidate.get('pm_dist_signed', -100)
-    if dist >= 0:
-        score += 20
-    elif dist >= -2:
-        score += 12
-    elif dist >= -5:
-        score += 5
+    pm_distance = _safe_float(
+        candidate.get(
+            "pm_dist_signed",
+            -100,
+        )
+    )
 
-    # 4. RVOL (0-15)
-    rvol = analysis.get('rvol', 0)
-    if rvol:
-        if rvol >= 10:
-            score += 15
-        elif rvol >= 5:
-            score += 10
-        elif rvol >= 3:
-            score += 5
+    rvol = _safe_float(
+        analysis.get("rvol")
+    )
 
-    # 5. Float (0-15) – lower is better
-    float_val = analysis.get('float', 0)
-    if float_val:
-        if float_val < 5_000_000:
-            score += 15
-        elif float_val < 10_000_000:
-            score += 12
-        elif float_val < 20_000_000:
-            score += 8
-        elif float_val < 50_000_000:
-            score += 4
+    float_val = _safe_float(
+        analysis.get("float")
+    )
 
-    # 6. Short Interest (0-15)
-    short = analysis.get('short_interest', 0)
-    if short:
-        if short >= 0.25:
-            score += 15
-        elif short >= 0.15:
-            score += 10
-        elif short >= 0.10:
-            score += 5
+    short = _safe_float(
+        analysis.get("short_interest")
+    )
 
-    # 7. Catalyst Quality (0-20)
-    catalyst = analysis.get('catalyst', {})
-    cat_score = catalyst.get('score', 0)
-    score += cat_score * 2
+    score += _score_gap(gap)
+    score += _score_volume(pm_volume)
+    score += _score_pm_distance(pm_distance)
+    score += _score_rvol(rvol)
+    score += _score_float(float_val)
+    score += _score_short(short)
 
-    # 8. Sentiment (0-10)
-    sentiment = analysis.get('sentiment', {}).get('sentiment_score', 0)
-    if sentiment:
-        score += (sentiment + 1) * 5
+    score += _score_catalyst(
+        analysis.get("catalyst")
+    )
 
-    # ============================================================
-    # PENALTIES
-    # ============================================================
+    score += _score_sentiment(
+        analysis.get("sentiment")
+    )
 
-    # SEC Offering
-    if analysis.get('sec_risk', {}).get('has_offering'):
-        risk_level = analysis['sec_risk'].get('risk_level', 'LOW')
-        if risk_level == 'HIGH':
-            score -= 30
-        elif risk_level == 'MEDIUM':
-            score -= 20
-        else:
-            score -= 10
+    # ========================================================
+    # RISK ADJUSTMENTS
+    # ========================================================
 
-    # Personality GAP_AND_CRAP
-    personality = analysis.get('personality', {}).get('personality', 'NEUTRAL')
-    if personality == "GAP_AND_CRAP":
-        if LEARNING_MODE:
-            score -= 30
-        else:
-            score = -999
+    sec_risk = analysis.get(
+        "sec_risk",
+        {},
+    )
 
-    # Float > 50M
-    if float_val and float_val > 50_000_000:
-        if LEARNING_MODE:
+    if isinstance(sec_risk, dict):
+        if sec_risk.get("has_offering"):
+            risk_level = str(
+                sec_risk.get(
+                    "risk_level",
+                    "LOW",
+                )
+            ).upper()
+
+            if risk_level == "HIGH":
+                score -= 25
+            elif risk_level == "MEDIUM":
+                score -= 15
+            else:
+                score -= 7
+
+    personality = analysis.get(
+        "personality",
+        {},
+    )
+
+    if isinstance(personality, dict):
+        personality_name = str(
+            personality.get(
+                "personality",
+                "NEUTRAL",
+            )
+        ).upper()
+
+        if personality_name == "GAP_AND_CRAP":
             score -= 25
-        else:
-            score = -999
 
-    # Gap < 10%
-    if gap < 10:
-        if LEARNING_MODE:
-            score -= 20
-        else:
-            score = -999
+    # Large float is a disadvantage, but NOT an automatic rejection.
+    if float_val > 100_000_000:
+        score -= 10
+    elif float_val > 50_000_000:
+        score -= 5
 
-    # RVOL < 3
-    if rvol and rvol < 3:
-        if LEARNING_MODE:
-            score -= 20
-        else:
-            score = -999
+    # Weak spread.
+    spread = _safe_float(
+        candidate.get(
+            "spread_pct"
+        )
+    )
 
-    # Short Interest < 5% (no squeeze potential)
-    if short and short < 0.05:
-        if LEARNING_MODE:
-            score -= 10
-        else:
-            score = -999
+    if spread > 3:
+        score -= 20
+    elif spread > 2:
+        score -= 10
+    elif spread > 1:
+        score -= 3
 
-    # Normalize
-    return round(max(0, min(100, score)), 1)
+    # ========================================================
+    # RESEARCH MODE PRINCIPLE
+    # ========================================================
+    #
+    # Do NOT impose:
+    # gap >= 10
+    # RVOL >= 3
+    # float <= 20M
+    #
+    # as destructive hard penalties.
+    #
+    # Those variables are still visible in the score.
+    # Hard gates belong in Tradeability, not Discovery.
+    # ========================================================
+
+    return round(
+        max(0, min(100, score)),
+        1,
+    )
