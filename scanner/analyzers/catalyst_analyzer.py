@@ -1,107 +1,54 @@
 """
-Catalyst Analyzer – משתמש ב-Gemini לסיווג איכות הקטליזטור
-(אם Gemini לא זמין, משתמש בכללים פשוטים)
+Catalyst Analyzer – Temporary disabled (Gemini 404 fix)
+Returns default values without calling Gemini API.
 """
 import json
 import re
-from typing import List, Dict
-
-# נסיון לטעון את Gemini
-try:
-    import google.generativeai as genai
-    from utils.config import GEMINI_API_KEY
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    GEMINI_AVAILABLE = True
-except (ImportError, AttributeError, Exception):
-    GEMINI_AVAILABLE = False
-    print("[Catalyst] Gemini not available – using rule-based classification.")
 
 
-def classify_catalyst(headlines: List[str]) -> Dict[str, any]:
+def classify_catalyst(headlines: list) -> dict:
     """
-    מקבל רשימת כותרות חדשות, מחזיר:
-    - type: "FDA_APPROVAL", "EARNINGS", "CONTRACT", "PARTNERSHIP", "GENERAL", "WEAK", "NO_NEWS"
-    - score: 1-10 (10 = חזק ביותר)
-    - summary: הסבר קצר בעברית
+    Temporary fallback – returns default values without Gemini API call.
+    Fixes 404 error: gemini-1.5-flash not available.
     """
     if not headlines:
-        return {"type": "NO_NEWS", "score": 0, "summary": "אין חדשות אחרונות."}
+        return {
+            "type": "NO_NEWS",
+            "score": 0,
+            "summary": "אין חדשות אחרונות."
+        }
 
-    # אם Gemini לא זמין, נשתמש בכללים פשוטים
-    if not GEMINI_AVAILABLE:
-        return classify_rule_based(headlines)
+    # Simple heuristic: check if headlines look important
+    text = " ".join(headlines[:3]).upper()
+    important_keywords = ["FDA", "APPROVAL", "CONTRACT", "PARTNERSHIP", "EARNINGS", "BEAT", "RAISES", "GUIDANCE"]
+    weak_keywords = ["ANALYST", "UPGRADE", "INITIATES", "COVERAGE", "REITERATES"]
 
-    text = " ".join(headlines[:3])
-    prompt = f"""
-    אתה אנליסט חדשות פיננסיות. נתן לך כותרות חדשות על מניה:
-    "{text}"
-
-    אנא סווג את הקטליזטור:
-    1. סוג: FDA_APPROVAL, EARNINGS, CONTRACT, PARTNERSHIP, M&A, GENERAL, WEAK, NO_NEWS
-    2. ציון איכות: 1-10 (10 = משמעותי ביותר, 1 = חסר חשיבות)
-    3. הסבר בעברית: 1-2 משפטים על משמעות הקטליזטור.
-
-    החזר JSON בדיוק בפורמט:
-    {{"type": "...", "score": ..., "summary": "..."}}
-    """
-    try:
-        response = model.generate_content(prompt)
-        text_response = response.text.strip()
-        json_match = re.search(r'\{.*\}', text_response, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
-            return result
-        else:
-            return {"type": "GENERAL", "score": 5, "summary": "לא ניתן לסווג את הקטליזטור."}
-    except Exception as e:
-        print(f"[Catalyst] Gemini error: {e}")
-        return classify_rule_based(headlines)
-
-
-def classify_rule_based(headlines: List[str]) -> Dict[str, any]:
-    """סיווג מבוסס מילות מפתח פשוטות"""
-    text = " ".join(headlines).lower()
-    score = 5
+    score = 5  # default middle
     cat_type = "GENERAL"
-    summary = "חדשות כלליות ללא קטליזטור ברור."
 
-    # מילות מפתח לקטליזטורים חזקים
-    strong_keywords = ["fda approval", "fda clears", "phase 3", "breakthrough", "contract awarded", "government contract",
-                       "acquisition", "merger", "buyout", "earnings beat", "profit", "revenue growth"]
-    weak_keywords = ["mou", "letter of intent", "non-binding", "exploring", "evaluating", "potential", "may", "could"]
+    if any(kw in text for kw in important_keywords):
+        score = 8
+        cat_type = "STRONG"
+        if "FDA" in text or "APPROVAL" in text:
+            cat_type = "FDA_APPROVAL"
+            score = 9
+        elif "EARNINGS" in text or "BEAT" in text:
+            cat_type = "EARNINGS"
+            score = 8
+        elif "CONTRACT" in text or "PARTNERSHIP" in text:
+            cat_type = "CONTRACT"
+            score = 8
+    elif any(kw in text for kw in weak_keywords):
+        score = 4
+        cat_type = "WEAK"
 
-    # בדיקה אם יש מילת מפתח חזקה
-    for kw in strong_keywords:
-        if kw in text:
-            if "fda" in kw:
-                cat_type = "FDA_APPROVAL"
-                summary = "אישור FDA – קטליזטור משמעותי מאוד."
-                score = 9
-                break
-            elif "contract" in kw or "government" in kw:
-                cat_type = "CONTRACT"
-                summary = "חוזה ממשלתי – קטליזטור חזק."
-                score = 8
-                break
-            elif "acquisition" in kw or "merger" in kw or "buyout" in kw:
-                cat_type = "M&A"
-                summary = "רכישה או מיזוג – קטליזטור חזק."
-                score = 8
-                break
-            elif "earnings" in kw or "profit" in kw:
-                cat_type = "EARNINGS"
-                summary = "דוחות כספיים חיוביים – קטליזטור חזק."
-                score = 7
-                break
+    # If no keywords, it's probably general news
+    if score == 5 and not any(kw in text for kw in important_keywords + weak_keywords):
+        cat_type = "GENERAL"
+        score = 3
 
-    # אם לא נמצאה מילת מפתח חזקה, נבדוק חלשה
-    if cat_type == "GENERAL":
-        for kw in weak_keywords:
-            if kw in text:
-                cat_type = "WEAK"
-                summary = "קטליזטור חלש/לא מחייב – מומלץ להיזהר."
-                score = 3
-                break
-
-    return {"type": cat_type, "score": score, "summary": summary}
+    return {
+        "type": cat_type,
+        "score": score,
+        "summary": f"קטליזטור מסוג {cat_type} (ציון איכות: {score}/10)"
+    }
