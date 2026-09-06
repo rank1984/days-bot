@@ -1,6 +1,5 @@
 """
 DAYS-BOT V4.2 – Full Scan Engine
-Takes discovery candidates, runs deep analysis, returns Top 5
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -34,9 +33,6 @@ def _safe_call(func, default, *args, **kwargs):
 
 
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
-    """
-    Analyze candidates deeply, return Top 5 with trade plans.
-    """
     if not candidates:
         return []
 
@@ -49,7 +45,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         analysis = {}
 
-        # Float & Short (with safe fallback)
+        # Float & Short
         analysis['float_data'] = _safe_call(get_float_and_short, {}, ticker)
         analysis['float'] = analysis['float_data'].get('float')
         analysis['short_interest'] = analysis['float_data'].get('short_interest')
@@ -71,7 +67,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         # Personality
         analysis['personality'] = _safe_call(get_stock_personality, {}, ticker, c.get('gap_pct', 0))
 
-        # VWAP – FIXED: properly handle lookback_minutes
+        # VWAP
         vwap_data = _safe_call(calculate_vwap, {}, ticker, 30)
         if not vwap_data:
             vwap_data = _safe_call(calculate_pm_vwap_from_candidate, {}, c)
@@ -102,10 +98,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['analysis'] = analysis
         enriched.append(c)
 
-    # Sort by composite score
     enriched.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
-
-    # Return Top 5 (or fewer)
     top5 = enriched[:5] if len(enriched) >= 5 else enriched
 
     print(f"[FullScan] Returning {len(top5)} candidates")
