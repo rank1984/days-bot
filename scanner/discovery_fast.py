@@ -811,4 +811,150 @@ def fast_discovery() -> List[dict]:
 
     # -----------------------------------------------------------------
     # Sort strict candidates
-    # --------------------------------------
+    # -----------------------------------------------------------------
+
+    strict_candidates.sort(
+        key=lambda x: (
+            x.get("discovery_score", 0),
+            abs(x.get("gap_pct", 0)),
+            x.get("pm_volume", 0),
+        ),
+        reverse=True,
+    )
+
+    # -----------------------------------------------------------------
+    # If strict candidates exist, use them.
+    # -----------------------------------------------------------------
+
+    if strict_candidates:
+
+        result = strict_candidates[
+            :MAX_DISCOVERY_CANDIDATES
+        ]
+
+        print()
+        print(
+            "[FastDiscovery] STRICT candidates: "
+            f"{len(strict_candidates)}"
+        )
+
+        print(
+            "[FastDiscovery] Returning: "
+            f"{len(result)}"
+        )
+
+        _print_top_candidates(
+            result,
+            title="TOP STRICT CANDIDATES",
+        )
+
+        _print_diagnostics(
+            batches=batches,
+            successful_batches=successful_batches,
+            failed_batches=failed_batches,
+            requested_symbols=requested_symbols,
+            returned_snapshots=returned_snapshots,
+            valid_price=valid_price,
+            valid_prev_close=valid_prev_close,
+            parsed_raw=parsed_raw,
+            strict_candidates=len(strict_candidates),
+            fallback_candidates=len(fallback_candidates),
+            reject_price_low=reject_price_low,
+            reject_price_high=reject_price_high,
+            reject_gap=reject_gap,
+            reject_volume=reject_volume,
+            reject_invalid=reject_invalid,
+        )
+
+        print("=" * 74)
+
+        return result
+
+    # -----------------------------------------------------------------
+    # NO STRICT CANDIDATES
+    #
+    # Do NOT return [] silently.
+    #
+    # Use real parsed market data and return the strongest movers,
+    # explicitly marked FALLBACK_DISCOVERY.
+    # -----------------------------------------------------------------
+
+    print()
+    print(
+        "[FastDiscovery] WARNING: "
+        "No strict candidates."
+    )
+
+    if not fallback_candidates:
+        print(
+            "[FastDiscovery] CRITICAL: "
+            "No usable snapshots were parsed."
+        )
+
+        _print_diagnostics(
+            batches=batches,
+            successful_batches=successful_batches,
+            failed_batches=failed_batches,
+            requested_symbols=requested_symbols,
+            returned_snapshots=returned_snapshots,
+            valid_price=valid_price,
+            valid_prev_close=valid_prev_close,
+            parsed_raw=parsed_raw,
+            strict_candidates=len(strict_candidates),
+            fallback_candidates=len(fallback_candidates),
+            reject_price_low=reject_price_low,
+            reject_price_high=reject_price_high,
+            reject_gap=reject_gap,
+            reject_volume=reject_volume,
+            reject_invalid=reject_invalid,
+        )
+
+        print("=" * 74)
+
+        return []
+
+    fallback_candidates.sort(
+        key=lambda x: (
+            x.get("discovery_score", 0),
+            abs(x.get("gap_pct", 0)),
+            x.get("pm_volume", 0),
+        ),
+        reverse=True,
+    )
+
+    fallback_result = fallback_candidates[
+        :FALLBACK_LIMIT
+    ]
+
+    print()
+    print(
+        "[FastDiscovery] Using fallback discovery: "
+        f"{len(fallback_result)} real market movers"
+    )
+
+    _print_top_candidates(
+        fallback_result,
+        title="FALLBACK CANDIDATES (REAL MARKET DATA)",
+    )
+
+    _print_diagnostics(
+        batches=batches,
+        successful_batches=successful_batches,
+        failed_batches=failed_batches,
+        requested_symbols=requested_symbols,
+        returned_snapshots=returned_snapshots,
+        valid_price=valid_price,
+        valid_prev_close=valid_prev_close,
+        parsed_raw=parsed_raw,
+        strict_candidates=len(strict_candidates),
+        fallback_candidates=len(fallback_candidates),
+        reject_price_low=reject_price_low,
+        reject_price_high=reject_price_high,
+        reject_gap=reject_gap,
+        reject_volume=reject_volume,
+        reject_invalid=reject_invalid,
+    )
+
+    print("=" * 74)
+
+    return fallback_result
