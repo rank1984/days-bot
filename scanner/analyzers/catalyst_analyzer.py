@@ -1,15 +1,20 @@
 """
-Catalyst Analyzer – Temporary disabled (Gemini 404 fix)
-Returns default values without calling Gemini API.
+Catalyst Analyzer – Uses Gemini Pro for classification
 """
+import google.generativeai as genai
+from utils.config import GEMINI_API_KEY
 import json
 import re
+
+# Configure Gemini with Pro model
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
 
 def classify_catalyst(headlines: list) -> dict:
     """
-    Temporary fallback – returns default values without Gemini API call.
-    Fixes 404 error: gemini-1.5-flash not available.
+    Classify catalyst quality using Gemini Pro.
+    Returns: type, score (1-10), summary
     """
     if not headlines:
         return {
@@ -18,15 +23,55 @@ def classify_catalyst(headlines: list) -> dict:
             "summary": "אין חדשות אחרונות."
         }
 
-    # Simple heuristic: check if headlines look important
+    text = " ".join(headlines[:3])
+    prompt = f"""
+    You are a financial news analyst. Given these headlines about a stock:
+    "{text}"
+
+    Classify the catalyst:
+    1. Type: FDA_APPROVAL, EARNINGS, CONTRACT, PARTNERSHIP, M&A, GENERAL, WEAK, NO_NEWS
+    2. Quality score: 1-10 (10 = most significant, 1 = insignificant)
+    3. Summary in Hebrew: 1-2 sentences explaining the catalyst significance.
+
+    Return EXACTLY this JSON format:
+    {{"type": "...", "score": ..., "summary": "..."}}
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        text_response = response.text.strip()
+
+        # Extract JSON
+        json_match = re.search(r'\{.*\}', text_response, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            return {
+                "type": result.get("type", "GENERAL"),
+                "score": min(10, max(0, result.get("score", 5))),
+                "summary": result.get("summary", "קטליזטור כללי.")
+            }
+        else:
+            return {
+                "type": "GENERAL",
+                "score": 5,
+                "summary": "לא ניתן לסווג את הקטליזטור."
+            }
+
+    except Exception as e:
+        print(f"[Catalyst] Gemini error: {e}")
+        # Fallback to heuristic
+        return _fallback_classify(headlines)
+
+
+def _fallback_classify(headlines: list) -> dict:
+    """Simple heuristic fallback when Gemini fails."""
+    if not headlines:
+        return {"type": "NO_NEWS", "score": 0, "summary": "אין חדשות."}
+
     text = " ".join(headlines[:3]).upper()
-    important_keywords = ["FDA", "APPROVAL", "CONTRACT", "PARTNERSHIP", "EARNINGS", "BEAT", "RAISES", "GUIDANCE"]
-    weak_keywords = ["ANALYST", "UPGRADE", "INITIATES", "COVERAGE", "REITERATES"]
+    important = ["FDA", "APPROVAL", "CONTRACT", "PARTNERSHIP", "EARNINGS", "BEAT", "RAISES", "GUIDANCE"]
 
-    score = 5  # default middle
-    cat_type = "GENERAL"
-
-    if any(kw in text for kw in important_keywords):
+    if any(kw in text for kw in important):
         score = 8
         cat_type = "STRONG"
         if "FDA" in text or "APPROVAL" in text:
@@ -38,17 +83,12 @@ def classify_catalyst(headlines: list) -> dict:
         elif "CONTRACT" in text or "PARTNERSHIP" in text:
             cat_type = "CONTRACT"
             score = 8
-    elif any(kw in text for kw in weak_keywords):
-        score = 4
-        cat_type = "WEAK"
-
-    # If no keywords, it's probably general news
-    if score == 5 and not any(kw in text for kw in important_keywords + weak_keywords):
-        cat_type = "GENERAL"
+    else:
         score = 3
+        cat_type = "GENERAL"
 
     return {
         "type": cat_type,
         "score": score,
-        "summary": f"קטליזטור מסוג {cat_type} (ציון איכות: {score}/10)"
+        "summary": f"קטליזטור מסוג {cat_type} (ציון: {score}/10)"
     }
