@@ -19,8 +19,11 @@ def load_previous_learning(date_str: str = None) -> Dict[str, Any]:
         date_str = (datetime.now(ET) - timedelta(days=1)).strftime("%Y-%m-%d")
     path = LEARNING_PATH / f"{date_str}.json"
     if path.exists():
-        with open(path, 'r') as f:
-            return json.load(f)
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
     return {}
 
 
@@ -31,14 +34,15 @@ def save_learning(lesson: Dict[str, Any], date_str: str = None):
     LEARNING_PATH.mkdir(parents=True, exist_ok=True)
     path = LEARNING_PATH / f"{date_str}.json"
     with open(path, 'w') as f:
-        json.dump(lesson, f, indent=2)
+        json.dump(lesson, f, indent=2, default=str)
 
 
 def build_lesson(
     candidates: List[dict],
     top5: List[dict],
     discovery_stats: Dict[str, int],
-    previous_lesson: Dict[str, Any] = None
+    previous_lesson: Dict[str, Any] = None,
+    config_params: Dict[str, Any] = None
 ) -> Dict[str, Any]:
     """
     Build structured learning lesson from today's run
@@ -66,12 +70,16 @@ def build_lesson(
     for c in top5:
         top5_summary.append({
             "ticker": c.get("ticker"),
-            "price": c.get("price"),
-            "gap_pct": c.get("gap_pct"),
-            "pm_volume": c.get("pm_volume"),
+            "price": c.get("price", 0),
+            "gap_pct": c.get("gap_pct", 0),
+            "pm_volume": c.get("pm_volume", 0),
             "intraday_score": c.get("composite_score", 0),
             "swing_score": c.get("swing_score", 0),
-            "trade_type": c.get("trade_type", "WATCH")
+            "trade_type": c.get("trade_type", "WATCH"),
+            "entry": c.get("entry", 0),
+            "stop": c.get("stop", 0),
+            "target_1": c.get("target_1", 0),
+            "target_2": c.get("target_2", 0),
         })
 
     # 3. Find what changed vs previous day
@@ -94,15 +102,49 @@ def build_lesson(
     # 4. Recommendations (based on today's data)
     recommendations = []
 
-    # If many rejected by gap -> lower threshold?
+    # Gap rejection
     if funnel.get("rejected_gap", 0) > 300:
-        recommendations.append("הורד את DISCOVERY_MIN_GAP מ-3.0 ל-2.0 (הרבה מועמדים נפסלו בגלל גאפ)")
+        recommendations.append(
+            "הורד את DISCOVERY_MIN_GAP מ-3.0 ל-2.0 (הרבה מועמדים נפסלו בגלל גאפ)"
+        )
+    elif funnel.get("rejected_gap", 0) > 200:
+        recommendations.append(
+            "שקול להוריד את DISCOVERY_MIN_GAP ל-2.5 (גאפ נמוך יחסית היום)"
+        )
+
+    # Volume rejection
     if funnel.get("rejected_volume", 0) > 300:
-        recommendations.append("הורד את DISCOVERY_MIN_VOLUME מ-50,000 ל-25,000 (הרבה מועמדים נפסלו בגלל נפח)")
-    if funnel.get("strict_candidates", 0) < 10:
-        recommendations.append("שקול להרחיב את ה-Universe (למעל 500) או להקל על DISCOVERY_MIN_PRICE")
-    if funnel.get("snapshots_received", 0) < funnel.get("universe", 0) * 0.8:
-        recommendations.append("Alpaca החזיר פחות מ-80% מה-Universe – בדוק Rate Limit או Feed")
+        recommendations.append(
+            "הורד את DISCOVERY_MIN_VOLUME מ-50,000 ל-25,000 (הרבה מועמדים נפסלו בגלל נפח)"
+        )
+    elif funnel.get("rejected_volume", 0) > 200:
+        recommendations.append(
+            "שקול להוריד את DISCOVERY_MIN_VOLUME ל-35,000"
+        )
+
+    # Price rejection
+    if funnel.get("rejected_price_low", 0) > 80:
+        recommendations.append(
+            "הורד את DISCOVERY_MIN_PRICE מ-1.00 ל-0.80 (הרבה מניות זולות נפסלו)"
+        )
+    if funnel.get("rejected_price_high", 0) > 150:
+        recommendations.append(
+            "העלה את DISCOVERY_MAX_PRICE מ-30.00 ל-40.00 (הרבה מניות יקרות נפסלו)"
+        )
+
+    # Strict candidates too low
+    if funnel.get("strict_candidates", 0) < 10 and funnel.get("parsed_raw", 0) > 50:
+        recommendations.append(
+            "מעט מדי Strict Candidates – בדוק את המסננים: GAP, VOLUME, PRICE"
+        )
+
+    # Snapshots quality
+    snapshots = funnel.get("snapshots_received", 0)
+    universe = funnel.get("universe", 1)
+    if snapshots < universe * 0.7:
+        recommendations.append(
+            f"Alpaca החזיר {snapshots}/{universe} – בדוק Rate Limit או Feed"
+        )
 
     # 5. Lesson summary
     lesson = {
@@ -114,10 +156,70 @@ def build_lesson(
         "changes_vs_yesterday": changes,
         "recommendations": recommendations,
         "summary": f"היום נמצאו {len(candidates)} מועמדים, מתוכם {len(top5)} עברו לניתוח מלא.",
-        "trading_day": now.strftime("%A")
+        "trading_day": now.strftime("%A"),
+        "config_used": config_params or {},
+        "candidates_count": len(candidates),
     }
 
+    # If no recommendations, add positive feedback
+    if not recommendations and funnel.get("strict_candidates", 0) >= 15:
+        lesson["recommendations"].append(
+            "✅ מצב טוב! המשך עם הפרמטרים הנוכחיים."
+        )
+    elif not recommendations:
+        lesson["recommendations"].append(
+            "⚠️ אין מספיק נתונים להמלצה – תמשיך לעקוב."
+        )
+
     return lesson
+
+
+def format_lesson_for_telegram(lesson: Dict[str, Any]) -> str:
+    """Format lesson as Telegram message"""
+    lines = []
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📚 DAYS-BOT V4.3 – לקח יומי")
+    lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+
+    # Funnel
+    funnel = lesson.get("funnel", {})
+    lines.append("")
+    lines.append("🔎 משפך הגילוי:")
+    lines.append(f"  Universe:        {funnel.get('universe', 0)}")
+    lines.append(f"  Snapshots:       {funnel.get('snapshots_received', 0)}")
+    lines.append(f"  מועמדים קפדניים:  {funnel.get('strict_candidates', 0)}")
+    lines.append(f"  נפסלו: גאפ       {funnel.get('rejected_gap', 0)}")
+    lines.append(f"  נפסלו: נפח       {funnel.get('rejected_volume', 0)}")
+
+    # Top5
+    top5 = lesson.get("top5", [])
+    lines.append("")
+    lines.append("🏆 TOP 5:")
+    for i, t in enumerate(top5, 1):
+        lines.append(f"  {i}. {t['ticker']:6s} | Intraday={t['intraday_score']:.0f} | Swing={t['swing_score']:.0f} | {t['trade_type']}")
+
+    # Changes
+    changes = lesson.get("changes_vs_yesterday", {})
+    if changes:
+        lines.append("")
+        lines.append("📈 שינויים מאתמול:")
+        for key, val in list(changes.items())[:4]:
+            arrow = "🔼" if val['direction'] == "up" else "🔽"
+            lines.append(f"  {key}: {val['previous']} → {val['current']} {arrow}")
+
+    # Recommendations
+    recommendations = lesson.get("recommendations", [])
+    if recommendations:
+        lines.append("")
+        lines.append("💡 המלצות:")
+        for rec in recommendations[:3]:
+            lines.append(f"  • {rec}")
+
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("🤖 DAYS-BOT – למידה יומית")
+    return "\n".join(lines)
 
 
 def print_lesson(lesson: Dict[str, Any]):
@@ -150,7 +252,7 @@ def print_lesson(lesson: Dict[str, Any]):
     changes = lesson.get("changes_vs_yesterday", {})
     if changes:
         print("\n📈 CHANGES VS YESTERDAY")
-        for key, val in changes.items():
+        for key, val in list(changes.items())[:5]:
             print(f"  {key}: {val['previous']} → {val['current']} ({val['direction']})")
 
     # Recommendations
