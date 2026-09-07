@@ -1,5 +1,5 @@
 """
-DAYS-BOT V4.3 – Volume Analyzer (RVOL)
+DAYS-BOT V5.0 – Volume Analyzer (RVOL)
 RVOL is INFORMATIONAL only – does NOT affect Data Completeness or Trade decisions.
 """
 import pytz
