@@ -4,12 +4,16 @@ Uses Alpaca historical intraday data for time-adjusted RVOL.
 """
 import pytz
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Optional
+from statistics import median
 from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
 
 ET = pytz.timezone("America/New_York")
 BARS_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/bars"
+
+PM_START = time(4, 0)
+PM_END = time(9, 30)
 
 
 def _headers() -> dict:
@@ -24,14 +28,16 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
     """
     Get historical premarket volume for the same time window.
     Uses Alpaca 1-minute bars with IEX feed.
+
+    Returns median PM volume from previous trading days.
     """
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("[RVOL] ⚠️ Alpaca API keys missing")
         return None
 
     now_et = datetime.now(ET)
-    current_time = now_et.time()
     target_date = now_et.date()
+    current_time = now_et.time()
 
     start = now_et - timedelta(days=lookback_days + 1)
 
@@ -75,13 +81,12 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
             bar_time = ts_et.time()
             bar_date = ts_et.date()
 
-            # Only PM window (04:00-09:30) and up to current time
-            # Convert to decimal hours for reliable comparison
-            hour = bar_time.hour + bar_time.minute / 60.0
-            if not (4.0 <= hour < 9.5):
+            # Only PM window (04:00-09:30)
+            if not (PM_START <= bar_time < PM_END):
                 continue
-            # Only up to current time
-            if bar_time > current_time:
+
+            # For today only: only up to current time
+            if bar_date == target_date and bar_time > current_time:
                 continue
 
             if bar_date not in daily_volumes:
@@ -99,9 +104,10 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
             print(f"[RVOL] ⚠️ Insufficient historical days: {len(historical)}")
             return None
 
-        avg_volume = sum(historical) / len(historical)
-        print(f"[RVOL] ✅ Average historical PM volume: {avg_volume:.0f}")
-        return avg_volume
+        # Use median to avoid outliers
+        historical_reference = median(historical)
+        print(f"[RVOL] ✅ Median historical PM volume: {historical_reference:.0f}")
+        return historical_reference
 
     except Exception as e:
         print(f"[RVOL] ❌ Error: {e}")
@@ -110,7 +116,7 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
 
 def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
     """
-    Fallback to yfinance daily average volume.
+    Fallback to yfinance daily average volume (temporary).
     """
     try:
         import yfinance as yf
@@ -121,13 +127,11 @@ def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
             print(f"[RVOL] ⚠️ No yfinance data for {ticker}")
             return None
 
-        # Get the volume series
         vol_series = data['Volume'].dropna()
         if len(vol_series) == 0:
             print(f"[RVOL] ⚠️ No volume data for {ticker}")
             return None
 
-        # Use last 30 days, or all available if less
         if len(vol_series) >= 30:
             avg_volume = float(vol_series.iloc[-30:].mean())
         else:
@@ -167,20 +171,20 @@ def calculate_rvol(candidate: dict) -> dict:
         }
 
     # Try Alpaca historical data first
-    historical_avg = _get_historical_pm_volume(ticker)
+    historical_median = _get_historical_pm_volume(ticker)
 
-    if historical_avg is not None and historical_avg > 0:
-        rvol = round(pm_volume / historical_avg, 2)
+    if historical_median is not None and historical_median > 0:
+        rvol = round(pm_volume / historical_median, 2)
         print(f"[RVOL] ✅ RVOL = {rvol} (TIME_ADJUSTED)")
         return {
             "rvol": rvol,
             "status": "TIME_ADJUSTED",
-            "method": "Alpaca 1-min bars, same time window",
+            "method": "Alpaca 1-min bars, same time window (median)",
             "pm_volume": pm_volume,
-            "reference_volume": round(historical_avg)
+            "reference_volume": round(historical_median)
         }
 
-    # Fallback: use yfinance
+    # Fallback: use yfinance (temporary)
     fallback = _yfinance_fallback(ticker, pm_volume)
     if fallback:
         return fallback
