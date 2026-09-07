@@ -1,49 +1,41 @@
+"""
+DAYS-BOT V4.4 – Telegram Formatter (with Dynamic Scores)
+"""
 import requests
 from datetime import datetime
 import pytz
+
 ET = pytz.timezone("America/New_York")
 
+
 def send_message(token: str, chat_id: str, text: str) -> bool:
-    if not token or not chat_id: return False
+    if not token or not chat_id:
+        return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for parse_mode in ["HTML", None]:
         try:
-            payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
-            if parse_mode: payload["parse_mode"] = parse_mode
+            payload = {
+                "chat_id": chat_id,
+                "text": text,
+                "disable_web_page_preview": True,
+            }
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             resp = requests.post(url, json=payload, timeout=30)
-            if resp.status_code == 200: return True
-        except: continue
+            if resp.status_code == 200:
+                return True
+        except:
+            continue
     return False
 
-def _state_icon(state: str) -> str:
-    icons = {
-        "ACCUMULATION": "🔄",
-        "PRESSURE": "⏳",
-        "BREAKOUT": "🚀",
-        "MOMENTUM": "⚡",
-        "EXHAUSTION": "🔻",
-        "FADE": "📉",
-        "UNKNOWN": "❓",
-    }
-    return icons.get(state, "❓")
-
-def _action_icon(trade_type: str, data_status: str) -> str:
-    if data_status == "NO_TRADE":
-        return "🔴 NO TRADE"
-    if data_status == "WATCH":
-        return "👀 WATCH"
-    if trade_type in ["INTRADAY", "BOTH"]:
-        return "✅ TRADE CANDIDATE"
-    if trade_type == "SWING_1_3D":
-        return "🟣 SWING CANDIDATE"
-    return "👀 WATCH"
 
 def format_research_report(candidates: list, now_et: datetime) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚀 DAYS-BOT V5.0 – EARLY MOVE RESEARCH")
+    lines.append("🚀 DAYS-BOT V4.4 – דוח מחקר יומי")
     lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
+
     if not candidates:
         lines.append("😴 לא נמצאו מועמדים למסחר")
         lines.append("⏳ הסריקה הבאה בעוד 15 דקות")
@@ -52,91 +44,155 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         return "\n".join(lines)
 
     top5 = sorted(candidates, key=lambda x: x.get('composite_score', 0), reverse=True)[:5]
+
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🏆 חמשת המועמדים המובילים")
+    lines.append("🏆 TOP 5")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
+
     for i, c in enumerate(top5, 1):
-        early_state = c.get('early_state', 'UNKNOWN')
-        state_icon = _state_icon(early_state)
-        day_trade = c.get('day_trade_score', 0)
-        swing = c.get('swing_score', 0)
         trade_type = c.get('trade_type', 'WATCH')
-        action = _action_icon(trade_type, c.get('data_status', 'NO_TRADE'))
+        icon = "🟢" if "INTRADAY" in trade_type else "🟣" if "SWING" in trade_type else "🟡"
 
-        lines.append(f"{i}️⃣ {c['ticker']} — {state_icon} {early_state}")
-        lines.append(f"  Early Move: {c.get('early_score', 0):.0f}/100")
-        lines.append(f"  Day Trade:  {day_trade:.0f}/100  |  Swing 1-3D: {swing:.0f}/100")
-        lines.append(f"  Action: {action}")
-        lines.append(f"  Gap: {c.get('gap_pct', 0):+.1f}%  |  Price: ${c.get('price', 0):.2f}")
-        lines.append(f"  PM Volume: {c.get('pm_volume', 0):,}")
-        # Behavioral tags (if available)
-        comps = c.get('early_components', {})
-        tags = []
-        if comps.get('pullback_buying', 0) > 60: tags.append("✅ Pullbacks Bought")
-        if comps.get('pmh_pressure', 0) > 60: tags.append("✅ PMH Pressure")
-        if comps.get('volume_acceleration', 0) > 60: tags.append("✅ Vol Accelerating")
-        if comps.get('price_acceleration', 0) > 60: tags.append("✅ Price Accel")
-        if comps.get('vwap_control', 0) > 60: tags.append("✅ Above VWAP")
-        if tags:
-            lines.append("  Behavior: " + " | ".join(tags[:3]))
-        lines.append("  Catalyst: " + c.get('catalyst_type', 'UNAVAILABLE'))
-        lines.append("  Float: " + (f"{c.get('float', 0):,.0f}" if c.get('float') else "N/A"))
-        lines.append("  Short: " + (f"{c.get('short_interest', 0)*100:.1f}%" if c.get('short_interest') else "N/A"))
-        sec = c.get('sec_risk_level', 'LOW')
-        sec_map = {"LOW":"✅ Low","MEDIUM":"🟡 Medium","HIGH":"🔴 High","CRITICAL":"🚨 Critical"}
-        lines.append(f"  SEC Risk: {sec_map.get(sec, sec)}")
-        if c.get('plan_valid', False):
-            lines.append(f"  Entry: ${c.get('entry', 0):.2f} | Stop: ${c.get('stop', 0):.2f}")
-            lines.append(f"  T1: ${c.get('target_1', 0):.2f} | T2: ${c.get('target_2', 0):.2f}")
+        # Get scores (try dynamic first, fallback to old)
+        day_score = c.get('day_trade_score', c.get('composite_score', 0))
+        swing_score = c.get('swing_score', 0)
+        early_score = c.get('early_score', 0)
+        early_state = c.get('early_state', 'UNKNOWN')
+
+        type_hebrew = {
+            "INTRADAY": "מסחר יומי",
+            "SWING_1_3D": "החזקה 1–3 ימים",
+            "BOTH": "שניהם",
+            "WATCH": "מעקב",
+            "NO_TRADE": "אין מסחר"
+        }.get(trade_type, trade_type)
+
+        lines.append(f"{i}️⃣ {c['ticker']}")
+        lines.append(f"  סטטוס: {early_state} (Early: {early_score:.0f}/100)")
+        lines.append(f"  Day Trade: {day_score:.0f}/100 | Swing: {swing_score:.0f}/100")
+        lines.append(f"  סוג: {icon} {type_hebrew}")
+        lines.append(f"  מחיר: ${c.get('price', 0):.2f} | גאפ: {c.get('gap_pct', 0):+.1f}%")
+        lines.append(f"  נפח PM: {c.get('pm_volume', 0):,}")
+
+        # Data completeness
+        completeness = c.get('data_completeness', {})
+        status = completeness.get('status', 'NO_TRADE')
+        missing = completeness.get('missing', [])
+        if status == 'ACTIONABLE':
+            lines.append("  סטטוס נתונים: ✅ כל הנתונים תקינים")
+        elif status == 'WATCH':
+            lines.append(f"  סטטוס נתונים: 🟡 חסרים: {', '.join(missing)} – מעקב")
         else:
-            lines.append(f"  ⚠️ {c.get('plan_error', 'No trade plan')}")
+            lines.append("  סטטוס נתונים: 🔴 חסרים נתונים קריטיים")
+
+        # Spread
+        spread = c.get('spread_pct')
+        if spread is None:
+            spread_str = "לא זמין"
+        else:
+            spread_str = f"{spread:.2f}% ⚠️" if spread > 2.0 else f"{spread:.2f}%"
+        lines.append(f"  מרווח (Spread): {spread_str}")
+
+        # Catalyst
+        cat_type = c.get('catalyst_type', 'UNAVAILABLE')
+        cat_score = c.get('catalyst_score', 0)
+        if cat_type != "UNAVAILABLE":
+            type_names = {
+                "FDA_APPROVAL": "אישור FDA",
+                "EARNINGS": "דוחות",
+                "CONTRACT": "חוזה",
+                "PARTNERSHIP": "שותפות",
+                "M&A": "מיזוג",
+                "STRONG": "חזק",
+                "WEAK": "חלש",
+                "GENERAL": "כללי",
+                "NO_NEWS": "אין חדשות"
+            }
+            name = type_names.get(cat_type, cat_type)
+            lines.append(f"  זרז: {name} (ציון: {cat_score}/10)")
+        else:
+            lines.append(f"  זרז: לא זמין")
+
+        # Float & Short
+        float_val = c.get('float')
+        short = c.get('short_interest')
+        if float_val:
+            lines.append(f"  Float: {float_val:,.0f}")
+        if short:
+            lines.append(f"  Short Interest: {short*100:.1f}%")
+
+        # SEC
+        sec_level = c.get('sec_risk_level', 'LOW')
+        sec_map = {"LOW": "נמוך", "MEDIUM": "בינוני", "HIGH": "גבוה ⚠️", "CRITICAL": "קריטי 🚨"}
+        lines.append(f"  סיכון SEC: {sec_map.get(sec_level, sec_level)}")
+
+        # Trade Plan
+        if c.get('plan_valid', False):
+            lines.append(f"  כניסה: ${c.get('entry', 0):.2f} | סטופ: ${c.get('stop', 0):.2f}")
+            lines.append(f"  יעד 1: ${c.get('target_1', 0):.2f} | יעד 2: ${c.get('target_2', 0):.2f}")
+            lines.append(f"  מניות: {c.get('position_size', 0)} | הפסד מקס': ${c.get('max_loss', 0):.2f}")
+        else:
+            lines.append(f"  ⚠️ {c.get('plan_error', 'אין תוכנית מסחר')}")
+
         lines.append("")
 
-    # Best by Early Move
-    top_early = sorted(candidates, key=lambda x: x.get('early_score', 0), reverse=True)[0] if candidates else None
-    if top_early and top_early.get('early_score', 0) >= 60:
+    # Best Day Trade
+    day_best = next((c for c in top5 if c.get('trade_type') in ['INTRADAY', 'BOTH'] and c.get('data_status') == 'ACTIONABLE'), None)
+    if day_best:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🚨 EARLY ALERT")
+        lines.append("🟢 המועמדת המובילה למסחר יומי")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"{top_early['ticker']} — {_state_icon(top_early.get('early_state', 'UNKNOWN'))} {top_early.get('early_state', 'UNKNOWN')}")
-        lines.append(f"Early Move: {top_early.get('early_score', 0):.0f}/100")
-        if top_early.get('early_state') in ["PRESSURE", "BREAKOUT"]:
-            lines.append("⏳ Watch PMH for breakout confirmation.")
-        elif top_early.get('early_state') == "ACCUMULATION":
-            lines.append("🔄 Accumulation detected – monitor for pressure build.")
-        elif top_early.get('early_state') == "MOMENTUM":
-            lines.append("⚡ Momentum building – watch for continuation.")
+        lines.append(f"{day_best['ticker']}")
+        lines.append(f"Day Trade Score: {day_best.get('day_trade_score', 0):.0f}/100")
+        lines.append(f"State: {day_best.get('early_state', 'UNKNOWN')}")
+        lines.append(f"Entry: ${day_best.get('entry', 0):.2f}")
+        lines.append(f"Stop: ${day_best.get('stop', 0):.2f}")
+        lines.append(f"T1: ${day_best.get('target_1', 0):.2f}")
+        lines.append(f"T2: ${day_best.get('target_2', 0):.2f}")
         lines.append("")
 
-    # Decision summary
-    actionable = [c for c in candidates if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']]
+    # Best Swing
+    swing_best = next((c for c in top5 if c.get('trade_type') in ['SWING_1_3D', 'BOTH'] and c.get('data_status') == 'ACTIONABLE'), None)
+    if swing_best:
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("🟣 המועמדת המובילה להחזקה 1–3 ימים")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"{swing_best['ticker']}")
+        lines.append(f"Swing Score: {swing_best.get('swing_score', 0):.0f}/100")
+        lines.append(f"State: {swing_best.get('early_state', 'UNKNOWN')}")
+        lines.append(f"Entry: ${swing_best.get('entry', 0):.2f}")
+        lines.append(f"Stop: ${swing_best.get('stop', 0):.2f}")
+        lines.append(f"T1: ${swing_best.get('target_1', 0):.2f}")
+        lines.append(f"T2: ${swing_best.get('target_2', 0):.2f}")
+        lines.append("")
+
+    # Decision
+    actionable = [c for c in top5 if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']]
     if actionable:
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("✅ החלטה: נמצאו מועמדויות למסחר")
         best = actionable[0]
-        lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("✅ TRADE CANDIDATE")
-        lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"{best['ticker']} | Day Trade: {best.get('day_trade_score', 0):.0f} | Swing: {best.get('swing_score', 0):.0f}")
-        if best.get('plan_valid'):
-            lines.append(f"Entry: ${best.get('entry', 0):.2f} | Stop: ${best.get('stop', 0):.2f}")
-        lines.append("⚠️ Manual execution only")
+        lines.append(f"📌 המועמדת המובילה: {best['ticker']} (Day {best.get('day_trade_score', 0):.0f} | Swing {best.get('swing_score', 0):.0f})")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("🚫 NO TRADE CANDIDATE TODAY")
-        lines.append("Top 5 are research candidates – check Early Alert for potential setups.")
+        lines.append("🚫 החלטה: אין מסחר היום")
+        lines.append("אף מועמד לא עבר את רף האיכות.")
 
     lines.append("")
-    lines.append("⏳ Next scan: 09:30 ET")
+    lines.append("⏳ הסריקה הבאה: 09:30 ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ BOT DOES NOT EXECUTE ORDERS")
+    lines.append("⚠️ ביצוע ידני בלבד")
     return "\n".join(lines)
+
 
 def format_lesson_for_telegram(lesson: dict) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📚 DAYS-BOT V5.0 – לקח יומי")
+    lines.append("📚 DAYS-BOT V4.4 – לקח יומי")
     lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
+
     funnel = lesson.get("funnel", {})
     lines.append("")
     lines.append("🔎 משפך הגילוי:")
@@ -149,13 +205,21 @@ def format_lesson_for_telegram(lesson: dict) -> str:
     lines.append("")
     lines.append("🏆 חמשת המובילים:")
     for i, t in enumerate(top5, 1):
-        type_hebrew = {"INTRADAY":"יומי","SWING_1_3D":"Swing","BOTH":"שניהם","WATCH":"מעקב"}.get(t.get('trade_type','WATCH'), t.get('trade_type','WATCH'))
-        lines.append(f"  {i}. {t['ticker']:6s} | Early={t.get('early_score', 0):.0f} | Day={t.get('day_trade_score', 0):.0f} | Swing={t.get('swing_score', 0):.0f} | {type_hebrew}")
+        type_hebrew = {
+            "INTRADAY": "יומי",
+            "SWING_1_3D": "Swing",
+            "BOTH": "שניהם",
+            "WATCH": "מעקב"
+        }.get(t.get('trade_type', 'WATCH'), t.get('trade_type', 'WATCH'))
+        lines.append(f"  {i}. {t['ticker']:6s} | Day={t.get('day_trade_score', t.get('intraday_score', 0)):.0f} | Swing={t.get('swing_score', 0):.0f} | {type_hebrew}")
+
     recommendations = lesson.get("recommendations", [])
     if recommendations:
         lines.append("")
         lines.append("💡 המלצות לשיפור:")
-        for rec in recommendations[:3]: lines.append(f"  • {rec}")
+        for rec in recommendations[:3]:
+            lines.append(f"  • {rec}")
+
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
     lines.append("🤖 DAYS-BOT – למידה יומית")
