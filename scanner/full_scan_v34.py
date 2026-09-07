@@ -1,8 +1,7 @@
 """
 DAYS-BOT V4.3 – Full Scan Engine
-- Takes discovery candidates, runs deep analysis
-- Ensures ALL fields are propagated from candidate → analysis → DB → Telegram
-- No fake data – uses UNAVAILABLE when data is missing
+- Propagates ALL fields from candidate → analysis → DB → Telegram
+- Implements Data Completeness Gate: missing critical data prevents TRADE
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -26,7 +25,6 @@ ET = pytz.timezone("America/New_York")
 
 
 def _safe_call(func, default, *args, **kwargs):
-    """Safely call a function, return default on exception."""
     try:
         return func(*args, **kwargs)
     except Exception as e:
@@ -34,10 +32,50 @@ def _safe_call(func, default, *args, **kwargs):
         return default
 
 
+def _check_data_completeness(candidate: dict) -> dict:
+    """
+    Check if critical data is available.
+    Returns: {"complete": bool, "missing": list, "status": "ACTIONABLE"|"WATCH"|"NO_TRADE"}
+    """
+    missing = []
+    critical_fields = [
+        ("price", "מחיר"),
+        ("gap_pct", "גאפ"),
+        ("pm_volume", "נפח PM"),
+        ("pm_high", "PM High"),
+        ("pm_vwap", "VWAP"),
+        ("spread_pct", "מרווח"),
+        ("rvol", "RVOL"),
+        ("catalyst_type", "קטליזטור"),
+        ("sec_risk_level", "SEC Risk"),
+    ]
+
+    for field, label in critical_fields:
+        value = candidate.get(field)
+        if value is None or value == "UNAVAILABLE" or value == "":
+            missing.append(label)
+
+    # Special case: spread_pct can be None (UNAVAILABLE) but if it's a number, it's ok
+    if candidate.get("spread_pct") is not None and candidate.get("spread_pct") != "UNAVAILABLE":
+        if field == "spread_pct":
+            missing.remove("מרווח") if "מרווח" in missing else None
+
+    # Determine status
+    if len(missing) == 0:
+        status = "ACTIONABLE"
+    elif len(missing) <= 2:
+        status = "WATCH"
+    else:
+        status = "NO_TRADE"
+
+    return {
+        "complete": len(missing) == 0,
+        "missing": missing,
+        "status": status
+    }
+
+
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
-    """
-    Analyze candidates deeply, return Top 5 with ALL fields propagated.
-    """
     if not candidates:
         return []
 
@@ -48,44 +86,31 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         ticker = c.get('ticker', 'UNKNOWN')
         print(f"[FullScan] {idx+1}/{min(len(candidates), 25)} {ticker}")
 
-        # ============================================================
-        # ANALYSIS CONTAINER – we will collect all data here
-        # ============================================================
         analysis = {}
 
-        # ------------------------------------------------------------
-        # 1. BASIC CANDIDATE FIELDS (already in c, but we ensure they exist)
-        # ------------------------------------------------------------
-        # pm_data_quality – from discovery
+        # Ensure basic fields exist
         if 'pm_data_quality' not in c or c['pm_data_quality'] is None:
             c['pm_data_quality'] = 'UNKNOWN_PM_DATA'
         analysis['pm_data_quality'] = c['pm_data_quality']
 
-        # price, gap, volume – should exist
         c['price'] = c.get('price', 0)
         c['gap_pct'] = c.get('gap_pct', 0)
         c['pm_volume'] = c.get('pm_volume', 0)
+        c['pm_high'] = c.get('pm_high', 0)
+        c['pm_vwap'] = c.get('pm_vwap', 0)
 
-        # Spread – from discovery (Alpaca provides bid/ask)
-        if 'spread_pct' not in c or c['spread_pct'] is None:
-            c['spread_pct'] = 'UNAVAILABLE'
+        # Spread – from discovery
+        spread = c.get('spread_pct')
+        if spread is None or spread == "UNAVAILABLE":
+            c['spread_pct'] = None
         analysis['spread_pct'] = c['spread_pct']
 
-        # Bid/Ask – propagate if available
         c['bid'] = c.get('bid', None)
         c['ask'] = c.get('ask', None)
         analysis['bid'] = c['bid']
         analysis['ask'] = c['ask']
 
-        # PM High / VWAP
-        c['pm_high'] = c.get('pm_high', 0)
-        c['pm_vwap'] = c.get('pm_vwap', 0)
-        analysis['pm_high'] = c['pm_high']
-        analysis['pm_vwap'] = c['pm_vwap']
-
-        # ------------------------------------------------------------
-        # 2. RVOL (with status)
-        # ------------------------------------------------------------
+        # RVOL
         rvol_data = _safe_call(calculate_rvol, {}, c)
         if isinstance(rvol_data, dict):
             c['rvol'] = rvol_data.get('rvol', None)
@@ -99,15 +124,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['rvol_status'] = c['rvol_status']
         analysis['rvol_method'] = c['rvol_method']
 
-        # ------------------------------------------------------------
-        # 3. Relative Strength
-        # ------------------------------------------------------------
+        # RS
         analysis['rs'] = _safe_call(get_relative_strength, None, ticker)
         c['rs'] = analysis['rs']
 
-        # ------------------------------------------------------------
-        # 4. News & Catalyst
-        # ------------------------------------------------------------
+        # News & Catalyst
         analysis['news'] = _safe_call(fetch_news, [], ticker)
         c['news'] = analysis['news']
 
@@ -122,15 +143,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['catalyst_summary'] = ''
         analysis['catalyst'] = catalyst
 
-        # ------------------------------------------------------------
-        # 5. Sentiment (StockTwits)
-        # ------------------------------------------------------------
+        # Sentiment
         analysis['sentiment'] = _safe_call(get_stocktwits_sentiment, {}, ticker)
         c['sentiment'] = analysis['sentiment']
 
-        # ------------------------------------------------------------
-        # 6. SEC Risk
-        # ------------------------------------------------------------
+        # SEC Risk
         analysis['sec_risk'] = _safe_call(check_offering_risk, {}, ticker)
         c['sec_risk'] = analysis['sec_risk']
         if isinstance(analysis['sec_risk'], dict):
@@ -140,9 +157,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['sec_risk_level'] = 'LOW'
             c['sec_has_offering'] = False
 
-        # ------------------------------------------------------------
-        # 7. Float & Short
-        # ------------------------------------------------------------
+        # Float & Short
         analysis['float_data'] = _safe_call(get_float_and_short, {}, ticker)
         c['float'] = analysis['float_data'].get('float')
         c['short_interest'] = analysis['float_data'].get('short_interest')
@@ -150,15 +165,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['float'] = c['float']
         analysis['short_interest'] = c['short_interest']
 
-        # ------------------------------------------------------------
-        # 8. Personality
-        # ------------------------------------------------------------
+        # Personality
         analysis['personality'] = _safe_call(get_stock_personality, {}, ticker, c.get('gap_pct', 0))
         c['personality'] = analysis['personality']
 
-        # ------------------------------------------------------------
-        # 9. VWAP (dynamic)
-        # ------------------------------------------------------------
+        # VWAP
         vwap_data = _safe_call(calculate_vwap, {}, ticker, 30)
         if not vwap_data:
             vwap_data = _safe_call(calculate_pm_vwap_from_candidate, {}, c)
@@ -171,15 +182,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         else:
             c['vwap'] = 0
 
-        # ------------------------------------------------------------
-        # 10. Sympathy
-        # ------------------------------------------------------------
+        # Sympathy
         analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3)
         c['sympathy'] = analysis['sympathy']
 
-        # ------------------------------------------------------------
-        # 11. Trade Plan
-        # ------------------------------------------------------------
+        # Trade Plan
         plan = _safe_call(
             build_trade_plan,
             {},
@@ -197,22 +204,27 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # ------------------------------------------------------------
-        # 12. Composite Score
-        # ------------------------------------------------------------
+        # Composite Score
         c['composite_score'] = _safe_call(calculate_composite_score, 0, c, analysis)
 
-        # ------------------------------------------------------------
-        # 13. Store all analysis for later
-        # ------------------------------------------------------------
-        c['analysis'] = analysis
+        # Data Completeness Gate
+        completeness = _check_data_completeness(c)
+        c['data_completeness'] = completeness
+        c['data_status'] = completeness['status']
 
+        # Override trade_type if data is incomplete
+        if completeness['status'] == 'NO_TRADE':
+            c['trade_type'] = 'NO_TRADE'
+        elif completeness['status'] == 'WATCH' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']:
+            c['trade_type'] = 'WATCH'
+
+        # Store analysis
+        c['analysis'] = analysis
         enriched.append(c)
 
     # Sort by composite score
     enriched.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
 
-    # Return Top 5 (or fewer)
     top5 = enriched[:5] if len(enriched) >= 5 else enriched
 
     print(f"[FullScan] Returning {len(top5)} candidates")
