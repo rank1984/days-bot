@@ -24,7 +24,7 @@ def _headers() -> dict:
     }
 
 
-def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[float]:
+def _get_historical_pm_volume(ticker: str, lookback_days: int = 10) -> Optional[float]:
     """
     Get historical premarket volume for the same time window.
     Uses Alpaca 1-minute bars with IEX feed.
@@ -116,7 +116,7 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
 
 def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
     """
-    Fallback to yfinance daily average volume (temporary).
+    Fallback to yfinance daily average volume.
     """
     try:
         import yfinance as yf
@@ -127,15 +127,19 @@ def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
             print(f"[RVOL] ⚠️ No yfinance data for {ticker}")
             return None
 
+        # Get the volume series and convert to float list
         vol_series = data['Volume'].dropna()
         if len(vol_series) == 0:
             print(f"[RVOL] ⚠️ No volume data for {ticker}")
             return None
 
-        if len(vol_series) >= 30:
-            avg_volume = float(vol_series.iloc[-30:].mean())
+        # Convert to list of floats
+        volumes = [float(v) for v in vol_series.values]
+
+        if len(volumes) >= 30:
+            avg_volume = sum(volumes[-30:]) / 30
         else:
-            avg_volume = float(vol_series.mean())
+            avg_volume = sum(volumes) / len(volumes)
 
         if avg_volume > 0:
             rvol = round(pm_volume / avg_volume, 2)
@@ -170,8 +174,8 @@ def calculate_rvol(candidate: dict) -> dict:
             "reference_volume": 0
         }
 
-    # Try Alpaca historical data first
-    historical_median = _get_historical_pm_volume(ticker)
+    # Try Alpaca historical data first (10 days lookback)
+    historical_median = _get_historical_pm_volume(ticker, lookback_days=10)
 
     if historical_median is not None and historical_median > 0:
         rvol = round(pm_volume / historical_median, 2)
@@ -179,12 +183,12 @@ def calculate_rvol(candidate: dict) -> dict:
         return {
             "rvol": rvol,
             "status": "TIME_ADJUSTED",
-            "method": "Alpaca 1-min bars, same time window (median)",
+            "method": "Alpaca 1-min bars, same time window (median, 10 days)",
             "pm_volume": pm_volume,
             "reference_volume": round(historical_median)
         }
 
-    # Fallback: use yfinance (temporary)
+    # Fallback: use yfinance
     fallback = _yfinance_fallback(ticker, pm_volume)
     if fallback:
         return fallback
