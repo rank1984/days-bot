@@ -15,7 +15,7 @@ from scanner.analyzers.volume_analyzer import calculate_rvol
 from scanner.analyzers.rs_analyzer import get_relative_strength
 from scanner.analyzers.personality_analyzer import get_stock_personality
 from scanner.analyzers.sympathy_scanner import find_sympathy_candidates
-from scanner.vwap_engine import calculate_vwap, calculate_pm_vwap_from_candidate
+from scanner.vwap_engine import calculate_vwap
 from risk.trade_plan_v34 import build_trade_plan
 from scanner.scoring_engine import calculate_composite_score
 from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
@@ -34,7 +34,7 @@ def _safe_call(func, default, *args, **kwargs):
 def _check_data_completeness(candidate: dict) -> dict:
     """
     Check if critical data is available.
-    Returns: {"complete": bool, "missing": list, "status": "ACTIONABLE"|"WATCH"|"NO_TRADE"}
+    RVOL is INFORMATIONAL only – does NOT affect completeness.
     """
     missing = []
     critical_fields = [
@@ -43,7 +43,6 @@ def _check_data_completeness(candidate: dict) -> dict:
         ("pm_volume", "נפח PM"),
         ("pm_high", "PM High"),
         ("pm_vwap", "VWAP"),
-        ("rvol", "RVOL"),
         ("catalyst_type", "קטליזטור"),
         ("sec_risk_level", "SEC Risk"),
     ]
@@ -90,7 +89,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         # ------------------------------------------------------------
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker)
         if pm_data and pm_data.get('error') is None:
-            # Use real PM data
             c['pm_high'] = pm_data.get('pm_high')
             c['pm_low'] = pm_data.get('pm_low')
             c['pm_vwap'] = pm_data.get('pm_vwap')
@@ -98,17 +96,13 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_bars'] = pm_data.get('pm_bars_count', 0)
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
             c['pm_dist_signed'] = ((c['price'] - c['pm_high']) / c['pm_high']) * 100.0 if c['pm_high'] and c['pm_high'] > 0 else None
-            print(f"[FullScan] PM data: high={c['pm_high']}, vwap={c['pm_vwap']}, bars={c['pm_bars']}")
         else:
-            # No real PM data – mark as UNAVAILABLE (not fake)
             c['pm_high'] = None
             c['pm_low'] = None
             c['pm_vwap'] = None
-            c['pm_volume'] = c.get('pm_volume', 0)  # keep snapshot volume as fallback
             c['pm_bars'] = 0
             c['pm_data_quality'] = 'UNAVAILABLE'
             c['pm_dist_signed'] = None
-            print(f"[FullScan] ⚠️ No PM data for {ticker}")
 
         analysis['pm_data_quality'] = c['pm_data_quality']
 
@@ -127,7 +121,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['bid'] = c['bid']
         analysis['ask'] = c['ask']
 
-        # RVOL
+        # RVOL – INFORMATIONAL ONLY
         rvol_data = _safe_call(calculate_rvol, {}, c)
         if isinstance(rvol_data, dict):
             c['rvol'] = rvol_data.get('rvol', None)
@@ -139,7 +133,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['rvol_method'] = 'UNAVAILABLE'
         analysis['rvol'] = c['rvol']
         analysis['rvol_status'] = c['rvol_status']
-        analysis['rvol_method'] = c['rvol_method']
 
         # RS
         analysis['rs'] = _safe_call(get_relative_strength, None, ticker)
@@ -174,7 +167,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['sec_risk_level'] = 'LOW'
             c['sec_has_offering'] = False
 
-        # Float & Short (FMP or fallback)
+        # Float & Short
         analysis['float_data'] = _safe_call(get_float_and_short, {}, ticker)
         c['float'] = analysis['float_data'].get('float')
         c['short_interest'] = analysis['float_data'].get('short_interest')
@@ -188,7 +181,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         # VWAP – only if real pm_high exists
         if c.get('pm_high') is not None and c.get('pm_high') > 0:
-            # Use real PM data for VWAP
             vwap_data = {
                 "vwap": c.get('pm_vwap'),
                 "vwap_high": c.get('pm_high'),
@@ -197,20 +189,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 "vwap_resistance": c.get('pm_vwap') * 1.005 if c.get('pm_vwap') else None,
                 "source": "premarket"
             }
-            analysis['vwap'] = vwap_data
-            c['vwap_data'] = vwap_data
-            c['vwap'] = c.get('pm_vwap')
         else:
-            # Fallback: yfinance VWAP
             vwap_data = _safe_call(calculate_vwap, {}, ticker, 30)
-            if vwap_data:
-                analysis['vwap'] = vwap_data
-                c['vwap_data'] = vwap_data
-                c['vwap'] = vwap_data.get('vwap', 0)
-            else:
-                analysis['vwap'] = {}
-                c['vwap_data'] = {}
-                c['vwap'] = None
+        analysis['vwap'] = vwap_data
+        c['vwap_data'] = vwap_data
+        c['vwap'] = vwap_data.get('vwap', 0) if vwap_data else None
 
         # Sympathy
         analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3)
@@ -234,28 +217,24 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # Composite Score (raw)
+        # Composite Score
         raw_score = _safe_call(calculate_composite_score, 0, c, analysis)
         c['composite_score'] = raw_score
 
-        # Data Completeness Gate
+        # Data Completeness Gate (RVOL excluded)
         completeness = _check_data_completeness(c)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
 
-        # Override trade_type if data is incomplete
         if completeness['status'] == 'NO_TRADE':
             c['trade_type'] = 'NO_TRADE'
         elif completeness['status'] == 'WATCH':
             c['trade_type'] = 'WATCH'
 
-        # Store analysis
         c['analysis'] = analysis
         enriched.append(c)
 
-    # Sort by composite score
     enriched.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
-
     top5 = enriched[:5] if len(enriched) >= 5 else enriched
 
     print(f"[FullScan] Returning {len(top5)} candidates")
