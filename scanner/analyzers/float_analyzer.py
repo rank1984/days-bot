@@ -1,26 +1,14 @@
 """
 DAYS-BOT V4.3 – Float Analyzer
-Uses Financial Modeling Prep API (FMP) for Float, Short Interest.
+Uses Financial Modeling Prep API (FMP) for Float.
 """
-
 import requests
 from utils.config import FMP_API_KEY
 
 FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
-# Fallback if FMP fails or no key
-STATIC_FLOAT = {
-    "AAPL": 15_000_000_000,
-    "MSFT": 7_400_000_000,
-    "NVDA": 2_400_000_000,
-    "AMD": 1_600_000_000,
-    "AMZN": 10_000_000_000,
-    # ... add more as needed
-}
-
 
 def _get_from_fmp(endpoint: str, params: dict) -> dict:
-    """Generic FMP API caller"""
     if not FMP_API_KEY:
         return {}
     try:
@@ -38,44 +26,36 @@ def _get_from_fmp(endpoint: str, params: dict) -> dict:
 
 
 def get_float_and_short(ticker: str) -> dict:
-    """
-    Fetch Float and Short Interest from FMP.
-    Returns: {"float": float, "short_interest": float, "short_ratio": float, "status": str}
-    """
     result = {
         "float": None,
         "short_interest": None,
         "short_ratio": None,
         "status": "UNAVAILABLE",
-        "source": "fmp"
+        "source": "none",
     }
 
-    # Try FMP first
-    if FMP_API_KEY:
-        try:
-            # 1. Get company profile (includes float)
-            profile = _get_from_fmp("profile", {"symbol": ticker})
-            if profile:
-                result["float"] = profile.get("sharesOutstanding")  # or float
+    if not FMP_API_KEY:
+        return result
+
+    try:
+        float_data = _get_from_fmp("float-shares", {"symbol": ticker})
+        if float_data:
+            float_val = float_data.get("floatShares")
+            if float_val and float_val > 0:
+                result["float"] = float(float_val)
                 result["status"] = "SUCCESS"
-                result["source"] = "fmp_profile"
+                result["source"] = "fmp_float"
 
-            # 2. Get short interest
-            short_data = _get_from_fmp("short-interest", {"symbol": ticker})
-            if short_data:
-                result["short_interest"] = short_data.get("shortPercent")  # as decimal
-                result["short_ratio"] = short_data.get("shortRatio")
+        short_data = _get_from_fmp("short-interest", {"symbol": ticker})
+        if short_data:
+            short_pct = short_data.get("shortPercent")
+            if short_pct is not None:
+                result["short_interest"] = float(short_pct)
+                result["short_ratio"] = float(short_data.get("shortRatio", 0))
                 result["status"] = "SUCCESS"
-                result["source"] = "fmp_short"
+                result["source"] = "fmp_both"
 
-        except Exception as e:
-            print(f"[Float] FMP request error: {e}")
-
-    # Fallback: static list
-    if result["float"] is None:
-        result["float"] = STATIC_FLOAT.get(ticker)
-        if result["float"]:
-            result["status"] = "STATIC_FALLBACK"
-            result["source"] = "static"
+    except Exception as e:
+        print(f"[Float] Error for {ticker}: {e}")
 
     return result
