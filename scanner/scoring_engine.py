@@ -1,9 +1,5 @@
 """
-DAYS-BOT V4.3 – Scoring Engine
-
-Principles:
-- Missing data = neutral/unknown, must NOT automatically destroy the candidate.
-- Hard gates belong in Tradeability, not Discovery.
+DAYS-BOT V5.0.2 – Scoring Engine
 """
 from utils.config import LEARNING_MODE
 
@@ -22,17 +18,28 @@ def _score_gap(gap):
 
 
 def _score_volume(volume):
-    volume = _safe_float(volume, 0)
-    return min((volume / 100_000) * 15, 25)
+    return min((_safe_float(volume, 0) / 100_000) * 15, 25)
 
 
 def _score_pm_distance(dist):
-    # DISABLED – real PM data not confirmed
-    return 0
+    return 0  # DISABLED
 
 
-def _score_rvol(rvol):
-    rvol = _safe_float(rvol, 0)
+def _score_rvol(rvol_data: dict) -> float:
+    """
+    RVOL is a SOFT FACTOR.
+    - If status == TIME_ADJUSTED and rvol > 0 → contributes 0-15
+    - If status == UNAVAILABLE → contributes 0
+    """
+    if not isinstance(rvol_data, dict):
+        return 0
+
+    status = rvol_data.get('status', 'UNAVAILABLE')
+    rvol = _safe_float(rvol_data.get('rvol', 0))
+
+    if status != 'TIME_ADJUSTED' or rvol <= 0:
+        return 0
+
     if rvol >= 10:
         return 15
     elif rvol >= 5:
@@ -90,13 +97,13 @@ def calculate_composite_score(candidate: dict, analysis: dict) -> float:
     score += _score_gap(candidate.get('gap_pct', 0))
     score += _score_volume(candidate.get('pm_volume', 0))
     score += _score_pm_distance(candidate.get('pm_dist_signed'))
-    score += _score_rvol(analysis.get('rvol', 0))
+    score += _score_rvol(analysis.get('rvol_data', {}))  # now expects dict
     score += _score_float(analysis.get('float', 0))
     score += _score_short_interest(analysis.get('short_interest', 0))
     score += _score_catalyst(analysis.get('catalyst', {}))
     score += _score_sentiment(analysis.get('sentiment', {}))
 
-    # Soft penalties (not destructive)
+    # Penalties
     sec_risk = analysis.get('sec_risk', {})
     if sec_risk.get('has_offering'):
         risk_level = sec_risk.get('risk_level', 'LOW')
