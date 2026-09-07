@@ -38,12 +38,11 @@ jobs:
           SECRET_KEY = os.environ.get('ALPACA_SECRET_KEY')
 
           print('=' * 60)
-          print('🧪 TESTING ALPACA API CONNECTION')
+          print('🧪 TESTING ALPACA API CONNECTION (IEX feed)')
           print('=' * 60)
 
           if not API_KEY or not SECRET_KEY:
               print('❌ ERROR: ALPACA_API_KEY or ALPACA_SECRET_KEY is missing!')
-              print('   Please add them to GitHub Secrets.')
               exit(1)
 
           print(f'✅ API Key found: {API_KEY[:8]}...')
@@ -53,22 +52,24 @@ jobs:
               client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
               print('✅ Alpaca client created successfully')
 
+              # Using IEX feed (available for free tier)
               req = StockBarsRequest(
                   symbol_or_symbols='AAPL',
                   timeframe=TimeFrame.Day,
                   start=datetime.now() - timedelta(days=5),
                   end=datetime.now(),
-                  limit=10
+                  limit=10,
+                  feed='iex'  # <-- CRITICAL: use IEX for free tier
               )
 
-              print('📡 Fetching AAPL daily bars...')
+              print('📡 Fetching AAPL daily bars (IEX feed)...')
               bars = client.get_stock_bars(req)
               data = bars.data.get('AAPL', [])
 
               if data:
                   print(f'✅ Successfully received {len(data)} bars for AAPL')
                   print(f'   Latest close: ${data[-1].close:.2f}')
-                  print('🎉 Alpaca API is working correctly!')
+                  print('🎉 Alpaca API is working correctly with IEX feed!')
               else:
                   print('⚠️ Got response but no data for AAPL (may be weekend/holiday)')
                   print('   Alpaca API connection is working.')
