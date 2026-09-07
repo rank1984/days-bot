@@ -1,81 +1,81 @@
 """
-Float & Short Interest Analyzer – מ-Finviz (סריקה חינמית)
+DAYS-BOT V4.3 – Float Analyzer
+Uses Financial Modeling Prep API (FMP) for Float, Short Interest.
 """
+
 import requests
-from bs4 import BeautifulSoup
-import time
+from utils.config import FMP_API_KEY
+
+FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+
+# Fallback if FMP fails or no key
+STATIC_FLOAT = {
+    "AAPL": 15_000_000_000,
+    "MSFT": 7_400_000_000,
+    "NVDA": 2_400_000_000,
+    "AMD": 1_600_000_000,
+    "AMZN": 10_000_000_000,
+    # ... add more as needed
+}
+
+
+def _get_from_fmp(endpoint: str, params: dict) -> dict:
+    """Generic FMP API caller"""
+    if not FMP_API_KEY:
+        return {}
+    try:
+        url = f"{FMP_BASE_URL}/{endpoint}"
+        params["apikey"] = FMP_API_KEY
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data:
+                return data[0] if isinstance(data, list) else data
+        return {}
+    except Exception as e:
+        print(f"[Float] FMP error: {e}")
+        return {}
+
 
 def get_float_and_short(ticker: str) -> dict:
     """
-    מחזיר מילון עם: float, short_interest, short_ratio
+    Fetch Float and Short Interest from FMP.
+    Returns: {"float": float, "short_interest": float, "short_ratio": float, "status": str}
     """
     result = {
         "float": None,
         "short_interest": None,
         "short_ratio": None,
-        "source": "finviz"
+        "status": "UNAVAILABLE",
+        "source": "fmp"
     }
 
-    try:
-        url = f"https://finviz.com/quote.ashx?t={ticker}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        resp = requests.get(url, headers=headers, timeout=15)
-        if resp.status_code != 200:
-            return result
+    # Try FMP first
+    if FMP_API_KEY:
+        try:
+            # 1. Get company profile (includes float)
+            profile = _get_from_fmp("profile", {"symbol": ticker})
+            if profile:
+                result["float"] = profile.get("sharesOutstanding")  # or float
+                result["status"] = "SUCCESS"
+                result["source"] = "fmp_profile"
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        # חפש את הטבלה הראשית עם הנתונים
-        table = soup.find("table", {"class": "snapshot-table2"})
-        if not table:
-            return result
+            # 2. Get short interest
+            short_data = _get_from_fmp("short-interest", {"symbol": ticker})
+            if short_data:
+                result["short_interest"] = short_data.get("shortPercent")  # as decimal
+                result["short_ratio"] = short_data.get("shortRatio")
+                result["status"] = "SUCCESS"
+                result["source"] = "fmp_short"
 
-        rows = table.find_all("tr")
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) < 2:
-                continue
-            label = cells[0].text.strip()
-            value = cells[1].text.strip()
+        except Exception as e:
+            print(f"[Float] FMP request error: {e}")
 
-            if "Float" in label:
-                # המספר בפורמט "12.34M" או "1.23B"
-                result["float"] = parse_number(value)
-            elif "Short Float" in label or "Short Interest" in label:
-                result["short_interest"] = parse_percent(value)
-            elif "Short Ratio" in label:
-                result["short_ratio"] = parse_number(value)
+    # Fallback: static list
+    if result["float"] is None:
+        result["float"] = STATIC_FLOAT.get(ticker)
+        if result["float"]:
+            result["status"] = "STATIC_FALLBACK"
+            result["source"] = "static"
 
-        return result
-
-    except Exception as e:
-        print(f"[FloatAnalyzer] Error for {ticker}: {e}")
-        return result
-
-
-def parse_number(text: str) -> float:
-    """ממיר מחרוזת כמו '12.34M' ל-12340000"""
-    try:
-        text = text.replace(",", "").strip()
-        if not text:
-            return None
-        if text.endswith("B"):
-            return float(text[:-1]) * 1_000_000_000
-        elif text.endswith("M"):
-            return float(text[:-1]) * 1_000_000
-        elif text.endswith("K"):
-            return float(text[:-1]) * 1_000
-        else:
-            return float(text)
-    except:
-        return None
-
-
-def parse_percent(text: str) -> float:
-    """ממיר מחרוזת כמו '12.34%' ל-0.1234"""
-    try:
-        text = text.replace("%", "").strip()
-        return float(text) / 100.0
-    except:
-        return None
+    return result
