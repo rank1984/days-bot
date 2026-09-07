@@ -1,32 +1,108 @@
 """
 DAYS-BOT V4.3 – Volume Analyzer (RVOL)
-Calculates RVOL with proper status:
-- TIME_ADJUSTED: compares PM volume to historical PM volume at same time
-- PREMARKET_FALLBACK: compares PM volume to average daily volume (only if no historical data)
-- UNAVAILABLE: when no data exists
+Uses Alpaca historical intraday data for time-adjusted RVOL.
 """
-import yfinance as yf
-import pandas as pd
-from datetime import datetime, timedelta
 import pytz
+import requests
+from datetime import datetime, timedelta
+from typing import Optional
+from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
 
 ET = pytz.timezone("America/New_York")
+BARS_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/bars"
+
+
+def _headers() -> dict:
+    return {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+        "Accept": "application/json",
+    }
+
+
+def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[float]:
+    """
+    Get historical premarket volume for the same time window.
+    Uses Alpaca 1-minute bars.
+    """
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return None
+
+    now_et = datetime.now(ET)
+    current_time = now_et.time()
+    target_date = now_et.date()
+
+    # We need data from the last N days (including today)
+    end = now_et
+    start = now_et - timedelta(days=lookback_days + 1)
+
+    try:
+        response = requests.get(
+            BARS_URL,
+            headers=_headers(),
+            params={
+                "symbols": ticker,
+                "timeframe": "1Min",
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "adjustment": "raw",
+                "feed": "iex",
+                "limit": 10000,
+            },
+            timeout=15,
+        )
+
+        if response.status_code != 200:
+            print(f"[RVOL] Alpaca bars error: {response.status_code}")
+            return None
+
+        data = response.json()
+        bars = data.get("bars", {}).get(ticker, [])
+
+        if not bars:
+            return None
+
+        # Group by date and sum PM volume up to current time
+        daily_volumes = {}
+        for bar in bars:
+            ts = datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
+            ts_et = ts.astimezone(ET)
+            bar_time = ts_et.time()
+            bar_date = ts_et.date()
+
+            # Only PM window (04:00-09:30) and up to current time
+            if bar_time < datetime.strptime("04:00", "%H:%M").time():
+                continue
+            if bar_time >= datetime.strptime("09:30", "%H:%M").time():
+                continue
+            if bar_time > current_time:
+                continue
+
+            if bar_date not in daily_volumes:
+                daily_volumes[bar_date] = 0
+            daily_volumes[bar_date] += int(bar.get("v", 0))
+
+        # Exclude today
+        historical = [v for d, v in daily_volumes.items() if d != target_date]
+
+        if len(historical) < 2:
+            print(f"[RVOL] Insufficient historical days: {len(historical)}")
+            return None
+
+        avg_volume = sum(historical) / len(historical)
+        return avg_volume
+
+    except Exception as e:
+        print(f"[RVOL] Error: {e}")
+        return None
 
 
 def calculate_rvol(candidate: dict) -> dict:
     """
-    Calculate RVOL with status.
-
-    Returns:
-        {
-            "rvol": float or None,
-            "status": "TIME_ADJUSTED" | "PREMARKET_FALLBACK" | "UNAVAILABLE",
-            "method": str,
-            "pm_volume": int,
-            "reference_volume": int,
-        }
+    Calculate time-adjusted RVOL using Alpaca historical data.
+    Returns: {"rvol": float, "status": str, "method": str, "reference_volume": int, "pm_volume": int}
     """
-    ticker = candidate.get('ticker', '')
+    ticker = candidate.get('ticker')
     pm_volume = candidate.get('pm_volume', 0)
 
     if not ticker or pm_volume <= 0:
@@ -38,111 +114,41 @@ def calculate_rvol(candidate: dict) -> dict:
             "reference_volume": 0
         }
 
-    try:
-        now_et = datetime.now(ET)
-        # We need historical 1-min data to get PM volume at same time
-        # We'll fetch last 5 days of 1-min data
-        end = now_et
-        start = now_et - timedelta(days=5)
+    # Try Alpaca historical data first
+    historical_avg = _get_historical_pm_volume(ticker)
 
-        data = yf.download(ticker, period="5d", interval="1m", prepost=True, progress=False)
-        if data.empty:
-            return _fallback_rvol(candidate, pm_volume, reason="No historical intraday data")
-
-        # Normalize timezone
-        data.index = pd.to_datetime(data.index)
-        if data.index.tz is None:
-            data.index = data.index.tz_localize("UTC")
-        data.index = data.index.tz_convert(ET)
-
-        # Current time window (same time as today's PM)
-        current_time = now_et.time()
-        # We want to compare to the same time window on previous trading days
-        # Filter data for the same time window (e.g., 04:00-current_time)
-        current_hour = current_time.hour
-        current_minute = current_time.minute
-
-        # For each day, calculate PM volume up to current time
-        # We'll group by date and sum volume for each day
-        data['date'] = data.index.date
-        data['time'] = data.index.time
-
-        # Filter to PM window (04:00-09:30)
-        pm_data = data[(data.index.time >= datetime.strptime("04:00", "%H:%M").time()) &
-                       (data.index.time <= current_time)]
-
-        if pm_data.empty:
-            return _fallback_rvol(candidate, pm_volume, reason="No PM data in historical window")
-
-        # Group by date and sum volume for each day
-        daily_pm_volumes = pm_data.groupby('date')['Volume'].sum()
-
-        # Exclude today (if present)
-        today = now_et.date()
-        historical_volumes = [v for d, v in daily_pm_volumes.items() if d != today]
-
-        if not historical_volumes or len(historical_volumes) < 2:
-            return _fallback_rvol(candidate, pm_volume, reason="Insufficient historical PM data")
-
-        avg_historical_pm_volume = sum(historical_volumes) / len(historical_volumes)
-
-        if avg_historical_pm_volume > 0:
-            rvol = round(pm_volume / avg_historical_pm_volume, 2)
-            return {
-                "rvol": rvol,
-                "status": "TIME_ADJUSTED",
-                "method": f"Last {len(historical_volumes)} days PM volume up to {current_time.strftime('%H:%M')} ET",
-                "pm_volume": pm_volume,
-                "reference_volume": round(avg_historical_pm_volume, 0)
-            }
-        else:
-            return _fallback_rvol(candidate, pm_volume, reason="Historical PM volume is zero")
-
-    except Exception as e:
-        print(f"[RVOL] Error for {ticker}: {e}")
-        return _fallback_rvol(candidate, pm_volume, reason=f"Exception: {e}")
-
-
-def _fallback_rvol(candidate: dict, pm_volume: int, reason: str = None) -> dict:
-    """
-    Fallback: use daily average volume from 30 days.
-    """
-    ticker = candidate.get('ticker', '')
-    try:
-        data = yf.download(ticker, period="1mo", interval="1d", progress=False)
-        if data.empty:
-            return {
-                "rvol": None,
-                "status": "UNAVAILABLE",
-                "method": f"No daily data (reason: {reason})",
-                "pm_volume": pm_volume,
-                "reference_volume": 0
-            }
-
-        avg_daily_volume = data['Volume'].iloc[-30:].mean() if len(data) >= 30 else data['Volume'].mean()
-        if avg_daily_volume > 0:
-            rvol = round(pm_volume / avg_daily_volume, 2)
-            return {
-                "rvol": rvol,
-                "status": "PREMARKET_FALLBACK",
-                "method": f"PM volume / avg daily volume (30d). Reason: {reason}",
-                "pm_volume": pm_volume,
-                "reference_volume": round(avg_daily_volume, 0)
-            }
-        else:
-            return {
-                "rvol": None,
-                "status": "UNAVAILABLE",
-                "method": f"Avg daily volume is zero (reason: {reason})",
-                "pm_volume": pm_volume,
-                "reference_volume": 0
-            }
-
-    except Exception as e:
+    if historical_avg is not None and historical_avg > 0:
+        rvol = round(pm_volume / historical_avg, 2)
         return {
-            "rvol": None,
-            "status": "UNAVAILABLE",
-            "method": f"Fallback error: {e}",
+            "rvol": rvol,
+            "status": "TIME_ADJUSTED",
+            "method": "Alpaca 1-min bars, same time window",
             "pm_volume": pm_volume,
-            "reference_volume": 0
+            "reference_volume": round(historical_avg)
         }
+
+    # Fallback: use yfinance daily average volume (but warn)
+    try:
+        import yfinance as yf
+        data = yf.download(ticker, period="1mo", interval="1d", progress=False)
+        if not data.empty:
+            avg_daily = data['Volume'].iloc[-30:].mean()
+            if avg_daily > 0:
+                rvol = round(pm_volume / avg_daily, 2)
+                return {
+                    "rvol": rvol,
+                    "status": "PREMARKET_FALLBACK",
+                    "method": "PM volume / avg daily volume (30d)",
+                    "pm_volume": pm_volume,
+                    "reference_volume": round(avg_daily)
+                }
+    except Exception:
+        pass
+
+    return {
+        "rvol": None,
+        "status": "UNAVAILABLE",
+        "method": "No historical PM data available",
+        "pm_volume": pm_volume,
+        "reference_volume": 0
+    }
