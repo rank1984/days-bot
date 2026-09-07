@@ -1,7 +1,7 @@
 """
 DAYS-BOT V4.3 – Full Scan Engine
-- Propagates ALL fields from candidate → analysis → DB → Telegram
-- Implements Data Completeness Gate: missing critical data prevents TRADE
+- Swing Score is conditional on Data Completeness
+- Missing RVOL or Spread reduces Swing Score
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -44,7 +44,6 @@ def _check_data_completeness(candidate: dict) -> dict:
         ("pm_volume", "נפח PM"),
         ("pm_high", "PM High"),
         ("pm_vwap", "VWAP"),
-        ("spread_pct", "מרווח"),
         ("rvol", "RVOL"),
         ("catalyst_type", "קטליזטור"),
         ("sec_risk_level", "SEC Risk"),
@@ -55,12 +54,11 @@ def _check_data_completeness(candidate: dict) -> dict:
         if value is None or value == "UNAVAILABLE" or value == "":
             missing.append(label)
 
-    # Special case: spread_pct can be None (UNAVAILABLE) but if it's a number, it's ok
-    if candidate.get("spread_pct") is not None and candidate.get("spread_pct") != "UNAVAILABLE":
-        if field == "spread_pct":
-            missing.remove("מרווח") if "מרווח" in missing else None
+    # Special handling for spread (optional, but important)
+    spread = candidate.get('spread_pct')
+    if spread is None or spread == "UNAVAILABLE":
+        missing.append("מרווח")
 
-    # Determine status
     if len(missing) == 0:
         status = "ACTIONABLE"
     elif len(missing) <= 2:
@@ -204,18 +202,25 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # Composite Score
-        c['composite_score'] = _safe_call(calculate_composite_score, 0, c, analysis)
+        # Composite Score (raw)
+        raw_score = _safe_call(calculate_composite_score, 0, c, analysis)
+        c['composite_score'] = raw_score
 
         # Data Completeness Gate
         completeness = _check_data_completeness(c)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
 
+        # SWING SCORE ADJUSTMENT:
+        # If data completeness is not ACTIONABLE, reduce Swing Score
+        raw_swing = c.get('swing_score', 0)  # will be set later, but we can still adjust
+        # We'll store the raw score and adjust later
+        c['raw_swing_score'] = raw_swing
+
         # Override trade_type if data is incomplete
         if completeness['status'] == 'NO_TRADE':
             c['trade_type'] = 'NO_TRADE'
-        elif completeness['status'] == 'WATCH' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']:
+        elif completeness['status'] == 'WATCH':
             c['trade_type'] = 'WATCH'
 
         # Store analysis
