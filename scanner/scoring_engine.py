@@ -1,13 +1,6 @@
 """
-DAYS-BOT V4.1 – Deterministic Scoring Engine
-
-Important:
-This is ranking logic, NOT an automatic trading engine.
-
-Missing data = neutral / unknown.
-It must NOT automatically destroy the candidate.
+DAYS-BOT V4.3 – Scoring Engine
 """
-
 from utils.config import LEARNING_MODE
 
 
@@ -16,314 +9,140 @@ def _safe_float(value, default=0.0):
         if value is None:
             return default
         return float(value)
-    except Exception:
+    except (TypeError, ValueError):
         return default
 
 
-def _score_gap(gap):
-    gap = _safe_float(gap)
-
-    if gap >= 20:
-        return 30
-    if gap >= 15:
-        return 27
-    if gap >= 10:
-        return 23
-    if gap >= 7:
-        return 18
-    if gap >= 5:
-        return 13
-    if gap >= 3:
-        return 8
-    if gap > 0:
-        return 4
-
-    return 0
-
-
-def _score_volume(volume):
-    volume = _safe_float(volume)
-
-    if volume >= 2_000_000:
-        return 25
-    if volume >= 1_000_000:
-        return 22
-    if volume >= 500_000:
-        return 18
-    if volume >= 250_000:
-        return 14
-    if volume >= 100_000:
-        return 9
-    if volume >= 50_000:
-        return 5
-
-    return 0
-
-
 def _score_pm_distance(dist):
-    dist = _safe_float(dist, -100)
-
-    if dist >= -0.5:
-        return 20
-    if dist >= -1:
-        return 17
-    if dist >= -2:
-        return 14
-    if dist >= -3:
-        return 9
-    if dist >= -5:
-        return 5
-
-    return 0
-
-
-def _score_rvol(rvol):
-    rvol = _safe_float(rvol)
-
-    if rvol >= 5:
-        return 15
-    if rvol >= 3:
-        return 13
-    if rvol >= 2:
-        return 10
-    if rvol >= 1.5:
-        return 7
-    if rvol >= 1:
-        return 4
-
-    # Unknown / unavailable
-    if rvol == 0:
-        return 0
-
-    return 0
+    """
+    PM Distance score.
+    DISABLED temporarily until real PM data is confirmed flowing.
+    See issue: pm_high is currently fake (== price) in discovery.
+    """
+    # DISABLED: real PM data not yet confirmed
+    # dist = _safe_float(dist, -100)
+    # if dist >= -0.5:
+    #     return 20
+    # elif dist >= -2.0:
+    #     return 12
+    # elif dist >= -5.0:
+    #     return 5
+    # else:
+    #     return 0
+    return 0  # neutral until PM data is real
 
 
-def _score_float(float_val):
-    float_val = _safe_float(float_val)
-
-    if float_val <= 0:
-        return 0
-
-    if float_val < 5_000_000:
-        return 15
-
-    if float_val < 10_000_000:
-        return 13
-
-    if float_val < 20_000_000:
-        return 11
-
-    if float_val < 50_000_000:
-        return 7
-
-    if float_val < 100_000_000:
-        return 3
-
-    return 0
-
-
-def _score_short(short):
-    short = _safe_float(short)
-
-    # Support both decimal and percentage formats.
-    if short > 1:
-        short = short / 100.0
-
-    if short >= 0.25:
-        return 15
-
-    if short >= 0.15:
-        return 11
-
-    if short >= 0.10:
-        return 8
-
-    if short >= 0.05:
-        return 5
-
-    if short > 0:
-        return 2
-
-    return 0
-
-
-def _score_catalyst(catalyst):
-    if not isinstance(catalyst, dict):
-        return 0
-
-    score = _safe_float(
-        catalyst.get("score"),
-        0,
-    )
-
-    # Support analyzers returning 0-10 or 0-100.
-    if score > 10:
-        score = score / 10.0
-
-    return max(
-        0,
-        min(20, score * 2),
-    )
-
-
-def _score_sentiment(sentiment):
-    if not isinstance(sentiment, dict):
-        return 0
-
-    value = _safe_float(
-        sentiment.get(
-            "sentiment_score",
-            0,
-        )
-    )
-
-    # Expected -1 to +1.
-    if -1 <= value <= 1:
-        return max(
-            0,
-            min(10, (value + 1) * 5),
-        )
-
-    # If analyzer returns 0-100.
-    if 0 <= value <= 100:
-        return max(
-            0,
-            min(10, value / 10),
-        )
-
-    return 0
-
-
-def calculate_composite_score(
-    candidate: dict,
-    analysis: dict,
-) -> float:
-
-    # ========================================================
-    # POSITIVE SCORE
-    # ========================================================
-
+def calculate_composite_score(candidate: dict, analysis: dict) -> float:
+    """
+    Calculate a composite score (0-100) for ranking candidates.
+    Missing data = neutral/unknown, not a penalty.
+    Hard gates belong in Tradeability, not Discovery.
+    """
     score = 0.0
 
-    gap = _safe_float(
-        candidate.get("gap_pct")
-    )
+    # 1. Gap (0-30)
+    gap = candidate.get('gap_pct', 0)
+    score += min(max(gap, 0) * 2, 30)
 
-    pm_volume = _safe_float(
-        candidate.get("pm_volume")
-    )
+    # 2. PM Volume (0-25)
+    pm_vol = candidate.get('pm_volume', 0)
+    score += min((pm_vol / 100_000) * 15, 25)
 
-    pm_distance = _safe_float(
-        candidate.get(
-            "pm_dist_signed",
-            -100,
-        )
-    )
-
-    rvol = _safe_float(
-        analysis.get("rvol")
-    )
-
-    float_val = _safe_float(
-        analysis.get("float")
-    )
-
-    short = _safe_float(
-        analysis.get("short_interest")
-    )
-
-    score += _score_gap(gap)
-    score += _score_volume(pm_volume)
+    # 3. PM Distance (DISABLED – see above)
+    pm_distance = candidate.get('pm_dist_signed', -100)
     score += _score_pm_distance(pm_distance)
-    score += _score_rvol(rvol)
-    score += _score_float(float_val)
-    score += _score_short(short)
 
-    score += _score_catalyst(
-        analysis.get("catalyst")
-    )
+    # 4. RVOL (0-15)
+    rvol = analysis.get('rvol', 0)
+    if rvol:
+        if rvol >= 10:
+            score += 15
+        elif rvol >= 5:
+            score += 10
+        elif rvol >= 3:
+            score += 5
 
-    score += _score_sentiment(
-        analysis.get("sentiment")
-    )
+    # 5. Float (0-15) – lower is better
+    float_val = analysis.get('float', 0)
+    if float_val:
+        if float_val < 5_000_000:
+            score += 15
+        elif float_val < 10_000_000:
+            score += 12
+        elif float_val < 20_000_000:
+            score += 8
+        elif float_val < 50_000_000:
+            score += 4
 
-    # ========================================================
-    # RISK ADJUSTMENTS
-    # ========================================================
+    # 6. Short Interest (0-15)
+    short = analysis.get('short_interest', 0)
+    if short:
+        if short >= 0.25:
+            score += 15
+        elif short >= 0.15:
+            score += 10
+        elif short >= 0.10:
+            score += 5
 
-    sec_risk = analysis.get(
-        "sec_risk",
-        {},
-    )
+    # 7. Catalyst Quality (0-20)
+    catalyst = analysis.get('catalyst', {})
+    cat_score = catalyst.get('score', 0)
+    score += cat_score * 2
 
-    if isinstance(sec_risk, dict):
-        if sec_risk.get("has_offering"):
-            risk_level = str(
-                sec_risk.get(
-                    "risk_level",
-                    "LOW",
-                )
-            ).upper()
+    # 8. Sentiment (0-10)
+    sentiment = analysis.get('sentiment', {}).get('sentiment_score', 0)
+    if sentiment:
+        score += (sentiment + 1) * 5
 
-            if risk_level == "HIGH":
-                score -= 25
-            elif risk_level == "MEDIUM":
-                score -= 15
-            else:
-                score -= 7
+    # ============================================================
+    # PENALTIES (soft, not hard gates)
+    # ============================================================
 
-    personality = analysis.get(
-        "personality",
-        {},
-    )
+    # SEC Offering
+    if analysis.get('sec_risk', {}).get('has_offering'):
+        risk_level = analysis['sec_risk'].get('risk_level', 'LOW')
+        if risk_level == 'HIGH':
+            score -= 30
+        elif risk_level == 'MEDIUM':
+            score -= 20
+        else:
+            score -= 10
 
-    if isinstance(personality, dict):
-        personality_name = str(
-            personality.get(
-                "personality",
-                "NEUTRAL",
-            )
-        ).upper()
+    # Personality GAP_AND_CRAP
+    personality = analysis.get('personality', {}).get('personality', 'NEUTRAL')
+    if personality == "GAP_AND_CRAP":
+        if LEARNING_MODE:
+            score -= 30
+        else:
+            score -= 50  # strong penalty, not hard reject
 
-        if personality_name == "GAP_AND_CRAP":
+    # Float > 50M
+    if float_val and float_val > 50_000_000:
+        if LEARNING_MODE:
             score -= 25
+        else:
+            score -= 20
 
-    # Large float is a disadvantage, but NOT an automatic rejection.
-    if float_val > 100_000_000:
-        score -= 10
-    elif float_val > 50_000_000:
-        score -= 5
+    # Gap < 10%
+    if gap < 10:
+        if LEARNING_MODE:
+            score -= 20
+        else:
+            score -= 15
 
-    # Weak spread.
-    spread = _safe_float(
-        candidate.get(
-            "spread_pct"
-        )
-    )
+    # RVOL < 3
+    if rvol and rvol < 3:
+        if LEARNING_MODE:
+            score -= 20
+        else:
+            score -= 10
 
-    if spread > 3:
-        score -= 20
-    elif spread > 2:
-        score -= 10
-    elif spread > 1:
-        score -= 3
+    # Short Interest < 5% (no squeeze potential)
+    if short and short < 0.05:
+        if LEARNING_MODE:
+            score -= 10
+        else:
+            score -= 5
 
-    # ========================================================
-    # RESEARCH MODE PRINCIPLE
-    # ========================================================
-    #
-    # Do NOT impose:
-    # gap >= 10
-    # RVOL >= 3
-    # float <= 20M
-    #
-    # as destructive hard penalties.
-    #
-    # Those variables are still visible in the score.
-    # Hard gates belong in Tradeability, not Discovery.
-    # ========================================================
-
-    return round(
-        max(0, min(100, score)),
-        1,
-    )
+    # Normalize
+    return round(max(0, min(100, score)), 1)
