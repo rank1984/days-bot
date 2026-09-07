@@ -4,12 +4,15 @@ Uses Alpaca historical intraday data for time-adjusted RVOL.
 """
 import pytz
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Optional
 from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
 
 ET = pytz.timezone("America/New_York")
 BARS_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/bars"
+
+PM_START = time(4, 0)
+PM_END = time(9, 30)
 
 
 def _headers() -> dict:
@@ -23,7 +26,7 @@ def _headers() -> dict:
 def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[float]:
     """
     Get historical premarket volume for the same time window.
-    Uses Alpaca 1-minute bars.
+    Uses Alpaca 1-minute bars with IEX feed.
     """
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("[RVOL] ⚠️ Alpaca API keys missing")
@@ -34,7 +37,6 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
     target_date = now_et.date()
 
     # We need data from the last N days (including today)
-    end = now_et
     start = now_et - timedelta(days=lookback_days + 1)
 
     try:
@@ -46,7 +48,7 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
                 "symbols": ticker,
                 "timeframe": "1Min",
                 "start": start.isoformat(),
-                "end": end.isoformat(),
+                "end": now_et.isoformat(),
                 "adjustment": "raw",
                 "feed": "iex",
                 "limit": 10000,
@@ -78,9 +80,7 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
             bar_date = ts_et.date()
 
             # Only PM window (04:00-09:30) and up to current time
-            if bar_time < datetime.strptime("04:00", "%H:%M").time():
-                continue
-            if bar_time >= datetime.strptime("09:30", "%H:%M").time():
+            if not (PM_START <= bar_time < PM_END):
                 continue
             if bar_time > current_time:
                 continue
@@ -107,6 +107,48 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
     except Exception as e:
         print(f"[RVOL] ❌ Error: {e}")
         return None
+
+
+def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
+    """
+    Fallback to yfinance daily average volume.
+    """
+    try:
+        import yfinance as yf
+        print(f"[RVOL] 📡 Using yfinance fallback for {ticker}")
+        data = yf.download(ticker, period="1mo", interval="1d", progress=False)
+
+        if data.empty:
+            print(f"[RVOL] ⚠️ No yfinance data for {ticker}")
+            return None
+
+        # Get the last 30 days volume, or fewer if not enough data
+        vol_series = data['Volume'].dropna()
+        if len(vol_series) == 0:
+            print(f"[RVOL] ⚠️ No volume data for {ticker}")
+            return None
+
+        # Use last 30 days, or all available if less
+        if len(vol_series) >= 30:
+            avg_daily = vol_series.iloc[-30:].mean()
+        else:
+            avg_daily = vol_series.mean()
+
+        if avg_daily > 0:
+            rvol = round(pm_volume / avg_daily, 2)
+            print(f"[RVOL] ⚠️ RVOL = {rvol} (PREMARKET_FALLBACK)")
+            return {
+                "rvol": rvol,
+                "status": "PREMARKET_FALLBACK",
+                "method": "PM volume / avg daily volume (30d)",
+                "pm_volume": pm_volume,
+                "reference_volume": round(float(avg_daily))
+            }
+
+    except Exception as e:
+        print(f"[RVOL] ❌ yfinance fallback error: {e}")
+
+    return None
 
 
 def calculate_rvol(candidate: dict) -> dict:
@@ -143,25 +185,10 @@ def calculate_rvol(candidate: dict) -> dict:
             "reference_volume": round(historical_avg)
         }
 
-    # Fallback: use yfinance daily average volume (but warn)
-    try:
-        import yfinance as yf
-        print(f"[RVOL] 📡 Using yfinance fallback for {ticker}")
-        data = yf.download(ticker, period="1mo", interval="1d", progress=False)
-        if not data.empty:
-            avg_daily = data['Volume'].iloc[-30:].mean()
-            if avg_daily > 0:
-                rvol = round(pm_volume / avg_daily, 2)
-                print(f"[RVOL] ⚠️ RVOL = {rvol} (PREMARKET_FALLBACK)")
-                return {
-                    "rvol": rvol,
-                    "status": "PREMARKET_FALLBACK",
-                    "method": "PM volume / avg daily volume (30d)",
-                    "pm_volume": pm_volume,
-                    "reference_volume": round(avg_daily)
-                }
-    except Exception as e:
-        print(f"[RVOL] ❌ yfinance fallback error: {e}")
+    # Fallback: use yfinance
+    fallback = _yfinance_fallback(ticker, pm_volume)
+    if fallback:
+        return fallback
 
     print(f"[RVOL] ❌ RVOL UNAVAILABLE for {ticker}")
     return {
