@@ -1,13 +1,13 @@
 import os
 
 # ============================================================
-# DAYS-BOT V4.1 – CENTRAL CONFIG
+# DAYS-BOT V4.3 – CENTRAL CONFIG
 # ============================================================
 
-BOT_VERSION = "V4.1"
-STRATEGY_VERSION = "V4.1"
-EXPERIMENT_MODE = "V4.1_LIVE_RESEARCH"
-DATA_VERSION = "ALPACA_IEX_V41"
+BOT_VERSION = "V4.3"
+STRATEGY_VERSION = "V4.3"
+EXPERIMENT_MODE = "V4.3_LIVE_RESEARCH"
+DATA_VERSION = "ALPACA_IEX_V43"
 
 # ------------------------------------------------------------
 # API KEYS
@@ -32,6 +32,9 @@ FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY", "")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# FMP (Financial Modeling Prep) – for Float & Short Interest
+FMP_API_KEY = os.getenv("FMP_API_KEY", "")
 
 # ------------------------------------------------------------
 # DISCOVERY
@@ -94,7 +97,6 @@ MAX_RISK_PER_TRADE = 0.005
 MIN_NET_PROFIT_PCT = 1.5
 
 # Blink / Israel cost model.
-# Keep configurable; do not hardcode tax assumptions in strategy logic.
 BLINK_FEE_PER_SHARE = 0.01
 BLINK_MIN_FEE = 1.50
 BLINK_MAX_FEE_PCT = 0.018
@@ -130,5 +132,4 @@ LEARNING_MODE = True
 # EXECUTION SAFETY
 # ------------------------------------------------------------
 
-# DAYS-BOT never places live orders.
 AUTO_EXECUTION_ENABLED = False
