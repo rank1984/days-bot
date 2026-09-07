@@ -1,128 +1,127 @@
+"""
+DAYS-BOT V4.3 – Premarket Engine (Alpaca)
+Fetches real 1-minute premarket bars from Alpaca.
+Returns PM High, Low, VWAP, Volume, Bars count.
+"""
 import pytz
-from datetime import datetime, time
-from alpaca_trade_api.rest import REST, TimeFrame
-
-from utils.config import (
-    ALPACA_API_KEY,
-    ALPACA_SECRET_KEY,
-    ALPACA_BASE_URL,
-    BOT_VERSION,
-)
+import requests
+from datetime import datetime, timedelta, time
+from typing import Optional, Dict
+from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
 
 ET = pytz.timezone("America/New_York")
+BARS_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/bars"
+
+PM_START = time(4, 0)
+PM_END = time(9, 30)
 
 
-def fetch_pm_data(symbol: str, current_price: float = None) -> dict:
+def _headers() -> dict:
+    return {
+        "APCA-API-KEY-ID": ALPACA_API_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
+        "Accept": "application/json",
+    }
+
+
+def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict:
     """
-    Fetches Premarket minute bars strictly for the 08:00 ET -> 09:30 ET window via IEX feed.
-    Calculates PM High, VWAP, Data Quality, and Signed Distance metrics.
+    Fetch 1-minute premarket bars for the given ticker.
+    Returns:
+        {
+            "pm_high": float,
+            "pm_low": float,
+            "pm_vwap": float,
+            "pm_volume": int,
+            "pm_bars_count": int,
+            "pm_data_quality": "GOOD_DATA" | "LOW_DATA" | "NO_DATA",
+            "error": None or str
+        }
     """
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        return {"error": "Missing Alpaca API keys"}
+
     now_et = datetime.now(ET)
-    now_time = now_et.time()
+    if not target_date_str:
+        target_date_str = now_et.strftime("%Y-%m-%d")
 
-    # Strict hard checks for window
-    if now_time < time(8, 0):
-        print(f"[PM Engine] {BOT_VERSION} – Too early for IEX PM experiment: {now_et.strftime('%H:%M:%S')} ET")
-        return {
-            "pm_volume": 0,
-            "pm_bars_count": 0,
-            "pm_high": None,
-            "pm_vwap": None,
-            "pm_dist_signed": None,
-            "pm_high_dist": None,
-            "error": "PREMARKET_NOT_STARTED_8AM",
-            "rvol": None,
-            "rvol_status": "UNAVAILABLE",
-        }
+    target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()
+    current_time = now_et.time()
 
-    if now_time >= time(9, 30):
-        print(f"[PM Engine] {BOT_VERSION} – Market already open: {now_et.strftime('%H:%M:%S')} ET")
-        return {
-            "pm_volume": 0,
-            "pm_bars_count": 0,
-            "pm_high": None,
-            "pm_vwap": None,
-            "pm_dist_signed": None,
-            "pm_high_dist": None,
-            "error": "MARKET_ALREADY_OPEN",
-            "rvol": None,
-            "rvol_status": "UNAVAILABLE",
-        }
-
-    pm_start_et = ET.localize(datetime.combine(now_et.date(), time(8, 0)))
-    pm_end_et = min(now_et, ET.localize(datetime.combine(now_et.date(), time(9, 30))))
-
-    api = REST(
-        ALPACA_API_KEY,
-        ALPACA_SECRET_KEY,
-        ALPACA_BASE_URL,
-        api_version="v2",
-    )
+    # Request 5 days of 1-minute data to cover PM window
+    start = now_et - timedelta(days=7)
 
     try:
-        response = api.get_bars(
-            symbol,
-            TimeFrame.Minute,
-            start=pm_start_et.isoformat(),
-            end=pm_end_et.isoformat(),
-            adjustment="raw",
-            feed="iex",
+        response = requests.get(
+            BARS_URL,
+            headers=_headers(),
+            params={
+                "symbols": ticker,
+                "timeframe": "1Min",
+                "start": start.isoformat(),
+                "end": now_et.isoformat(),
+                "adjustment": "raw",
+                "feed": "iex",
+                "limit": 10000,
+            },
+            timeout=15,
         )
-        df = response.df
 
-        if df is None or df.empty:
-            return {
-                "pm_volume": 0,
-                "pm_bars_count": 0,
-                "pm_high": None,
-                "pm_vwap": None,
-                "pm_dist_signed": None,
-                "pm_high_dist": None,
-                "error": "EMPTY_BARS",
-                "rvol": None,
-                "rvol_status": "UNAVAILABLE",
-            }
+        if response.status_code != 200:
+            return {"error": f"Alpaca HTTP {response.status_code}"}
 
-        pm_bars_count = len(df)
-        pm_volume = int(df["volume"].sum())
-        pm_high = float(df["high"].max())
-        
-        # Calculate PM VWAP
-        if pm_volume > 0:
-            pm_vwap = float((df["close"] * df["volume"]).sum() / pm_volume)
-        else:
-            pm_vwap = current_price
+        data = response.json()
+        bars = data.get("bars", {}).get(ticker, [])
 
-        # Signed distance metrics
-        ref_price = current_price if current_price is not None else float(df["close"].iloc[-1])
-        if pm_high and pm_high > 0:
-            pm_dist_signed = ((ref_price - pm_high) / pm_high) * 100.0
-            pm_high_dist = max(0.0, -pm_dist_signed)
-        else:
-            pm_dist_signed = None
-            pm_high_dist = None
+        if not bars:
+            return {"error": "No bars returned"}
+
+        # Filter to target date and PM window
+        pm_bars = []
+        for bar in bars:
+            ts = datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
+            ts_et = ts.astimezone(ET)
+            bar_date = ts_et.date()
+            bar_time = ts_et.time()
+
+            if bar_date != target_date:
+                continue
+            if not (PM_START <= bar_time < PM_END):
+                continue
+            if bar_time > current_time:
+                continue
+
+            pm_bars.append(bar)
+
+        if not pm_bars:
+            return {"error": "No PM bars for target date"}
+
+        # Calculate metrics
+        highs = [float(b["h"]) for b in pm_bars]
+        lows = [float(b["l"]) for b in pm_bars]
+        closes = [float(b["c"]) for b in pm_bars]
+        volumes = [int(b["v"]) for b in pm_bars]
+
+        pm_high = max(highs)
+        pm_low = min(lows)
+        pm_volume = sum(volumes)
+        pm_bars_count = len(pm_bars)
+
+        # VWAP
+        total_value = sum(c * v for c, v in zip(closes, volumes))
+        pm_vwap = total_value / pm_volume if pm_volume > 0 else closes[-1]
+
+        quality = "GOOD_DATA" if pm_bars_count >= 10 else "LOW_DATA"
 
         return {
+            "pm_high": round(pm_high, 4),
+            "pm_low": round(pm_low, 4),
+            "pm_vwap": round(pm_vwap, 4),
             "pm_volume": pm_volume,
             "pm_bars_count": pm_bars_count,
-            "pm_high": pm_high,
-            "pm_vwap": pm_vwap,
-            "pm_dist_signed": pm_dist_signed,
-            "pm_high_dist": pm_high_dist,
+            "pm_data_quality": quality,
             "error": None,
-            "rvol": None,
-            "rvol_status": "UNAVAILABLE",
         }
 
     except Exception as e:
-        return {
-            "pm_volume": 0,
-            "pm_bars_count": 0,
-            "pm_high": None,
-            "pm_vwap": None,
-            "pm_dist_signed": None,
-            "pm_high_dist": None,
-            "error": f"{type(e).__name__}: {e}",
-            "rvol": None,
-            "rvol_status": "UNAVAILABLE",
-        }
+        return {"error": str(e)}
