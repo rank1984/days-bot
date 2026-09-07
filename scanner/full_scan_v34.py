@@ -1,11 +1,13 @@
 """
-DAYS-BOT V4.3 – Full Scan Engine
+DAYS-BOT V5.0 – Full Scan Engine (with Dynamic Scoring)
 """
 from datetime import datetime
 from typing import List, Dict, Any
 import pytz
 
 from scanner.pm_engine import get_premarket_minute_data
+from scanner.early_move import calculate_early_move_score
+from scanner.scoring_dynamic import calculate_dynamic_scores
 from scanner.analyzers.float_analyzer import get_float_and_short
 from scanner.analyzers.sec_analyzer import check_offering_risk
 from scanner.analyzers.catalyst_analyzer import classify_catalyst
@@ -17,7 +19,7 @@ from scanner.analyzers.personality_analyzer import get_stock_personality
 from scanner.analyzers.sympathy_scanner import find_sympathy_candidates
 from scanner.vwap_engine import calculate_vwap
 from risk.trade_plan_v34 import build_trade_plan
-from scanner.scoring_engine import calculate_composite_score
+from scanner.scoring_engine import calculate_composite_score  # legacy, keep for fallback
 from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
 ET = pytz.timezone("America/New_York")
@@ -32,10 +34,6 @@ def _safe_call(func, default, *args, **kwargs):
 
 
 def _check_data_completeness(candidate: dict) -> dict:
-    """
-    Check if critical data is available.
-    RVOL is INFORMATIONAL only – does NOT affect completeness.
-    """
     missing = []
     critical_fields = [
         ("price", "מחיר"),
@@ -46,29 +44,15 @@ def _check_data_completeness(candidate: dict) -> dict:
         ("catalyst_type", "קטליזטור"),
         ("sec_risk_level", "SEC Risk"),
     ]
-
     for field, label in critical_fields:
         value = candidate.get(field)
         if value is None or value == "UNAVAILABLE" or value == "":
             missing.append(label)
-
-    # Special case: pm_high is None or 0
     if candidate.get('pm_high') is None or candidate.get('pm_high') == 0:
         if "PM High" not in missing:
             missing.append("PM High")
-
-    if len(missing) == 0:
-        status = "ACTIONABLE"
-    elif len(missing) <= 2:
-        status = "WATCH"
-    else:
-        status = "NO_TRADE"
-
-    return {
-        "complete": len(missing) == 0,
-        "missing": missing,
-        "status": status
-    }
+    status = "ACTIONABLE" if len(missing) == 0 else "WATCH" if len(missing) <= 2 else "NO_TRADE"
+    return {"complete": len(missing) == 0, "missing": missing, "status": status}
 
 
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
@@ -85,7 +69,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis = {}
 
         # ------------------------------------------------------------
-        # 1. REAL PM DATA (Alpaca 1-min bars)
+        # 1. REAL PM DATA
         # ------------------------------------------------------------
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker)
         if pm_data and pm_data.get('error') is None:
@@ -121,7 +105,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['bid'] = c['bid']
         analysis['ask'] = c['ask']
 
-        # RVOL – INFORMATIONAL ONLY
+        # RVOL (informational)
         rvol_data = _safe_call(calculate_rvol, {}, c)
         if isinstance(rvol_data, dict):
             c['rvol'] = rvol_data.get('rvol', None)
@@ -179,7 +163,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['personality'] = _safe_call(get_stock_personality, {}, ticker, c.get('gap_pct', 0))
         c['personality'] = analysis['personality']
 
-        # VWAP – only if real pm_high exists
+        # VWAP
         if c.get('pm_high') is not None and c.get('pm_high') > 0:
             vwap_data = {
                 "vwap": c.get('pm_vwap'),
@@ -199,7 +183,44 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3)
         c['sympathy'] = analysis['sympathy']
 
-        # Trade Plan
+        # Early Move (NEW)
+        early_data = _safe_call(
+            calculate_early_move_score,
+            {},
+            ticker,
+            c.get('pm_high'),
+            c.get('pm_vwap'),
+            None  # bars will be fetched internally
+        )
+        if early_data:
+            c['early_score'] = early_data.get('early_score', 0)
+            c['early_state'] = early_data.get('state', 'UNKNOWN')
+            c['early_components'] = early_data.get('components', {})
+        else:
+            c['early_score'] = 0
+            c['early_state'] = 'UNKNOWN'
+            c['early_components'] = {}
+        analysis['early'] = early_data
+
+        # Dynamic Scores (NEW)
+        dynamic = _safe_call(
+            calculate_dynamic_scores,
+            {},
+            c,
+            analysis,
+            early_data or {}
+        )
+        if dynamic:
+            c['day_trade_score'] = dynamic.get('day_trade_score', 0)
+            c['swing_score'] = dynamic.get('swing_score', 0)
+            c['early_score'] = dynamic.get('early_score', 0)
+            c['early_state'] = dynamic.get('early_state', 'UNKNOWN')
+            c['early_components'] = dynamic.get('early_components', {})
+        else:
+            c['day_trade_score'] = 0
+            c['swing_score'] = 0
+
+        # Trade Plan (still uses legacy trade plan)
         plan = _safe_call(
             build_trade_plan,
             {},
@@ -217,11 +238,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # Composite Score
-        raw_score = _safe_call(calculate_composite_score, 0, c, analysis)
-        c['composite_score'] = raw_score
+        # Legacy Composite Score (keep for fallback)
+        legacy_score = _safe_call(calculate_composite_score, 0, c, analysis)
+        c['composite_score'] = legacy_score
 
-        # Data Completeness Gate (RVOL excluded)
+        # Data Completeness Gate
         completeness = _check_data_completeness(c)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
@@ -230,12 +251,19 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['trade_type'] = 'NO_TRADE'
         elif completeness['status'] == 'WATCH':
             c['trade_type'] = 'WATCH'
+        else:
+            # ACTIONABLE – use dynamic to determine trade type
+            if c.get('day_trade_score', 0) >= 70 and c.get('swing_score', 0) >= 70:
+                c['trade_type'] = 'BOTH'
+            elif c.get('day_trade_score', 0) >= 70:
+                c['trade_type'] = 'INTRADAY'
+            elif c.get('swing_score', 0) >= 70:
+                c['trade_type'] = 'SWING_1_3D'
+            else:
+                c['trade_type'] = 'WATCH'
 
         c['analysis'] = analysis
         enriched.append(c)
 
     enriched.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
-    top5 = enriched[:5] if len(enriched) >= 5 else enriched
-
-    print(f"[FullScan] Returning {len(top5)} candidates")
-    return top5
+    return enriched[:5] if len(enriched) >= 5 else enriched
