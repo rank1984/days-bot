@@ -1,12 +1,11 @@
 """
 DAYS-BOT V4.3 – Full Scan Engine
-- Swing Score is conditional on Data Completeness
-- Missing RVOL or Spread reduces Swing Score
 """
 from datetime import datetime
 from typing import List, Dict, Any
 import pytz
 
+from scanner.pm_engine import get_premarket_minute_data
 from scanner.analyzers.float_analyzer import get_float_and_short
 from scanner.analyzers.sec_analyzer import check_offering_risk
 from scanner.analyzers.catalyst_analyzer import classify_catalyst
@@ -54,10 +53,10 @@ def _check_data_completeness(candidate: dict) -> dict:
         if value is None or value == "UNAVAILABLE" or value == "":
             missing.append(label)
 
-    # Special handling for spread (optional, but important)
-    spread = candidate.get('spread_pct')
-    if spread is None or spread == "UNAVAILABLE":
-        missing.append("מרווח")
+    # Special case: pm_high is None or 0
+    if candidate.get('pm_high') is None or candidate.get('pm_high') == 0:
+        if "PM High" not in missing:
+            missing.append("PM High")
 
     if len(missing) == 0:
         status = "ACTIONABLE"
@@ -86,18 +85,38 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         analysis = {}
 
-        # Ensure basic fields exist
-        if 'pm_data_quality' not in c or c['pm_data_quality'] is None:
-            c['pm_data_quality'] = 'UNKNOWN_PM_DATA'
+        # ------------------------------------------------------------
+        # 1. REAL PM DATA (Alpaca 1-min bars)
+        # ------------------------------------------------------------
+        pm_data = _safe_call(get_premarket_minute_data, {}, ticker)
+        if pm_data and pm_data.get('error') is None:
+            # Use real PM data
+            c['pm_high'] = pm_data.get('pm_high')
+            c['pm_low'] = pm_data.get('pm_low')
+            c['pm_vwap'] = pm_data.get('pm_vwap')
+            c['pm_volume'] = pm_data.get('pm_volume')
+            c['pm_bars'] = pm_data.get('pm_bars_count', 0)
+            c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
+            c['pm_dist_signed'] = ((c['price'] - c['pm_high']) / c['pm_high']) * 100.0 if c['pm_high'] and c['pm_high'] > 0 else None
+            print(f"[FullScan] PM data: high={c['pm_high']}, vwap={c['pm_vwap']}, bars={c['pm_bars']}")
+        else:
+            # No real PM data – mark as UNAVAILABLE (not fake)
+            c['pm_high'] = None
+            c['pm_low'] = None
+            c['pm_vwap'] = None
+            c['pm_volume'] = c.get('pm_volume', 0)  # keep snapshot volume as fallback
+            c['pm_bars'] = 0
+            c['pm_data_quality'] = 'UNAVAILABLE'
+            c['pm_dist_signed'] = None
+            print(f"[FullScan] ⚠️ No PM data for {ticker}")
+
         analysis['pm_data_quality'] = c['pm_data_quality']
 
+        # Ensure basic fields exist
         c['price'] = c.get('price', 0)
         c['gap_pct'] = c.get('gap_pct', 0)
-        c['pm_volume'] = c.get('pm_volume', 0)
-        c['pm_high'] = c.get('pm_high', 0)
-        c['pm_vwap'] = c.get('pm_vwap', 0)
 
-        # Spread – from discovery
+        # Spread
         spread = c.get('spread_pct')
         if spread is None or spread == "UNAVAILABLE":
             c['spread_pct'] = None
@@ -155,7 +174,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['sec_risk_level'] = 'LOW'
             c['sec_has_offering'] = False
 
-        # Float & Short
+        # Float & Short (FMP or fallback)
         analysis['float_data'] = _safe_call(get_float_and_short, {}, ticker)
         c['float'] = analysis['float_data'].get('float')
         c['short_interest'] = analysis['float_data'].get('short_interest')
@@ -167,18 +186,31 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['personality'] = _safe_call(get_stock_personality, {}, ticker, c.get('gap_pct', 0))
         c['personality'] = analysis['personality']
 
-        # VWAP
-        vwap_data = _safe_call(calculate_vwap, {}, ticker, 30)
-        if not vwap_data:
-            vwap_data = _safe_call(calculate_pm_vwap_from_candidate, {}, c)
-        analysis['vwap'] = vwap_data
-        c['vwap_data'] = vwap_data
-        if isinstance(vwap_data, dict):
-            c['vwap'] = vwap_data.get('vwap', 0)
-            c['vwap_support'] = vwap_data.get('vwap_support', 0)
-            c['vwap_resistance'] = vwap_data.get('vwap_resistance', 0)
+        # VWAP – only if real pm_high exists
+        if c.get('pm_high') is not None and c.get('pm_high') > 0:
+            # Use real PM data for VWAP
+            vwap_data = {
+                "vwap": c.get('pm_vwap'),
+                "vwap_high": c.get('pm_high'),
+                "vwap_low": c.get('pm_low'),
+                "vwap_support": c.get('pm_vwap') * 0.995 if c.get('pm_vwap') else None,
+                "vwap_resistance": c.get('pm_vwap') * 1.005 if c.get('pm_vwap') else None,
+                "source": "premarket"
+            }
+            analysis['vwap'] = vwap_data
+            c['vwap_data'] = vwap_data
+            c['vwap'] = c.get('pm_vwap')
         else:
-            c['vwap'] = 0
+            # Fallback: yfinance VWAP
+            vwap_data = _safe_call(calculate_vwap, {}, ticker, 30)
+            if vwap_data:
+                analysis['vwap'] = vwap_data
+                c['vwap_data'] = vwap_data
+                c['vwap'] = vwap_data.get('vwap', 0)
+            else:
+                analysis['vwap'] = {}
+                c['vwap_data'] = {}
+                c['vwap'] = None
 
         # Sympathy
         analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3)
@@ -210,12 +242,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         completeness = _check_data_completeness(c)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
-
-        # SWING SCORE ADJUSTMENT:
-        # If data completeness is not ACTIONABLE, reduce Swing Score
-        raw_swing = c.get('swing_score', 0)  # will be set later, but we can still adjust
-        # We'll store the raw score and adjust later
-        c['raw_swing_score'] = raw_swing
 
         # Override trade_type if data is incomplete
         if completeness['status'] == 'NO_TRADE':
