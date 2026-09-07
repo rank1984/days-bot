@@ -1,12 +1,15 @@
 """
 DAYS-BOT V4.3 – Volume Analyzer (RVOL)
 Uses Alpaca historical intraday data for time-adjusted RVOL.
+
+Debug: prints raw date distribution to diagnose "Historical days: 0".
 """
 import pytz
 import requests
 from datetime import datetime, timedelta, time
 from typing import Optional
 from statistics import median
+from collections import Counter
 from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
 
 ET = pytz.timezone("America/New_York")
@@ -73,6 +76,15 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 10) -> Optional[
             print(f"[RVOL] ⚠️ No bars for {ticker}")
             return None
 
+        # ============================================================
+        # DEBUG: Raw date distribution
+        # ============================================================
+        date_counts = Counter(
+            datetime.fromisoformat(b["t"].replace("Z", "+00:00")).astimezone(ET).date()
+            for b in bars
+        )
+        print(f"[RVOL DEBUG] {ticker} raw bar dates: {dict(date_counts)}")
+
         # Group by date and sum PM volume up to current time
         daily_volumes = {}
         for bar in bars:
@@ -117,42 +129,33 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 10) -> Optional[
 def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
     """
     Fallback to yfinance daily average volume.
-
     CRITICAL FIXES:
-    - Date range limited to 60 days max (per yfinance limitation)
-    - Properly handle pandas Series to avoid "only 0-dimensional arrays" error
+    - Use 2-month period (approx 60 days) to avoid "must be within 60 days" error.
+    - Properly convert Series to Python scalars.
     """
     try:
         import yfinance as yf
-        import pandas as pd
-
         print(f"[RVOL] 📡 Using yfinance fallback for {ticker}")
 
-        # Limit to 60 days (not a full year)
-        end = datetime.now()
-        start = end - timedelta(days=60)
-
-        # Use period="2mo" to get ~60 days of daily data
+        # Use 2-month period to stay within 60-day limit
         data = yf.download(ticker, period="2mo", interval="1d", progress=False)
 
         if data.empty:
             print(f"[RVOL] ⚠️ No yfinance data for {ticker}")
             return None
 
-        # Get the volume series and convert to list of floats (scalars)
         vol_series = data['Volume'].dropna()
         if len(vol_series) == 0:
             print(f"[RVOL] ⚠️ No volume data for {ticker}")
             return None
 
-        # Convert to list of Python floats (not pandas Series)
+        # Convert to list of Python floats
         volumes = [float(v) for v in vol_series.values]
 
         if len(volumes) < 5:
             print(f"[RVOL] ⚠️ Not enough volume data points: {len(volumes)}")
             return None
 
-        # Use last 30 days if available, else all
         if len(volumes) >= 30:
             avg_volume = sum(volumes[-30:]) / 30
         else:
