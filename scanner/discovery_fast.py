@@ -1,10 +1,9 @@
 """
 DAYS-BOT V4.3 – Fast Discovery
-- Spread: if bid/ask missing, set to UNAVAILABLE (not 0.00%)
-- pm_data_quality: preserved from snapshot
+Returns (candidates, diagnostics_dict)
 """
 from datetime import datetime
-from typing import Dict, List, Optional, Iterable
+from typing import Dict, List, Optional, Iterable, Tuple
 import time
 import pytz
 import requests
@@ -77,7 +76,6 @@ def _extract_snapshots(payload: dict) -> Dict[str, dict]:
 
 
 def _calculate_spread(bid: float, ask: float) -> Optional[float]:
-    """Return spread percentage or None if invalid data"""
     if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
         return None
     mid = (bid + ask) / 2.0
@@ -131,8 +129,6 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime, strict: bool 
         _safe_float(ask) if ask is not None else None,
     )
 
-    dollar_volume = price * volume
-
     rejection_reasons = []
     if price < DISCOVERY_MIN_PRICE:
         rejection_reasons.append("PRICE_TOO_LOW")
@@ -167,18 +163,17 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime, strict: bool 
         "pm_low": price,
         "pm_vwap": price,
         "pm_dist_signed": 0.0,
-        "spread_pct": spread_pct,  # may be None
+        "spread_pct": spread_pct,
         "bid": bid,
         "ask": ask,
-        "dollar_volume": round(dollar_volume, 2),
         "event_score": score,
         "discovery_score": score,
         "discovery_status": discovery_status,
         "rejection_reasons": rejection_reasons,
         "pm_data_quality": "SNAPSHOT_DATA",
         "mode": "LIVE",
-        "strategy_version": "V4.2.1",
-        "data_version": "ALPACA_IEX_V421",
+        "strategy_version": "V4.3",
+        "data_version": "ALPACA_IEX_V43",
         "scan_date": now_et.strftime("%Y-%m-%d"),
         "source": "ALPACA_SNAPSHOT",
     }
@@ -243,15 +238,18 @@ def _request_with_retry(session, batch, attempt=0):
         return None
 
 
-def fast_discovery() -> List[dict]:
+def fast_discovery() -> Tuple[List[dict], dict]:
+    """
+    Returns (candidates, diagnostics)
+    """
     now_et = datetime.now(ET)
     universe = load_universe()
     if not universe:
         print("[FastDiscovery] ERROR: Empty universe")
-        return []
+        return [], {}
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
         print("[FastDiscovery] ERROR: Missing ALPACA_API_KEY or ALPACA_SECRET_KEY")
-        return []
+        return [], {}
 
     clean_universe = []
     seen = set()
@@ -379,7 +377,26 @@ def fast_discovery() -> List[dict]:
             reject_price_low, reject_price_high, reject_gap, reject_volume, reject_invalid
         )
         print("=" * 74)
-        return result
+
+        # Build diagnostics dict to return
+        diagnostics = {
+            "batches": batches,
+            "successful_batches": successful_batches,
+            "failed_batches": failed_batches,
+            "requested_symbols": requested_symbols,
+            "returned_snapshots": returned_snapshots,
+            "valid_price": valid_price,
+            "valid_prev_close": valid_prev_close,
+            "parsed_raw": parsed_raw,
+            "strict_candidates": len(strict_candidates),
+            "fallback_candidates": len(fallback_candidates),
+            "reject_price_low": reject_price_low,
+            "reject_price_high": reject_price_high,
+            "reject_gap": reject_gap,
+            "reject_volume": reject_volume,
+            "reject_invalid": reject_invalid,
+        }
+        return result, diagnostics
 
     print()
     print("[FastDiscovery] WARNING: No strict candidates.")
@@ -392,7 +409,7 @@ def fast_discovery() -> List[dict]:
             reject_price_low, reject_price_high, reject_gap, reject_volume, reject_invalid
         )
         print("=" * 74)
-        return []
+        return [], {}
 
     fallback_candidates.sort(key=lambda x: (x.get("discovery_score", 0), abs(x.get("gap_pct", 0)), x.get("pm_volume", 0)), reverse=True)
     fallback_result = fallback_candidates[:FALLBACK_LIMIT]
@@ -405,4 +422,22 @@ def fast_discovery() -> List[dict]:
         reject_price_low, reject_price_high, reject_gap, reject_volume, reject_invalid
     )
     print("=" * 74)
-    return fallback_result
+
+    diagnostics = {
+        "batches": batches,
+        "successful_batches": successful_batches,
+        "failed_batches": failed_batches,
+        "requested_symbols": requested_symbols,
+        "returned_snapshots": returned_snapshots,
+        "valid_price": valid_price,
+        "valid_prev_close": valid_prev_close,
+        "parsed_raw": parsed_raw,
+        "strict_candidates": len(strict_candidates),
+        "fallback_candidates": len(fallback_candidates),
+        "reject_price_low": reject_price_low,
+        "reject_price_high": reject_price_high,
+        "reject_gap": reject_gap,
+        "reject_volume": reject_volume,
+        "reject_invalid": reject_invalid,
+    }
+    return fallback_result, diagnostics
