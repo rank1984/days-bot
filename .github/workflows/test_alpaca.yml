@@ -27,7 +27,7 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
         run: |
-          python -c "
+          python - <<'EOF'
           import os
           from alpaca.data.historical import StockHistoricalDataClient
           from alpaca.data.requests import StockBarsRequest
@@ -53,7 +53,6 @@ jobs:
               client = StockHistoricalDataClient(API_KEY, SECRET_KEY)
               print('✅ Alpaca client created successfully')
 
-              # Try to fetch bars for AAPL
               req = StockBarsRequest(
                   symbol_or_symbols='AAPL',
                   timeframe=TimeFrame.Day,
@@ -83,4 +82,4 @@ jobs:
           print('=' * 60)
           print('✅ TEST COMPLETE')
           print('=' * 60)
-          "
+          EOF
