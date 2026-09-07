@@ -53,7 +53,15 @@ def _classify_trade_type(candidate):
     intraday_score = float(candidate.get("composite_score", 0) or 0)
     swing_score = float(candidate.get("swing_score", 0) or 0)
     plan_valid = bool(candidate.get("plan_valid", False))
+    data_status = candidate.get("data_status", "NO_TRADE")
 
+    # If data is incomplete, downgrade
+    if data_status == "NO_TRADE":
+        return "NO_TRADE"
+    if data_status == "WATCH":
+        return "WATCH"
+
+    # Data is complete (ACTIONABLE)
     if intraday_score >= 75 and swing_score >= 70:
         return "BOTH"
     if intraday_score >= 75 and plan_valid:
@@ -66,14 +74,12 @@ def _classify_trade_type(candidate):
 
 
 def _get_discovery_stats(candidates: list) -> dict:
-    """Extract stats from first candidate (if available) or from fast_discovery"""
-    # If candidates have discovery stats embedded
+    # Extract stats from first candidate (if available)
     for c in candidates[:5]:
         if "rejection_reasons" in c:
-            # This is from fast_discovery
             return {
                 "universe": 500,
-                "returned_snapshots": len(candidates) * 10,  # rough estimate
+                "returned_snapshots": len(candidates) * 10,
                 "valid_price": len(candidates),
                 "valid_prev_close": len(candidates),
                 "parsed_raw": len(candidates),
@@ -181,11 +187,9 @@ def run_fullscan_v34(manual=False):
     # ------------------------------------------------------------
     print("[Main] Sending Telegram...")
 
-    # Send research report (Top 5)
     msg = format_research_report(top5, now_et)
     send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
 
-    # Send lesson (if there are recommendations)
     if lesson.get("recommendations"):
         lesson_msg = format_lesson_for_telegram(lesson)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, lesson_msg)
@@ -197,7 +201,7 @@ def run_fullscan_v34(manual=False):
     print("TOP 5")
     print("=" * 74)
     for i, c in enumerate(top5, 1):
-        print(f"{i}. {c.get('ticker')} | Intraday={c.get('composite_score', 0):.1f} | Swing={c.get('swing_score', 0):.1f} | Type={c.get('trade_type', 'WATCH')}")
+        print(f"{i}. {c.get('ticker')} | Intraday={c.get('composite_score', 0):.1f} | Swing={c.get('swing_score', 0):.1f} | Type={c.get('trade_type', 'WATCH')} | Data={c.get('data_status', 'UNKNOWN')}")
     print("=" * 74)
     print("⚠️ NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY")
     print("=" * 74)
