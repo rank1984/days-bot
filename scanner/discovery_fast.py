@@ -1,11 +1,14 @@
 """
-DAYS-BOT V4.2.1 – Fast Discovery with Retry/Backoff
+DAYS-BOT V4.3 – Fast Discovery
+- Spread: if bid/ask missing, set to UNAVAILABLE (not 0.00%)
+- pm_data_quality: preserved from snapshot
 """
-import time
 from datetime import datetime
 from typing import Dict, List, Optional, Iterable
+import time
 import pytz
 import requests
+
 from scanner.universe import load_universe
 from utils.config import (
     ALPACA_API_KEY,
@@ -23,7 +26,7 @@ SNAPSHOT_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/snapshots"
 BATCH_SIZE = 200
 REQUEST_TIMEOUT = 15
 MAX_RETRIES = 3
-BASE_BACKOFF = 1.0  # seconds
+BASE_BACKOFF = 1.0
 
 FALLBACK_LIMIT = max(15, min(30, MAX_DISCOVERY_CANDIDATES * 2))
 
@@ -73,16 +76,17 @@ def _extract_snapshots(payload: dict) -> Dict[str, dict]:
     return snapshots
 
 
-def _calculate_spread(bid: float, ask: float) -> float:
-    if bid <= 0 or ask <= 0 or ask < bid:
-        return 0.0
+def _calculate_spread(bid: float, ask: float) -> Optional[float]:
+    """Return spread percentage or None if invalid data"""
+    if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
+        return None
     mid = (bid + ask) / 2.0
     if mid <= 0:
-        return 0.0
-    return ((ask - bid) / mid) * 100.0
+        return None
+    return round(((ask - bid) / mid) * 100.0, 3)
 
 
-def _score_snapshot(price: float, gap_pct: float, volume: int, spread_pct: float) -> float:
+def _score_snapshot(price: float, gap_pct: float, volume: int, spread_pct: Optional[float]) -> float:
     score = 0.0
     if gap_pct > 0:
         score += min(gap_pct * 2.0, 35.0)
@@ -92,10 +96,11 @@ def _score_snapshot(price: float, gap_pct: float, volume: int, spread_pct: float
         score += min((volume / 100_000.0) * 10.0, 30.0)
     if DISCOVERY_MIN_PRICE <= price <= DISCOVERY_MAX_PRICE:
         score += 10.0
-    if spread_pct <= 1.0:
-        score += 15.0
-    elif spread_pct <= 2.0:
-        score += 8.0
+    if spread_pct is not None:
+        if spread_pct <= 1.0:
+            score += 15.0
+        elif spread_pct <= 2.0:
+            score += 8.0
     if gap_pct >= 10:
         score += 10.0
     elif gap_pct >= 5:
@@ -113,15 +118,19 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime, strict: bool 
     prev_close = _safe_float(prev_daily_bar.get("c"))
     if prev_close <= 0:
         prev_close = _safe_float(daily_bar.get("o"))
-
     if price <= 0 or prev_close <= 0:
         return None
 
     gap_pct = ((price - prev_close) / prev_close) * 100.0
     volume = _safe_int(daily_bar.get("v"))
-    bid = _safe_float(latest_quote.get("bp"))
-    ask = _safe_float(latest_quote.get("ap"))
-    spread_pct = _calculate_spread(bid, ask)
+
+    bid = latest_quote.get("bp")
+    ask = latest_quote.get("ap")
+    spread_pct = _calculate_spread(
+        _safe_float(bid) if bid is not None else None,
+        _safe_float(ask) if ask is not None else None,
+    )
+
     dollar_volume = price * volume
 
     rejection_reasons = []
@@ -158,7 +167,7 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime, strict: bool 
         "pm_low": price,
         "pm_vwap": price,
         "pm_dist_signed": 0.0,
-        "spread_pct": round(spread_pct, 3),
+        "spread_pct": spread_pct,  # may be None
         "bid": bid,
         "ask": ask,
         "dollar_volume": round(dollar_volume, 2),
@@ -185,16 +194,15 @@ def _print_top_candidates(candidates: List[dict], title: str = "TOP CANDIDATES")
         score = c.get("discovery_score", 0)
         gap = c.get("gap_pct", 0)
         volume = c.get("pm_volume", 0)
+        spread = c.get("spread_pct")
+        spread_str = f"{spread:.2f}%" if spread is not None else "N/A"
         status = c.get("discovery_status", "UNKNOWN")
-        print(f"{i:2d}. {ticker:6s} score={score:5.1f} gap={gap:+6.2f}% vol={volume:>10,} status={status}")
+        print(f"{i:2d}. {ticker:6s} score={score:5.1f} gap={gap:+6.2f}% vol={volume:>10,} spread={spread_str:>6} status={status}")
 
 
-def _print_diagnostics(
-    batches, successful_batches, failed_batches, requested_symbols,
-    returned_snapshots, valid_price, valid_prev_close, parsed_raw,
-    strict_candidates, fallback_candidates, reject_price_low,
-    reject_price_high, reject_gap, reject_volume, reject_invalid
-):
+def _print_diagnostics(batches, successful_batches, failed_batches, requested_symbols, returned_snapshots,
+                        valid_price, valid_prev_close, parsed_raw, strict_candidates, fallback_candidates,
+                        reject_price_low, reject_price_high, reject_gap, reject_volume, reject_invalid):
     print()
     print("=" * 74)
     print("[FastDiscovery] DIAGNOSTICS")
@@ -217,8 +225,7 @@ def _print_diagnostics(
     print(f"Rejected: invalid            {reject_invalid}")
 
 
-def _request_with_retry(session, batch, attempt=0) -> Optional[dict]:
-    """Request with exponential backoff on 429"""
+def _request_with_retry(session, batch, attempt=0):
     try:
         response = session.get(
             SNAPSHOT_URL,
@@ -257,7 +264,7 @@ def fast_discovery() -> List[dict]:
 
     print()
     print("=" * 74)
-    print("[FastDiscovery] V4.2.1 ALPACA DISCOVERY")
+    print("[FastDiscovery] V4.3 ALPACA DISCOVERY")
     print("=" * 74)
     print(f"[FastDiscovery] Universe symbols: {len(clean_universe)}")
     print(f"[FastDiscovery] Batch size: {BATCH_SIZE}")
@@ -355,7 +362,6 @@ def fast_discovery() -> List[dict]:
                 reject_invalid += 1
                 print(f"[FastDiscovery] {ticker} parse error: {exc}")
 
-        # Small delay between batches to avoid rate limiting
         time.sleep(0.5)
 
     strict_candidates.sort(key=lambda x: (x.get("discovery_score", 0), abs(x.get("gap_pct", 0)), x.get("pm_volume", 0)), reverse=True)
