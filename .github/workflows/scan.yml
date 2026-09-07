@@ -1,66 +1,44 @@
-name: DAYS-BOT V4.1 Research Scanner
+name: DAYS-BOT V4.3 Trading Scanner
 
 on:
   schedule:
-    - cron: "45 8 * * 1-5"
-      timezone: "America/New_York"
-
-    - cron: "0 9 * * 1-5"
-      timezone: "America/New_York"
-
-    - cron: "15 9 * * 1-5"
-      timezone: "America/New_York"
-
+    # 08:45 ET, 09:00 ET, 09:15 ET (UTC: 12:45, 13:00, 13:15)
+    - cron: "45 12 * * 1-5"
+    - cron: "0 13 * * 1-5"
+    - cron: "15 13 * * 1-5"
   workflow_dispatch:
 
 jobs:
   scan:
-
     runs-on: ubuntu-latest
-
     timeout-minutes: 12
-
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
+      - run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Prepare data directory
-        run: |
-          mkdir -p data
-
-      - name: Run DAYS-BOT V4.1
+      - run: mkdir -p data
+      - name: Run V4.3 Scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-
+          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python main.py fullscan_v34 --manual
           else
             python main.py fullscan_v34
           fi
-
-      - name: Upload alerts database
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alerts-db-v41
+          name: alerts-db-v43
           path: data/alerts.db
           retention-days: 30
