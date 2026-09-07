@@ -4,15 +4,12 @@ Uses Alpaca historical intraday data for time-adjusted RVOL.
 """
 import pytz
 import requests
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta
 from typing import Optional
 from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
 
 ET = pytz.timezone("America/New_York")
 BARS_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/bars"
-
-PM_START = time(4, 0)
-PM_END = time(9, 30)
 
 
 def _headers() -> dict:
@@ -36,7 +33,6 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
     current_time = now_et.time()
     target_date = now_et.date()
 
-    # We need data from the last N days (including today)
     start = now_et - timedelta(days=lookback_days + 1)
 
     try:
@@ -80,8 +76,11 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
             bar_date = ts_et.date()
 
             # Only PM window (04:00-09:30) and up to current time
-            if not (PM_START <= bar_time < PM_END):
+            # Convert to decimal hours for reliable comparison
+            hour = bar_time.hour + bar_time.minute / 60.0
+            if not (4.0 <= hour < 9.5):
                 continue
+            # Only up to current time
             if bar_time > current_time:
                 continue
 
@@ -122,7 +121,7 @@ def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
             print(f"[RVOL] ⚠️ No yfinance data for {ticker}")
             return None
 
-        # Get the last 30 days volume, or fewer if not enough data
+        # Get the volume series
         vol_series = data['Volume'].dropna()
         if len(vol_series) == 0:
             print(f"[RVOL] ⚠️ No volume data for {ticker}")
@@ -130,19 +129,19 @@ def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
 
         # Use last 30 days, or all available if less
         if len(vol_series) >= 30:
-            avg_daily = vol_series.iloc[-30:].mean()
+            avg_volume = float(vol_series.iloc[-30:].mean())
         else:
-            avg_daily = vol_series.mean()
+            avg_volume = float(vol_series.mean())
 
-        if avg_daily > 0:
-            rvol = round(pm_volume / avg_daily, 2)
+        if avg_volume > 0:
+            rvol = round(pm_volume / avg_volume, 2)
             print(f"[RVOL] ⚠️ RVOL = {rvol} (PREMARKET_FALLBACK)")
             return {
                 "rvol": rvol,
                 "status": "PREMARKET_FALLBACK",
                 "method": "PM volume / avg daily volume (30d)",
                 "pm_volume": pm_volume,
-                "reference_volume": round(float(avg_daily))
+                "reference_volume": round(avg_volume)
             }
 
     except Exception as e:
@@ -152,10 +151,6 @@ def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
 
 
 def calculate_rvol(candidate: dict) -> dict:
-    """
-    Calculate time-adjusted RVOL using Alpaca historical data.
-    Returns: {"rvol": float, "status": str, "method": str, "reference_volume": int, "pm_volume": int}
-    """
     ticker = candidate.get('ticker')
     pm_volume = candidate.get('pm_volume', 0)
 
