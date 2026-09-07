@@ -5,7 +5,6 @@ Intraday + Swing 1–3D
 import sys
 from pathlib import Path
 from datetime import datetime
-
 import pytz
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,7 +15,6 @@ ET = pytz.timezone("America/New_York")
 from utils.config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
-    DISCOVERY_MIN_GAP,
 )
 from scanner.premarket import scan_premarket
 from scanner.full_scan_v34 import full_scan_v34
@@ -55,10 +53,9 @@ def _classify_trade_type(candidate):
     if data_status == "WATCH":
         return "WATCH"
 
-    # Only positive gaps for Gap-and-Go
-    gap_pct = candidate.get('gap_pct', 0)
-    if gap_pct < 0:
-        return "WATCH"  # negative gap → not a trade candidate
+    # Gap-and-Go requires positive gap
+    if candidate.get('gap_pct', 0) < 0:
+        return "WATCH"
 
     if intraday_score >= 75 and swing_score >= 70:
         return "BOTH"
@@ -69,24 +66,6 @@ def _classify_trade_type(candidate):
     if intraday_score >= 60 or swing_score >= 60:
         return "WATCH"
     return "WATCH"
-
-
-def _get_discovery_stats(candidates: list) -> dict:
-    # Use actual counts from the candidates themselves
-    return {
-        "universe": 500,
-        "returned_snapshots": len(candidates) * 10 if candidates else 0,
-        "valid_price": len(candidates),
-        "valid_prev_close": len(candidates),
-        "parsed_raw": len(candidates),
-        "strict_candidates": len(candidates),
-        "fallback_candidates": 0,
-        "reject_price_low": 0,
-        "reject_price_high": 0,
-        "reject_gap": 0,
-        "reject_volume": 0,
-        "reject_invalid": 0,
-    }
 
 
 def run_fullscan_v34(manual=False):
@@ -102,7 +81,7 @@ def run_fullscan_v34(manual=False):
     # 1. DISCOVERY
     # ------------------------------------------------------------
     print("[Main] Starting discovery...")
-    candidates = scan_premarket(now_et.strftime("%Y-%m-%d"), manual)
+    candidates, discovery_stats = scan_premarket(now_et.strftime("%Y-%m-%d"), manual)
 
     if not candidates:
         print("[Main] ❌ No candidates found by discovery.")
@@ -140,15 +119,17 @@ def run_fullscan_v34(manual=False):
 
         try:
             save_alert(**candidate)
+            print(f"[Main] DB saved: {candidate.get('ticker')}")
         except Exception as e:
-            print(f"[Main] DB save error {candidate.get('ticker')}: {e}")
+            print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {e}")
 
     # ------------------------------------------------------------
-    # 4. LEARNING
+    # 4. LEARNING (using real discovery stats)
     # ------------------------------------------------------------
     print("[Main] Building daily lesson...")
-    discovery_stats = _get_discovery_stats(candidates)
     previous_lesson = load_previous_learning()
+
+    # Use real diagnostics from discovery
     lesson = build_lesson(
         candidates=candidates,
         top5=top5,
