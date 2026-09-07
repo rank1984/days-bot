@@ -390,3 +390,15 @@ def calculate_early_move_score(
     early_score = 0.0
     for key, weight in weights.items():
         early_score += components.get(key, 0) * weight
+
+    early_score = round(early_score, 1)
+
+    # State classification
+    state = _classify_state(early_score, components)
+
+    return {
+        "early_score": early_score,
+        "state": state,
+        "components": components,
+        "bars_count": len(bars),
+    }
