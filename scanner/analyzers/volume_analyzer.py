@@ -117,25 +117,42 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 10) -> Optional[
 def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
     """
     Fallback to yfinance daily average volume.
+
+    CRITICAL FIXES:
+    - Date range limited to 60 days max (per yfinance limitation)
+    - Properly handle pandas Series to avoid "only 0-dimensional arrays" error
     """
     try:
         import yfinance as yf
+        import pandas as pd
+
         print(f"[RVOL] 📡 Using yfinance fallback for {ticker}")
-        data = yf.download(ticker, period="1mo", interval="1d", progress=False)
+
+        # Limit to 60 days (not a full year)
+        end = datetime.now()
+        start = end - timedelta(days=60)
+
+        # Use period="2mo" to get ~60 days of daily data
+        data = yf.download(ticker, period="2mo", interval="1d", progress=False)
 
         if data.empty:
             print(f"[RVOL] ⚠️ No yfinance data for {ticker}")
             return None
 
-        # Get the volume series and convert to float list
+        # Get the volume series and convert to list of floats (scalars)
         vol_series = data['Volume'].dropna()
         if len(vol_series) == 0:
             print(f"[RVOL] ⚠️ No volume data for {ticker}")
             return None
 
-        # Convert to list of floats
+        # Convert to list of Python floats (not pandas Series)
         volumes = [float(v) for v in vol_series.values]
 
+        if len(volumes) < 5:
+            print(f"[RVOL] ⚠️ Not enough volume data points: {len(volumes)}")
+            return None
+
+        # Use last 30 days if available, else all
         if len(volumes) >= 30:
             avg_volume = sum(volumes[-30:]) / 30
         else:
@@ -147,7 +164,7 @@ def _yfinance_fallback(ticker: str, pm_volume: int) -> Optional[dict]:
             return {
                 "rvol": rvol,
                 "status": "PREMARKET_FALLBACK",
-                "method": "PM volume / avg daily volume (30d)",
+                "method": f"PM volume / avg daily volume ({len(volumes)} days)",
                 "pm_volume": pm_volume,
                 "reference_volume": round(avg_volume)
             }
