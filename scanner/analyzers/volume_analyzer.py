@@ -26,6 +26,7 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
     Uses Alpaca 1-minute bars.
     """
     if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        print("[RVOL] ⚠️ Alpaca API keys missing")
         return None
 
     now_et = datetime.now(ET)
@@ -37,6 +38,7 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
     start = now_et - timedelta(days=lookback_days + 1)
 
     try:
+        print(f"[RVOL] 📡 Requesting Alpaca bars for {ticker}...")
         response = requests.get(
             BARS_URL,
             headers=_headers(),
@@ -52,14 +54,19 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
             timeout=15,
         )
 
+        print(f"[RVOL] 📡 Alpaca response: {response.status_code}")
+
         if response.status_code != 200:
-            print(f"[RVOL] Alpaca bars error: {response.status_code}")
+            print(f"[RVOL] ❌ Alpaca bars error: {response.status_code} - {response.text[:200]}")
             return None
 
         data = response.json()
         bars = data.get("bars", {}).get(ticker, [])
 
+        print(f"[RVOL] 📊 Received {len(bars)} bars for {ticker}")
+
         if not bars:
+            print(f"[RVOL] ⚠️ No bars for {ticker}")
             return None
 
         # Group by date and sum PM volume up to current time
@@ -85,15 +92,20 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 5) -> Optional[f
         # Exclude today
         historical = [v for d, v in daily_volumes.items() if d != target_date]
 
+        print(f"[RVOL] 📊 Historical days: {len(historical)}")
+        if historical:
+            print(f"[RVOL] 📊 Historical volumes: {historical[:5]}...")
+
         if len(historical) < 2:
-            print(f"[RVOL] Insufficient historical days: {len(historical)}")
+            print(f"[RVOL] ⚠️ Insufficient historical days: {len(historical)}")
             return None
 
         avg_volume = sum(historical) / len(historical)
+        print(f"[RVOL] ✅ Average historical PM volume: {avg_volume:.0f}")
         return avg_volume
 
     except Exception as e:
-        print(f"[RVOL] Error: {e}")
+        print(f"[RVOL] ❌ Error: {e}")
         return None
 
 
@@ -105,7 +117,10 @@ def calculate_rvol(candidate: dict) -> dict:
     ticker = candidate.get('ticker')
     pm_volume = candidate.get('pm_volume', 0)
 
+    print(f"[RVOL] 🔍 Calculating RVOL for {ticker} (PM volume: {pm_volume})")
+
     if not ticker or pm_volume <= 0:
+        print(f"[RVOL] ⚠️ No ticker or zero volume for {ticker}")
         return {
             "rvol": None,
             "status": "UNAVAILABLE",
@@ -119,6 +134,7 @@ def calculate_rvol(candidate: dict) -> dict:
 
     if historical_avg is not None and historical_avg > 0:
         rvol = round(pm_volume / historical_avg, 2)
+        print(f"[RVOL] ✅ RVOL = {rvol} (TIME_ADJUSTED)")
         return {
             "rvol": rvol,
             "status": "TIME_ADJUSTED",
@@ -130,11 +146,13 @@ def calculate_rvol(candidate: dict) -> dict:
     # Fallback: use yfinance daily average volume (but warn)
     try:
         import yfinance as yf
+        print(f"[RVOL] 📡 Using yfinance fallback for {ticker}")
         data = yf.download(ticker, period="1mo", interval="1d", progress=False)
         if not data.empty:
             avg_daily = data['Volume'].iloc[-30:].mean()
             if avg_daily > 0:
                 rvol = round(pm_volume / avg_daily, 2)
+                print(f"[RVOL] ⚠️ RVOL = {rvol} (PREMARKET_FALLBACK)")
                 return {
                     "rvol": rvol,
                     "status": "PREMARKET_FALLBACK",
@@ -142,9 +160,10 @@ def calculate_rvol(candidate: dict) -> dict:
                     "pm_volume": pm_volume,
                     "reference_volume": round(avg_daily)
                 }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[RVOL] ❌ yfinance fallback error: {e}")
 
+    print(f"[RVOL] ❌ RVOL UNAVAILABLE for {ticker}")
     return {
         "rvol": None,
         "status": "UNAVAILABLE",
