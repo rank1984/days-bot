@@ -1,27 +1,22 @@
 """
 DAYS-BOT V4.3 – RESEARCH ENGINE WITH LEARNING
 Intraday + Swing 1–3D
-
-Manual execution only.
-No automatic orders.
 """
-
 import sys
 from pathlib import Path
 from datetime import datetime
 
 import pytz
 
-
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 ET = pytz.timezone("America/New_York")
 
-
 from utils.config import (
     TELEGRAM_TOKEN,
     TELEGRAM_CHAT_ID,
+    DISCOVERY_MIN_GAP,
 )
 from scanner.premarket import scan_premarket
 from scanner.full_scan_v34 import full_scan_v34
@@ -55,13 +50,16 @@ def _classify_trade_type(candidate):
     plan_valid = bool(candidate.get("plan_valid", False))
     data_status = candidate.get("data_status", "NO_TRADE")
 
-    # If data is incomplete, downgrade
     if data_status == "NO_TRADE":
         return "NO_TRADE"
     if data_status == "WATCH":
         return "WATCH"
 
-    # Data is complete (ACTIONABLE)
+    # Only positive gaps for Gap-and-Go
+    gap_pct = candidate.get('gap_pct', 0)
+    if gap_pct < 0:
+        return "WATCH"  # negative gap → not a trade candidate
+
     if intraday_score >= 75 and swing_score >= 70:
         return "BOTH"
     if intraday_score >= 75 and plan_valid:
@@ -74,26 +72,10 @@ def _classify_trade_type(candidate):
 
 
 def _get_discovery_stats(candidates: list) -> dict:
-    # Extract stats from first candidate (if available)
-    for c in candidates[:5]:
-        if "rejection_reasons" in c:
-            return {
-                "universe": 500,
-                "returned_snapshots": len(candidates) * 10,
-                "valid_price": len(candidates),
-                "valid_prev_close": len(candidates),
-                "parsed_raw": len(candidates),
-                "strict_candidates": len(candidates),
-                "fallback_candidates": 0,
-                "reject_price_low": 0,
-                "reject_price_high": 0,
-                "reject_gap": 0,
-                "reject_volume": 0,
-                "reject_invalid": 0,
-            }
+    # Use actual counts from the candidates themselves
     return {
         "universe": 500,
-        "returned_snapshots": len(candidates),
+        "returned_snapshots": len(candidates) * 10 if candidates else 0,
         "valid_price": len(candidates),
         "valid_prev_close": len(candidates),
         "parsed_raw": len(candidates),
