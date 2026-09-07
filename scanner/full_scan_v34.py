@@ -1,13 +1,11 @@
 """
-DAYS-BOT V5.0 – Full Scan Engine (with Dynamic Scoring)
+DAYS-BOT V4.4 – Full Scan Engine (Fixed)
 """
 from datetime import datetime
 from typing import List, Dict, Any
 import pytz
 
 from scanner.pm_engine import get_premarket_minute_data
-from scanner.early_move import calculate_early_move_score
-from scanner.scoring_dynamic import calculate_dynamic_scores
 from scanner.analyzers.float_analyzer import get_float_and_short
 from scanner.analyzers.sec_analyzer import check_offering_risk
 from scanner.analyzers.catalyst_analyzer import classify_catalyst
@@ -19,7 +17,7 @@ from scanner.analyzers.personality_analyzer import get_stock_personality
 from scanner.analyzers.sympathy_scanner import find_sympathy_candidates
 from scanner.vwap_engine import calculate_vwap
 from risk.trade_plan_v34 import build_trade_plan
-from scanner.scoring_engine import calculate_composite_score  # legacy, keep for fallback
+from scanner.scoring_engine import calculate_composite_score
 from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
 ET = pytz.timezone("America/New_York")
@@ -33,7 +31,19 @@ def _safe_call(func, default, *args, **kwargs):
         return default
 
 
+def _safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _check_data_completeness(candidate: dict) -> dict:
+    """
+    Check if critical data is available.
+    """
     missing = []
     critical_fields = [
         ("price", "מחיר"),
@@ -44,15 +54,25 @@ def _check_data_completeness(candidate: dict) -> dict:
         ("catalyst_type", "קטליזטור"),
         ("sec_risk_level", "SEC Risk"),
     ]
+
     for field, label in critical_fields:
         value = candidate.get(field)
         if value is None or value == "UNAVAILABLE" or value == "":
             missing.append(label)
-    if candidate.get('pm_high') is None or candidate.get('pm_high') == 0:
+
+    # Special case: pm_high is None or 0
+    pm_high = candidate.get('pm_high')
+    if pm_high is None or pm_high == 0:
         if "PM High" not in missing:
             missing.append("PM High")
+
     status = "ACTIONABLE" if len(missing) == 0 else "WATCH" if len(missing) <= 2 else "NO_TRADE"
-    return {"complete": len(missing) == 0, "missing": missing, "status": status}
+
+    return {
+        "complete": len(missing) == 0,
+        "missing": missing,
+        "status": status
+    }
 
 
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
@@ -69,7 +89,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis = {}
 
         # ------------------------------------------------------------
-        # 1. REAL PM DATA
+        # 1. REAL PM DATA (Alpaca 1-min bars)
         # ------------------------------------------------------------
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker)
         if pm_data and pm_data.get('error') is None:
@@ -79,7 +99,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_volume'] = pm_data.get('pm_volume')
             c['pm_bars'] = pm_data.get('pm_bars_count', 0)
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
-            c['pm_dist_signed'] = ((c['price'] - c['pm_high']) / c['pm_high']) * 100.0 if c['pm_high'] and c['pm_high'] > 0 else None
+            c['pm_dist_signed'] = ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
         else:
             c['pm_high'] = None
             c['pm_low'] = None
@@ -91,8 +111,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['pm_data_quality'] = c['pm_data_quality']
 
         # Ensure basic fields exist
-        c['price'] = c.get('price', 0)
-        c['gap_pct'] = c.get('gap_pct', 0)
+        c['price'] = _safe_float(c.get('price', 0))
+        c['gap_pct'] = _safe_float(c.get('gap_pct', 0))
 
         # Spread
         spread = c.get('spread_pct')
@@ -164,13 +184,13 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['personality'] = analysis['personality']
 
         # VWAP
-        if c.get('pm_high') is not None and c.get('pm_high') > 0:
+        if c.get('pm_high') is not None and _safe_float(c['pm_high']) > 0:
             vwap_data = {
                 "vwap": c.get('pm_vwap'),
                 "vwap_high": c.get('pm_high'),
                 "vwap_low": c.get('pm_low'),
-                "vwap_support": c.get('pm_vwap') * 0.995 if c.get('pm_vwap') else None,
-                "vwap_resistance": c.get('pm_vwap') * 1.005 if c.get('pm_vwap') else None,
+                "vwap_support": _safe_float(c.get('pm_vwap')) * 0.995 if c.get('pm_vwap') else None,
+                "vwap_resistance": _safe_float(c.get('pm_vwap')) * 1.005 if c.get('pm_vwap') else None,
                 "source": "premarket"
             }
         else:
@@ -183,44 +203,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3)
         c['sympathy'] = analysis['sympathy']
 
-        # Early Move (NEW)
-        early_data = _safe_call(
-            calculate_early_move_score,
-            {},
-            ticker,
-            c.get('pm_high'),
-            c.get('pm_vwap'),
-            None  # bars will be fetched internally
-        )
-        if early_data:
-            c['early_score'] = early_data.get('early_score', 0)
-            c['early_state'] = early_data.get('state', 'UNKNOWN')
-            c['early_components'] = early_data.get('components', {})
-        else:
-            c['early_score'] = 0
-            c['early_state'] = 'UNKNOWN'
-            c['early_components'] = {}
-        analysis['early'] = early_data
-
-        # Dynamic Scores (NEW)
-        dynamic = _safe_call(
-            calculate_dynamic_scores,
-            {},
-            c,
-            analysis,
-            early_data or {}
-        )
-        if dynamic:
-            c['day_trade_score'] = dynamic.get('day_trade_score', 0)
-            c['swing_score'] = dynamic.get('swing_score', 0)
-            c['early_score'] = dynamic.get('early_score', 0)
-            c['early_state'] = dynamic.get('early_state', 'UNKNOWN')
-            c['early_components'] = dynamic.get('early_components', {})
-        else:
-            c['day_trade_score'] = 0
-            c['swing_score'] = 0
-
-        # Trade Plan (still uses legacy trade plan)
+        # Trade Plan
         plan = _safe_call(
             build_trade_plan,
             {},
@@ -238,9 +221,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # Legacy Composite Score (keep for fallback)
-        legacy_score = _safe_call(calculate_composite_score, 0, c, analysis)
-        c['composite_score'] = legacy_score
+        # Composite Score
+        raw_score = _safe_call(calculate_composite_score, 0, c, analysis)
+        c['composite_score'] = raw_score
 
         # Data Completeness Gate
         completeness = _check_data_completeness(c)
@@ -251,16 +234,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['trade_type'] = 'NO_TRADE'
         elif completeness['status'] == 'WATCH':
             c['trade_type'] = 'WATCH'
-        else:
-            # ACTIONABLE – use dynamic to determine trade type
-            if c.get('day_trade_score', 0) >= 70 and c.get('swing_score', 0) >= 70:
-                c['trade_type'] = 'BOTH'
-            elif c.get('day_trade_score', 0) >= 70:
-                c['trade_type'] = 'INTRADAY'
-            elif c.get('swing_score', 0) >= 70:
-                c['trade_type'] = 'SWING_1_3D'
-            else:
-                c['trade_type'] = 'WATCH'
 
         c['analysis'] = analysis
         enriched.append(c)
