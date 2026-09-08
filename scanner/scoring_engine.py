@@ -1,5 +1,5 @@
 """
-DAYS-BOT V5.0.2 – Scoring Engine
+DAYS-BOT V5.0.2 – Scoring Engine (Fixed contracts)
 """
 from utils.config import LEARNING_MODE
 
@@ -18,34 +18,37 @@ def _score_gap(gap):
 
 
 def _score_volume(volume):
-    return min((_safe_float(volume, 0) / 100_000) * 15, 25)
+    volume = _safe_float(volume, 0)
+    return min((volume / 100_000) * 15, 25)
 
 
 def _score_pm_distance(dist):
-    return 0  # DISABLED
+    # DISABLED – real PM data not confirmed
+    return 0
 
 
-def _score_rvol(rvol_data: dict) -> float:
+def _score_rvol(rvol_data):
     """
-    RVOL is a SOFT FACTOR.
-    - If status == TIME_ADJUSTED and rvol > 0 → contributes 0-15
-    - If status == UNAVAILABLE → contributes 0
+    rvol_data should be a dict with 'rvol' and 'status'.
+    If status == 'TIME_ADJUSTED', use the value.
+    Otherwise, return 0 (informational).
     """
     if not isinstance(rvol_data, dict):
         return 0
 
     status = rvol_data.get('status', 'UNAVAILABLE')
-    rvol = _safe_float(rvol_data.get('rvol', 0))
+    rvol = _safe_float(rvol_data.get('rvol'), 0)
 
-    if status != 'TIME_ADJUSTED' or rvol <= 0:
-        return 0
+    if status == 'TIME_ADJUSTED' and rvol > 0:
+        if rvol >= 10:
+            return 15
+        elif rvol >= 5:
+            return 10
+        elif rvol >= 3:
+            return 5
+        else:
+            return 2  # minimal score for having data
 
-    if rvol >= 10:
-        return 15
-    elif rvol >= 5:
-        return 10
-    elif rvol >= 3:
-        return 5
     return 0
 
 
@@ -94,27 +97,59 @@ def _score_sentiment(sentiment):
 def calculate_composite_score(candidate: dict, analysis: dict) -> float:
     score = 0.0
 
+    # 1. Gap (0-30)
     score += _score_gap(candidate.get('gap_pct', 0))
-    score += _score_volume(candidate.get('pm_volume', 0))
-    score += _score_pm_distance(candidate.get('pm_dist_signed'))
-    score += _score_rvol(analysis.get('rvol_data', {}))  # now expects dict
-    score += _score_float(analysis.get('float', 0))
-    score += _score_short_interest(analysis.get('short_interest', 0))
-    score += _score_catalyst(analysis.get('catalyst', {}))
-    score += _score_sentiment(analysis.get('sentiment', {}))
 
-    # Penalties
+    # 2. PM Volume (0-25)
+    score += _score_volume(candidate.get('pm_volume', 0))
+
+    # 3. PM Distance (disabled)
+    score += _score_pm_distance(candidate.get('pm_dist_signed'))
+
+    # 4. RVOL (0-15) – using analysis['rvol_data']
+    rvol_data = analysis.get('rvol_data', {})
+    score += _score_rvol(rvol_data)
+
+    # 5. Float (0-15)
+    float_val = analysis.get('float', candidate.get('float', 0))
+    score += _score_float(float_val)
+
+    # 6. Short Interest (0-15)
+    short_interest = analysis.get('short_interest', candidate.get('short_interest', 0))
+    score += _score_short_interest(short_interest)
+
+    # 7. Catalyst (0-20)
+    catalyst = analysis.get('catalyst', {})
+    score += _score_catalyst(catalyst)
+
+    # 8. Sentiment (0-10)
+    sentiment = analysis.get('sentiment', {})
+    score += _score_sentiment(sentiment)
+
+    # ============================================================
+    # PENALTIES (soft)
+    # ============================================================
+
+    # SEC Offering
     sec_risk = analysis.get('sec_risk', {})
-    if sec_risk.get('has_offering'):
-        risk_level = sec_risk.get('risk_level', 'LOW')
+    if isinstance(sec_risk, dict) and sec_risk.get('has_offering'):
+        risk_level = sec_risk.get('risk_level', 'UNKNOWN')
         if risk_level == 'HIGH':
             score -= 30
         elif risk_level == 'MEDIUM':
             score -= 20
-        else:
+        elif risk_level == 'LOW':
             score -= 10
+        elif risk_level == 'UNKNOWN':
+            score -= 5  # unknown but has offering flag
 
-    personality = analysis.get('personality', {}).get('personality', 'NEUTRAL')
+    # Personality
+    personality_data = analysis.get('personality', {})
+    if isinstance(personality_data, dict):
+        personality = personality_data.get('personality', 'NEUTRAL')
+    else:
+        personality = str(personality_data or 'NEUTRAL')
+
     if personality == "GAP_AND_CRAP":
         score -= 15 if LEARNING_MODE else 30
 
