@@ -25,6 +25,7 @@ from scanner.full_scan_v34 import full_scan_v34
 from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
 from telegram_v3 import send_message, format_research_report
+from learning.replay_engine import save_candidate_snapshot
 
 from learning.lesson_engine import (
     build_lesson,
@@ -35,9 +36,9 @@ from learning.lesson_engine import (
 )
 
 
-def _safe_swing(candidate):
+def _safe_swing(candidate, analysis=None):
     try:
-        result = calculate_swing_score(candidate)
+        result = calculate_swing_score(candidate, analysis)
 
         if not isinstance(result, dict):
             print(
@@ -47,6 +48,7 @@ def _safe_swing(candidate):
             return {
                 "swing_score": 0,
                 "swing_type": "INVALID",
+                "qualified": False,
             }
 
         return result
@@ -64,6 +66,7 @@ def _safe_swing(candidate):
             "swing_score": 0,
             "swing_type": "ERROR",
             "error": str(e),
+            "qualified": False,
         }
 
 
@@ -113,23 +116,16 @@ def _classify_trade_type(candidate):
 def _normalize_discovery_stats(stats):
     """
     Keep Learning Engine input stable.
-
-    Discovery may return slightly different diagnostic
-    field names between versions. Missing values remain 0
-    rather than inventing data.
     """
-
     if not isinstance(stats, dict):
         stats = {}
 
-    # Debug: print raw stats before normalization
     print("[Main] RAW discovery stats (before normalize):")
     print(stats)
 
-    # Universe: use requested_symbols (500) if available, otherwise fallback.
     universe_value = stats.get("universe", stats.get("requested_symbols", 0))
     if not universe_value:
-        universe_value = 500  # hardcoded universe size as ultimate fallback
+        universe_value = 500
 
     normalized = {
         "universe": int(universe_value or 0),
@@ -215,11 +211,6 @@ def run_fullscan_v34(manual=False):
         now_et.strftime("%Y-%m-%d"),
         manual
     )
-
-    # Support both:
-    #   candidates
-    # and:
-    #   (candidates, discovery_stats)
 
     if (
         isinstance(discovery_result, tuple)
@@ -312,18 +303,22 @@ def run_fullscan_v34(manual=False):
     )
 
     # ------------------------------------------------------------
-    # 3. SWING ANALYSIS
+    # 3. SWING ANALYSIS & REPLAY SNAPSHOT
     # ------------------------------------------------------------
 
     print("[Main] Running swing analysis...")
 
-    for candidate in top5:
+    for idx, candidate in enumerate(top5):
+        # Pass analysis from candidate if available
+        analysis = candidate.get('analysis', {})
 
-        swing = _safe_swing(candidate)
+        swing = _safe_swing(candidate, analysis)
 
         candidate["swing_score"] = float(
             swing.get("swing_score", 0) or 0
         )
+
+        candidate["qualified"] = swing.get("qualified", False)
 
         candidate["swing_data"] = swing
 
@@ -345,6 +340,11 @@ def run_fullscan_v34(manual=False):
                 f"{candidate.get('ticker')}: "
                 f"{type(e).__name__}: {e}"
             )
+
+        # --------------------------------------------------------
+        # REPLAY SNAPSHOT
+        # --------------------------------------------------------
+        save_candidate_snapshot(candidate, idx)
 
     # ------------------------------------------------------------
     # 4. LEARNING
@@ -418,6 +418,7 @@ def run_fullscan_v34(manual=False):
             f"Intraday={float(c.get('composite_score', 0) or 0):.1f} | "
             f"Early={float(c.get('early_score', 0) or 0):.1f} | "
             f"Swing={float(c.get('swing_score', 0) or 0):.1f} | "
+            f"Qualified={c.get('qualified', False)} | "
             f"Type={c.get('trade_type', 'WATCH')} | "
             f"Data={c.get('data_status', 'UNKNOWN')}"
         )
