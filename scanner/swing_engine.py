@@ -1,78 +1,94 @@
 """
-DAYS-BOT V5.0.4 – Swing Engine (1-3 days)
+DAYS-BOT V5.0.4 – Swing Engine (1–3 Days)
 
-Uses daily data, not PM data.
+Evaluates candidates for swing holding period.
+- Trend: 20 EMA, 50 EMA, slope
+- Relative Strength vs SPY
+- Volume (RVOL, accumulation)
+- Structure (breakout, consolidation)
+- Catalyst quality & freshness
+- Risk (SEC, Earnings)
+
+All pandas values are explicitly converted to Python scalars.
 """
 
 import yfinance as yf
 import pandas as pd
 from datetime import datetime, timedelta
 import pytz
+import time
 
 ET = pytz.timezone("America/New_York")
 
 
 def _safe_float(value, default=0.0):
+    """Safely convert pandas/numpy values to float."""
     try:
         if value is None:
             return default
+        if isinstance(value, (pd.Series, pd.DataFrame)):
+            if value.empty:
+                return default
+            value = value.iloc[0]
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _safe_series_to_scalar(series):
-    """
-    Convert pandas Series to scalar, or return 0.
-    """
+def _safe_int(value, default=0):
     try:
-        if series is None:
-            return 0.0
-        if isinstance(series, pd.Series):
-            if series.empty:
-                return 0.0
-            return float(series.iloc[-1])
-        return float(series)
-    except Exception:
-        return 0.0
+        if value is None:
+            return default
+        if isinstance(value, (pd.Series, pd.DataFrame)):
+            if value.empty:
+                return default
+            value = value.iloc[0]
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _get_spy_data():
+    """Fetch SPY daily data once per run (cached)."""
+    # Simple cache using module-level variable
+    if not hasattr(_get_spy_data, "cache"):
+        try:
+            spy = yf.download("SPY", period="60d", interval="1d", progress=False)
+            _get_spy_data.cache = spy
+        except Exception:
+            _get_spy_data.cache = pd.DataFrame()
+    return _get_spy_data.cache
 
 
 def calculate_swing_score(candidate: dict) -> dict:
     """
-    Swing Score (0-100) based on:
-    - Trend (20 EMA, 50 EMA)
-    - Relative Strength vs SPY
-    - Volume (RVOL, accumulation)
-    - Structure
-    - Catalyst quality & freshness
-    - Risk (SEC, Earnings)
+    Swing Score (0-100) for 1-3 day holding period.
     """
     ticker = candidate['ticker']
     price = _safe_float(candidate.get('price', 0))
     gap_pct = _safe_float(candidate.get('gap_pct', 0))
 
-    # Do NOT rely on PM data for swing.
-    # Use daily data only.
-
     try:
+        # Fetch daily data for last 60 days
         data = yf.download(ticker, period="60d", interval="1d", progress=False)
         if data.empty or len(data) < 20:
             return {"swing_score": 0, "swing_type": "INSUFFICIENT_DATA"}
 
         # SPY for RS
-        spy = yf.download("SPY", period="60d", interval="1d", progress=False)
+        spy = _get_spy_data()
         if spy.empty:
             spy_ret = 0
         else:
-            spy_ret = (spy['Close'].iloc[-1] / spy['Close'].iloc[-20] - 1) * 100 if len(spy) >= 20 else 0
+            spy_ret = _safe_float((spy['Close'].iloc[-1] / spy['Close'].iloc[-20] - 1) * 100) if len(spy) >= 20 else 0
 
         close = data['Close']
         volume = data['Volume']
 
         # 20 EMA & 50 EMA
-        ema20 = close.ewm(span=20, adjust=False).mean().iloc[-1]
-        ema50 = close.ewm(span=50, adjust=False).mean().iloc[-1] if len(close) >= 50 else ema20
+        ema20 = _safe_float(close.ewm(span=20, adjust=False).mean().iloc[-1])
+        ema50 = _safe_float(close.ewm(span=50, adjust=False).mean().iloc[-1]) if len(close) >= 50 else ema20
 
+        # Price vs EMAs
         above_20 = price > ema20
         above_50 = price > ema50
         ema_cross = ema20 > ema50
@@ -80,24 +96,25 @@ def calculate_swing_score(candidate: dict) -> dict:
         # EMA slope (20-day)
         ema20_series = close.ewm(span=20, adjust=False).mean()
         if len(ema20_series) >= 10:
-            ema_slope = (ema20_series.iloc[-1] / ema20_series.iloc[-10] - 1) * 100
+            ema_slope = _safe_float((ema20_series.iloc[-1] / ema20_series.iloc[-10] - 1) * 100)
         else:
-            ema_slope = 0
+            ema_slope = 0.0
 
-        pct_from_ema20 = ((price - ema20) / ema20) * 100 if ema20 > 0 else 0
+        # Price vs 20 EMA distance
+        pct_from_ema20 = _safe_float(((price - ema20) / ema20) * 100) if ema20 > 0 else 0.0
 
         # Relative Strength vs SPY (20-day)
-        stock_ret = (close.iloc[-1] / close.iloc[-20] - 1) * 100 if len(close) >= 20 else 0
+        stock_ret = _safe_float((close.iloc[-1] / close.iloc[-20] - 1) * 100) if len(close) >= 20 else 0.0
         rs = stock_ret - spy_ret if spy_ret else stock_ret
 
         # Volume – RVOL (last 5 days avg vs 50 day avg)
-        avg_vol_50 = volume.iloc[-50:].mean() if len(volume) >= 50 else volume.mean()
-        avg_vol_5 = volume.iloc[-5:].mean()
+        avg_vol_50 = _safe_float(volume.iloc[-50:].mean()) if len(volume) >= 50 else _safe_float(volume.mean())
+        avg_vol_5 = _safe_float(volume.iloc[-5:].mean())
         rvol = avg_vol_5 / avg_vol_50 if avg_vol_50 > 0 else 1.0
 
         # Structure: Higher highs/lows (last 10 days)
-        recent_highs = close.iloc[-10:].max()
-        recent_lows = close.iloc[-10:].min()
+        recent_highs = _safe_float(close.iloc[-10:].max())
+        recent_lows = _safe_float(close.iloc[-10:].min())
         if price > recent_highs * 0.98:
             structure = "BREAKOUT"
         elif price < recent_highs * 0.95:
@@ -156,22 +173,37 @@ def calculate_swing_score(candidate: dict) -> dict:
         structure_score = min(structure_score, 20)
 
         catalyst_score = 0
-        catalyst_type = candidate.get('catalyst_type', 'UNAVAILABLE')
-        catalyst_quality = candidate.get('catalyst_score', 0)
-        if catalyst_type != 'UNAVAILABLE' and catalyst_quality >= 8:
+        cat_type = candidate.get('catalyst_type', '')
+        if cat_type in ['FDA_APPROVAL', 'M&A']:
             catalyst_score = 15
-        elif catalyst_type != 'UNAVAILABLE' and catalyst_quality >= 5:
+        elif cat_type in ['EARNINGS', 'CONTRACT', 'PARTNERSHIP']:
+            catalyst_score = 12
+        elif cat_type == 'STRONG':
             catalyst_score = 10
         else:
             catalyst_score = 5
         catalyst_score = min(catalyst_score, 15)
 
         risk_penalty = 0
-        if candidate.get('sec_has_offering', False):
+        sec_level = candidate.get('sec_risk_level', 'LOW')
+        if sec_level == 'HIGH':
             risk_penalty -= 30
+        elif sec_level == 'MEDIUM':
+            risk_penalty -= 15
+        # Earnings risk
+        earnings_date = candidate.get('earnings_date')
+        if earnings_date:
+            try:
+                ed = pd.to_datetime(earnings_date)
+                days_until = (ed - datetime.now(ET)).days
+                if days_until <= 2:
+                    risk_penalty -= 20
+                elif days_until <= 5:
+                    risk_penalty -= 10
+            except:
+                pass
 
-        # Float penalty
-        float_val = candidate.get('float', 0)
+        float_val = _safe_float(candidate.get('float', 0))
         if float_val > 100_000_000:
             risk_penalty -= 10
         elif float_val > 50_000_000:
@@ -203,4 +235,6 @@ def calculate_swing_score(candidate: dict) -> dict:
 
     except Exception as e:
         print(f"[Swing] Error for {ticker}: {e}")
+        import traceback
+        traceback.print_exc()
         return {"swing_score": 0, "swing_type": "ERROR", "error": str(e)}
