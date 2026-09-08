@@ -1,6 +1,6 @@
 """
-telegram_v3.py – V5.0.1 Telegram Formatter
-Early Move display + Daily Lesson
+telegram_v3.py – V5.0.4 Telegram Formatter
+Early Score + State display
 """
 import requests
 from datetime import datetime
@@ -10,7 +10,6 @@ ET = pytz.timezone("America/New_York")
 
 
 def send_message(token: str, chat_id: str, text: str) -> bool:
-    """Send a Telegram message with fallback from HTML to plain text."""
     if not token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -26,18 +25,15 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
             resp = requests.post(url, json=payload, timeout=30)
             if resp.status_code == 200:
                 return True
-        except Exception:
+        except:
             continue
     return False
 
 
 def format_research_report(candidates: list, now_et: datetime) -> str:
-    """
-    Research report with Early Move scores, state, components, and action.
-    """
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚀 DAYS-BOT V5.0.1 – EARLY MOVE SCAN")
+    lines.append("🚀 DAYS-BOT V5.0.4 – EARLY MOVE SCAN")
     lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
@@ -48,7 +44,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("⚠️ ביצוע ידני בלבד")
         return "\n".join(lines)
 
-    # Sort by composite score (legacy) for display
     top5 = sorted(candidates, key=lambda x: x.get('composite_score', 0), reverse=True)[:5]
 
     lines.append("")
@@ -63,30 +58,15 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         pm_volume = c.get('pm_volume', 0)
 
         early_score = c.get('early_score', 0)
-        early_state = c.get('early_state', 'UNKNOWN')
-        components = c.get('early_components', {})
+        early_state = c.get('early_state', 'UNAVAILABLE')
+        composite_score = c.get('composite_score', 0)
+        swing_score = c.get('swing_score', 0)
         data_status = c.get('data_status', 'UNKNOWN')
 
         lines.append(f"{i}️⃣ {ticker}")
-        lines.append(f"  Early Move: {early_score:.0f}/100")
-        lines.append(f"  State: {early_state}")
+        lines.append(f"  Composite: {composite_score:.0f}/100 | Swing: {swing_score:.0f}/100")
+        lines.append(f"  Early: {early_score:.0f}/100 | State: {early_state}")
         lines.append(f"  Price: ${price:.2f} | Gap: {gap:+.1f}% | Vol: {pm_volume:,}")
-
-        # Behavioral components
-        if components:
-            comp_str = []
-            if components.get('pullback_buying', 0) > 40:
-                comp_str.append("✅ Pullback Buying")
-            if components.get('pmh_pressure', 0) > 40:
-                comp_str.append("✅ PMH Pressure")
-            if components.get('volume_acceleration', 0) > 40:
-                comp_str.append("✅ Volume Accel")
-            if components.get('price_acceleration', 0) > 40:
-                comp_str.append("✅ Price Accel")
-            if components.get('vwap_control', 0) > 40:
-                comp_str.append("✅ Above VWAP")
-            if comp_str:
-                lines.append("  Behavior: " + " | ".join(comp_str))
 
         # Data status
         if data_status == "ACTIONABLE":
@@ -97,19 +77,23 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         else:
             lines.append("  Data: 🔴 Insufficient")
 
-        # Action suggestion
-        if early_state in ["PRESSURE", "BREAKOUT_SETUP"] and early_score > 60:
+        # Action suggestion based on Early State
+        if early_state == "PRESSURE" and early_score > 60:
             lines.append("  🟠 ACTION: WATCH PMH")
+        elif early_state == "BREAKOUT_SETUP" and early_score > 70:
+            lines.append("  🟢 ACTION: PREPARE ENTRY")
         elif early_state == "BREAKOUT" and early_score > 70:
             lines.append("  🟢 ACTION: PREPARE ENTRY")
         elif early_state in ["MOMENTUM", "EXTENSION"]:
             lines.append("  🟡 ACTION: MONITOR (already moving)")
+        elif early_state == "UNAVAILABLE":
+            lines.append("  ⚪ ACTION: WAIT (no data)")
         else:
             lines.append("  🔵 ACTION: WAIT")
 
         lines.append("")
 
-    # Best early setup
+    # Best early setup (if any)
     actionable = [
         c for c in top5
         if c.get('early_state') in ['BREAKOUT_SETUP', 'BREAKOUT', 'PRESSURE']
@@ -122,13 +106,14 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("✅ BEST EARLY SETUP")
         best = actionable[0]
         lines.append(f"{best['ticker']} – {best.get('early_state', 'UNKNOWN')} ({best.get('early_score', 0):.0f}/100)")
-        lines.append(f"  Entry: ${best.get('entry', 0):.2f} | Stop: ${best.get('stop', 0):.2f}")
-        lines.append(f"  T1: ${best.get('target_1', 0):.2f} | T2: ${best.get('target_2', 0):.2f}")
+        if best.get('plan_valid', False):
+            lines.append(f"  Entry: ${best.get('entry', 0):.2f} | Stop: ${best.get('stop', 0):.2f}")
+            lines.append(f"  T1: ${best.get('target_1', 0):.2f} | T2: ${best.get('target_2', 0):.2f}")
         lines.append("  Watch PMH break for confirmation.")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("⏳ NO ACTIVE EARLY SETUPS")
-        if any(c.get('early_score', 0) > 50 for c in top5):
+        if any(c.get('early_score', 0) > 40 for c in top5):
             lines.append("Some candidates show early signs but lack confirmation.")
         else:
             lines.append("No candidate is showing sufficient behavioral pressure.")
@@ -141,10 +126,9 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
 
 
 def format_lesson_for_telegram(lesson: dict) -> str:
-    """Format daily lesson in Hebrew."""
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📚 DAYS-BOT V5.0.1 – לקח יומי")
+    lines.append("📚 DAYS-BOT V5.0.4 – לקח יומי")
     lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
