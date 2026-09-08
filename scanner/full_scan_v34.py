@@ -1,7 +1,6 @@
 """
-DAYS-BOT V5.0.4 – Full Scan Engine (Stability)
+DAYS-BOT V5.0.4 – Full Scan Engine (Type-Safe)
 """
-
 from datetime import datetime
 from typing import List, Dict, Any
 import pytz
@@ -26,6 +25,9 @@ ET = pytz.timezone("America/New_York")
 
 
 def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
+    """
+    Type-safe wrapper: ensures result is of expected_type, otherwise returns default.
+    """
     label = name or getattr(func, "__name__", "unknown")
 
     try:
@@ -122,16 +124,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['pm_data_quality'] = c['pm_data_quality']
 
         # ------------------------------------------------------------
-        # 2. EARLY MOVE ENGINE (with UNAVAILABLE distinction)
+        # 2. EARLY MOVE ENGINE
         # ------------------------------------------------------------
         early_data = _safe_call(
             calculate_early_move_score,
-            {
-                "early_score": 0,
-                "state": "UNAVAILABLE",
-                "components": {},
-                "data_quality": "UNAVAILABLE",
-            },
+            {"early_score": 0, "state": "UNKNOWN", "components": {}, "data_quality": "UNKNOWN"},
             ticker,
             c.get('pm_high'),
             c.get('pm_vwap'),
@@ -139,22 +136,10 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             name=f"early:{ticker}"
         )
 
-        if not isinstance(early_data, dict):
-            early_data = {
-                "early_score": 0,
-                "state": "UNAVAILABLE",
-                "components": {},
-                "data_quality": "UNAVAILABLE",
-            }
-
         c['early_score'] = early_data.get('early_score', 0)
-        # Distinguish: if data quality is not GOOD, state = UNAVAILABLE
-        if early_data.get('data_quality') in ['GOOD', 'PARTIAL']:
-            c['early_state'] = early_data.get('state', 'UNAVAILABLE')
-        else:
-            c['early_state'] = 'UNAVAILABLE'
+        c['early_state'] = early_data.get('state', 'UNKNOWN')
         c['early_components'] = early_data.get('components', {})
-        c['early_data_quality'] = early_data.get('data_quality', 'UNAVAILABLE')
+        c['early_data_quality'] = early_data.get('data_quality', 'UNKNOWN')
         analysis['early'] = early_data
 
         # ------------------------------------------------------------
@@ -175,7 +160,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['ask'] = c['ask']
 
         # ------------------------------------------------------------
-        # 4. RVOL (INFORMATIONAL)
+        # 4. RVOL (INFORMATIONAL – with rvol_data dict)
         # ------------------------------------------------------------
         rvol_data = _safe_call(
             calculate_rvol,
@@ -191,6 +176,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['rvol'] = rvol_data.get('rvol')
         c['rvol_status'] = rvol_data.get('status', 'UNAVAILABLE')
         c['rvol_method'] = rvol_data.get('method', 'UNAVAILABLE')
+
+        # Store full dict for scoring
         analysis['rvol_data'] = rvol_data
         analysis['rvol'] = c['rvol']
         analysis['rvol_status'] = c['rvol_status']
@@ -231,7 +218,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sentiment'] = analysis['sentiment']
 
         # ------------------------------------------------------------
-        # 8. SEC RISK (Defaulting to UNAVAILABLE)
+        # 8. SEC RISK
         # ------------------------------------------------------------
         sec_risk = _safe_call(
             check_offering_risk,
@@ -263,7 +250,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['short_interest'] = c['short_interest']
 
         # ------------------------------------------------------------
-        # 10. PERSONALITY (never reject)
+        # 10. PERSONALITY (CRITICAL: store as dict, not string)
         # ------------------------------------------------------------
         personality = _safe_call(
             get_stock_personality,
@@ -284,7 +271,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['personality_sample_size'] = 0
             personality = {"personality": "UNKNOWN", "failure_rate": 0, "sample_size": 0}
 
-        analysis['personality'] = personality
+        analysis['personality'] = personality  # store dict, not string
 
         # ------------------------------------------------------------
         # 11. VWAP
@@ -333,7 +320,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
         # ------------------------------------------------------------
-        # 14. COMPOSITE SCORE (V5.0.3 100-point scoring)
+        # 14. COMPOSITE SCORE (with error distinction)
         # ------------------------------------------------------------
         score = _safe_call(
             calculate_composite_score,
