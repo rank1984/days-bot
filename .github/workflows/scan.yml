@@ -21,7 +21,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - run: mkdir -p data
-      - name: Run V4.3 Scanner
+      - name: Run V5.0.4 Scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -39,6 +39,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: alerts-db-v43
+          name: alerts-db-v5
           path: data/alerts.db
           retention-days: 30
