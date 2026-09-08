@@ -342,9 +342,13 @@ def run_fullscan_v34(manual=False):
             )
 
         # --------------------------------------------------------
-        # REPLAY SNAPSHOT
+        # REPLAY SNAPSHOT (protected)
         # --------------------------------------------------------
-        save_candidate_snapshot(candidate, idx)
+        try:
+            save_candidate_snapshot(candidate, idx)
+            print(f"[Main] Replay snapshot saved: {candidate.get('ticker')}")
+        except Exception as e:
+            print(f"[Main] ⚠️ Replay snapshot error {candidate.get('ticker')}: {e}")
 
     # ------------------------------------------------------------
     # 4. LEARNING
