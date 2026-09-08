@@ -30,6 +30,8 @@ def _safe_float(value, default=0.0):
             if value.empty:
                 return default
             value = value.iloc[0]
+        if pd.isna(value):
+            return default
         return float(value)
     except (TypeError, ValueError):
         return default
@@ -43,6 +45,8 @@ def _safe_int(value, default=0):
             if value.empty:
                 return default
             value = value.iloc[0]
+        if pd.isna(value):
+            return default
         return int(value)
     except (TypeError, ValueError):
         return default
@@ -50,7 +54,6 @@ def _safe_int(value, default=0):
 
 def _get_spy_data():
     """Fetch SPY daily data once per run (cached)."""
-    # Simple cache using module-level variable
     if not hasattr(_get_spy_data, "cache"):
         try:
             spy = yf.download("SPY", period="60d", interval="1d", progress=False)
@@ -60,13 +63,66 @@ def _get_spy_data():
     return _get_spy_data.cache
 
 
-def calculate_swing_score(candidate: dict) -> dict:
+def _qualify_swing(candidate: dict, analysis: dict, swing_score: float) -> bool:
+    """
+    Swing Qualification Gate.
+    Uses candidate + analysis to check data completeness.
+    """
+    if swing_score < 75:
+        return False
+
+    # Data status from Completeness Gate
+    data_status = candidate.get('data_status', 'NO_TRADE')
+    if data_status == 'NO_TRADE':
+        return False
+
+    # SEC Risk
+    sec_risk = candidate.get('sec_risk_level', 'LOW')
+    if sec_risk == 'HIGH':
+        return False
+
+    # Spread
+    spread = candidate.get('spread_pct')
+    if spread is not None and spread > 5.0:
+        return False
+
+    # Catalyst
+    catalyst_type = candidate.get('catalyst_type')
+    catalyst_ok = catalyst_type not in (None, 'UNAVAILABLE', 'NO_NEWS')
+
+    # Early Move
+    early_state = candidate.get('early_state')
+    early_score = candidate.get('early_score', 0)
+    early_ok = early_state not in (None, 'UNAVAILABLE') and early_score > 60
+
+    # Float – from analysis['float_data']
+    float_data = analysis.get('float_data', {})
+    float_val = _safe_float(float_data.get('float', 0), 0)
+    float_ok = float_val > 0 and float_val < 20_000_000
+
+    # Short Interest – from analysis['float_data']
+    short_interest = _safe_float(float_data.get('short_interest', 0), 0)
+    short_ok = short_interest > 0 and short_interest >= 0.15
+
+    # Breakout structure
+    structure = candidate.get('swing_data', {}).get('structure', '')
+    structure_ok = structure in ('BREAKOUT', 'CONSOLIDATION')
+
+    # At least one criterion must be met
+    return catalyst_ok or early_ok or float_ok or short_ok or structure_ok
+
+
+def calculate_swing_score(candidate: dict, analysis: dict = None) -> dict:
     """
     Swing Score (0-100) for 1-3 day holding period.
+    analysis parameter is passed from full_scan_v34.py.
     """
-    ticker = candidate['ticker']
+    ticker = candidate.get('ticker', 'UNKNOWN')
     price = _safe_float(candidate.get('price', 0))
     gap_pct = _safe_float(candidate.get('gap_pct', 0))
+
+    if analysis is None:
+        analysis = {}
 
     try:
         # Fetch daily data for last 60 days
@@ -203,7 +259,8 @@ def calculate_swing_score(candidate: dict) -> dict:
             except:
                 pass
 
-        float_val = _safe_float(candidate.get('float', 0))
+        float_data = analysis.get('float_data', {})
+        float_val = _safe_float(float_data.get('float', 0))
         if float_val > 100_000_000:
             risk_penalty -= 10
         elif float_val > 50_000_000:
@@ -212,8 +269,12 @@ def calculate_swing_score(candidate: dict) -> dict:
         total_score = trend_score + rs_score + volume_score + structure_score + catalyst_score + risk_penalty
         total_score = max(0, min(100, total_score))
 
-        return {
+        # Qualification Gate
+        qualified = _qualify_swing(candidate, analysis, total_score)
+
+        result = {
             "swing_score": round(total_score, 1),
+            "qualified": qualified,
             "trend_score": trend_score,
             "rs_score": rs_score,
             "volume_score": volume_score,
@@ -232,6 +293,9 @@ def calculate_swing_score(candidate: dict) -> dict:
             "ema20": round(ema20, 2),
             "ema50": round(ema50, 2),
         }
+
+        candidate['qualified'] = qualified
+        return result
 
     except Exception as e:
         print(f"[Swing] Error for {ticker}: {e}")
