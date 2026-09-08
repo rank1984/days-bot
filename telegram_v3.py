@@ -1,6 +1,5 @@
 """
 telegram_v3.py – V5.0.4 Telegram Formatter
-Early Score + State display
 """
 import requests
 from datetime import datetime
@@ -33,7 +32,7 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 def format_research_report(candidates: list, now_et: datetime) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚀 DAYS-BOT V5.0.4 – EARLY MOVE SCAN")
+    lines.append("🚀 DAYS-BOT V5.0.4 – דוח מחקר יומי")
     lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
@@ -44,84 +43,141 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("⚠️ ביצוע ידני בלבד")
         return "\n".join(lines)
 
-    top5 = sorted(candidates, key=lambda x: x.get('composite_score', 0), reverse=True)[:5]
+    top5 = sorted(candidates, key=lambda x: x.get('composite_score', 0) if isinstance(x.get('composite_score'), (int, float)) else 0, reverse=True)[:5]
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🏆 TOP 5 – EARLY MOVE ANALYSIS")
+    lines.append("🏆 חמשת המועמדים המובילים")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     for i, c in enumerate(top5, 1):
-        ticker = c.get('ticker', 'UNKNOWN')
-        price = c.get('price', 0)
-        gap = c.get('gap_pct', 0)
-        pm_volume = c.get('pm_volume', 0)
+        trade_type = c.get('trade_type', 'WATCH')
+        icon = "🟢" if "INTRADAY" in trade_type else "🟣" if "SWING" in trade_type else "🟡"
 
-        early_score = c.get('early_score', 0)
-        early_state = c.get('early_state', 'UNAVAILABLE')
-        composite_score = c.get('composite_score', 0)
+        intraday_score = c.get('composite_score', 0)
         swing_score = c.get('swing_score', 0)
-        data_status = c.get('data_status', 'UNKNOWN')
+        early_score = c.get('early_score', 0)
+        early_state = c.get('early_state', 'UNKNOWN')
 
-        lines.append(f"{i}️⃣ {ticker}")
-        lines.append(f"  Composite: {composite_score:.0f}/100 | Swing: {swing_score:.0f}/100")
-        lines.append(f"  Early: {early_score:.0f}/100 | State: {early_state}")
-        lines.append(f"  Price: ${price:.2f} | Gap: {gap:+.1f}% | Vol: {pm_volume:,}")
-
-        # Data status
-        if data_status == "ACTIONABLE":
-            lines.append("  Data: ✅ Complete")
-        elif data_status == "WATCH":
-            missing = c.get('data_completeness', {}).get('missing', [])
-            lines.append(f"  Data: 🟡 Missing: {', '.join(missing)}")
+        # Early display
+        if early_state == 'UNAVAILABLE':
+            early_display = "N/A (UNAVAILABLE)"
+        elif early_state == 'UNKNOWN':
+            early_display = "N/A"
         else:
-            lines.append("  Data: 🔴 Insufficient")
+            early_display = f"{early_score:.0f} ({early_state})"
 
-        # Action suggestion based on Early State
-        if early_state == "PRESSURE" and early_score > 60:
-            lines.append("  🟠 ACTION: WATCH PMH")
-        elif early_state == "BREAKOUT_SETUP" and early_score > 70:
-            lines.append("  🟢 ACTION: PREPARE ENTRY")
-        elif early_state == "BREAKOUT" and early_score > 70:
-            lines.append("  🟢 ACTION: PREPARE ENTRY")
-        elif early_state in ["MOMENTUM", "EXTENSION"]:
-            lines.append("  🟡 ACTION: MONITOR (already moving)")
-        elif early_state == "UNAVAILABLE":
-            lines.append("  ⚪ ACTION: WAIT (no data)")
+        type_hebrew = {
+            "INTRADAY": "מסחר יומי",
+            "SWING_1_3D": "החזקה 1–3 ימים",
+            "BOTH": "שניהם",
+            "WATCH": "מעקב",
+            "NO_TRADE": "אין מסחר"
+        }.get(trade_type, trade_type)
+
+        lines.append(f"{i}️⃣ {c['ticker']}")
+        lines.append(f"  ציון יומי: {intraday_score:.1f}/100 | ציון Swing: {swing_score:.1f}/100")
+        lines.append(f"  Early: {early_display}")
+        lines.append(f"  סוג: {icon} {type_hebrew}")
+        lines.append(f"  מחיר: ${c.get('price', 0):.2f} | גאפ: {c.get('gap_pct', 0):+.1f}%")
+        lines.append(f"  נפח PM: {c.get('pm_volume', 0):,}")
+
+        # Data completeness
+        completeness = c.get('data_completeness', {})
+        status = completeness.get('status', 'NO_TRADE')
+        missing = completeness.get('missing', [])
+        if status == 'ACTIONABLE':
+            lines.append("  סטטוס נתונים: ✅ כל הנתונים תקינים")
+        elif status == 'WATCH':
+            lines.append(f"  סטטוס נתונים: 🟡 חסרים: {', '.join(missing)} – מעקב")
         else:
-            lines.append("  🔵 ACTION: WAIT")
+            lines.append("  סטטוס נתונים: 🔴 חסרים נתונים קריטיים")
+
+        # Spread
+        spread = c.get('spread_pct')
+        if spread is None:
+            spread_str = "לא זמין"
+        else:
+            spread_str = f"{spread:.2f}% ⚠️" if spread > 2.0 else f"{spread:.2f}%"
+        lines.append(f"  מרווח (Spread): {spread_str}")
+
+        # Catalyst
+        cat_type = c.get('catalyst_type', 'UNAVAILABLE')
+        cat_score = c.get('catalyst_score', 0)
+        if cat_type != "UNAVAILABLE":
+            type_names = {
+                "FDA_APPROVAL": "אישור FDA",
+                "EARNINGS": "דוחות",
+                "CONTRACT": "חוזה",
+                "PARTNERSHIP": "שותפות",
+                "M&A": "מיזוג",
+                "STRONG": "חזק",
+                "WEAK": "חלש",
+                "GENERAL": "כללי",
+                "NO_NEWS": "אין חדשות"
+            }
+            name = type_names.get(cat_type, cat_type)
+            lines.append(f"  זרז: {name} (ציון: {cat_score}/10)")
+        else:
+            lines.append(f"  זרז: לא זמין")
+
+        # Float & Short
+        float_val = c.get('float')
+        short = c.get('short_interest')
+        if float_val:
+            lines.append(f"  Float: {float_val:,.0f}")
+        if short:
+            lines.append(f"  Short Interest: {short*100:.1f}%")
+
+        # SEC
+        sec_level = c.get('sec_risk_level', 'LOW')
+        sec_map = {"LOW": "נמוך", "MEDIUM": "בינוני", "HIGH": "גבוה ⚠️", "CRITICAL": "קריטי 🚨", "UNAVAILABLE": "לא זמין"}
+        lines.append(f"  סיכון SEC: {sec_map.get(sec_level, sec_level)}")
+
+        # Qualified
+        qualified = c.get('qualified', False)
+        lines.append(f"  מועמד Swing: {'✅' if qualified else '❌'}")
+
+        # Trade Plan
+        if c.get('plan_valid', False):
+            lines.append(f"  כניסה: ${c.get('entry', 0):.2f} | סטופ: ${c.get('stop', 0):.2f}")
+            lines.append(f"  יעד 1: ${c.get('target_1', 0):.2f} | יעד 2: ${c.get('target_2', 0):.2f}")
+            lines.append(f"  מניות: {c.get('position_size', 0)} | הפסד מקס': ${c.get('max_loss', 0):.2f}")
+        else:
+            lines.append(f"  ⚠️ {c.get('plan_error', 'אין תוכנית מסחר')}")
 
         lines.append("")
 
-    # Best early setup (if any)
-    actionable = [
-        c for c in top5
-        if c.get('early_state') in ['BREAKOUT_SETUP', 'BREAKOUT', 'PRESSURE']
-        and c.get('early_score', 0) > 60
-        and c.get('data_status') == 'ACTIONABLE'
-    ]
+    # Best Swing (qualified)
+    swing_best = next((c for c in top5 if c.get('qualified', False)), None)
+    if swing_best:
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("🟣 מועמד Swing מאושר")
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"{swing_best['ticker']}")
+        lines.append(f"ציון Swing: {swing_best.get('swing_score', 0):.0f}/100")
+        lines.append(f"כניסה: ${swing_best.get('entry', 0):.2f}")
+        lines.append(f"סטופ:  ${swing_best.get('stop', 0):.2f}")
+        lines.append(f"יעד 1: ${swing_best.get('target_1', 0):.2f}")
+        lines.append(f"יעד 2: ${swing_best.get('target_2', 0):.2f}")
+        lines.append("")
 
+    # Decision
+    actionable = [c for c in top5 if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']]
     if actionable:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("✅ BEST EARLY SETUP")
+        lines.append("✅ החלטה: נמצאו מועמדויות למסחר")
         best = actionable[0]
-        lines.append(f"{best['ticker']} – {best.get('early_state', 'UNKNOWN')} ({best.get('early_score', 0):.0f}/100)")
-        if best.get('plan_valid', False):
-            lines.append(f"  Entry: ${best.get('entry', 0):.2f} | Stop: ${best.get('stop', 0):.2f}")
-            lines.append(f"  T1: ${best.get('target_1', 0):.2f} | T2: ${best.get('target_2', 0):.2f}")
-        lines.append("  Watch PMH break for confirmation.")
+        lines.append(f"📌 המועמדת המובילה: {best['ticker']} (Day {best.get('composite_score', 0):.0f} | Swing {best.get('swing_score', 0):.0f})")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append("⏳ NO ACTIVE EARLY SETUPS")
-        if any(c.get('early_score', 0) > 40 for c in top5):
-            lines.append("Some candidates show early signs but lack confirmation.")
-        else:
-            lines.append("No candidate is showing sufficient behavioral pressure.")
+        lines.append("🚫 החלטה: אין מסחר היום")
+        lines.append("אף מועמד לא עבר את רף האיכות.")
 
     lines.append("")
-    lines.append("⏳ Next scan: 09:30 ET")
+    lines.append("⏳ הסריקה הבאה: 09:30 ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("⚠️ MANUAL EXECUTION ONLY")
+    lines.append("⚠️ ביצוע ידני בלבד")
     return "\n".join(lines)
 
 
@@ -140,8 +196,6 @@ def format_lesson_for_telegram(lesson: dict) -> str:
     lines.append(f"  מועמדים קפדניים:        {funnel.get('strict_candidates', 0)}")
     lines.append(f"  נפסלו: גאפ              {funnel.get('rejected_gap', 0)}")
     lines.append(f"  נפסלו: נפח              {funnel.get('rejected_volume', 0)}")
-    lines.append(f"  נפסלו: מחיר נמוך        {funnel.get('rejected_price_low', 0)}")
-    lines.append(f"  נפסלו: מחיר גבוה        {funnel.get('rejected_price_high', 0)}")
 
     top5 = lesson.get("top5", [])
     if top5:
@@ -152,8 +206,7 @@ def format_lesson_for_telegram(lesson: dict) -> str:
                 "INTRADAY": "יומי",
                 "SWING_1_3D": "Swing",
                 "BOTH": "שניהם",
-                "WATCH": "מעקב",
-                "NO_TRADE": "אין מסחר"
+                "WATCH": "מעקב"
             }.get(t.get('trade_type', 'WATCH'), t.get('trade_type', 'WATCH'))
             lines.append(f"  {i}. {t['ticker']:6s} | Day={t.get('day_trade_score', t.get('intraday_score', 0)):.0f} | Swing={t.get('swing_score', 0):.0f} | {type_hebrew}")
 
