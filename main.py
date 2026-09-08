@@ -1,9 +1,6 @@
 """
-DAYS-BOT V5.0.3 – RESEARCH ENGINE WITH LEARNING
-Intraday + Swing 1–3D
-
-Manual execution only.
-No automatic orders.
+DAYS-BOT V5.0.4 – RESEARCH ENGINE
+Stability / Observability
 """
 
 import sys
@@ -111,19 +108,17 @@ def _classify_trade_type(candidate):
 def _normalize_discovery_stats(stats):
     """
     Keep Learning Engine input stable.
-
-    Discovery may return slightly different diagnostic
-    field names between versions. Missing values remain 0
-    rather than inventing data.
     """
-
     if not isinstance(stats, dict):
         stats = {}
 
+    # Universe: use requested_symbols (500) if available, otherwise fallback.
+    universe_value = stats.get("universe", stats.get("requested_symbols", 0))
+    if not universe_value:
+        universe_value = 500  # hardcoded universe size as ultimate fallback
+
     return {
-        "universe": int(
-            stats.get("universe", 0) or 0
-        ),
+        "universe": int(universe_value or 0),
 
         "snapshots_received": int(
             stats.get("snapshots_received",
@@ -180,7 +175,7 @@ def run_fullscan_v34(manual=False):
 
     print("\n" + "=" * 74)
     print(
-        "DAYS-BOT V5.0.3 – RESEARCH ENGINE "
+        "DAYS-BOT V5.0.4 – RESEARCH ENGINE "
         "(Intraday + Swing + Learning)"
     )
     print(
@@ -201,11 +196,6 @@ def run_fullscan_v34(manual=False):
         now_et.strftime("%Y-%m-%d"),
         manual
     )
-
-    # Support both:
-    #   candidates
-    # and:
-    #   (candidates, discovery_stats)
 
     if (
         isinstance(discovery_result, tuple)
