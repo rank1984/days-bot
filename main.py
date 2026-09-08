@@ -1,6 +1,9 @@
 """
-DAYS-BOT V5.0.4 – RESEARCH ENGINE
-Stability / Observability
+DAYS-BOT V5.0.4 – RESEARCH ENGINE WITH LEARNING
+Intraday + Swing 1–3D
+
+Manual execution only.
+No automatic orders.
 """
 
 import sys
@@ -54,6 +57,8 @@ def _safe_swing(candidate):
             f"{candidate.get('ticker')}: "
             f"{type(e).__name__}: {e}"
         )
+        import traceback
+        traceback.print_exc()
 
         return {
             "swing_score": 0,
@@ -108,16 +113,25 @@ def _classify_trade_type(candidate):
 def _normalize_discovery_stats(stats):
     """
     Keep Learning Engine input stable.
+
+    Discovery may return slightly different diagnostic
+    field names between versions. Missing values remain 0
+    rather than inventing data.
     """
+
     if not isinstance(stats, dict):
         stats = {}
+
+    # Debug: print raw stats before normalization
+    print("[Main] RAW discovery stats (before normalize):")
+    print(stats)
 
     # Universe: use requested_symbols (500) if available, otherwise fallback.
     universe_value = stats.get("universe", stats.get("requested_symbols", 0))
     if not universe_value:
         universe_value = 500  # hardcoded universe size as ultimate fallback
 
-    return {
+    normalized = {
         "universe": int(universe_value or 0),
 
         "snapshots_received": int(
@@ -167,6 +181,11 @@ def _normalize_discovery_stats(stats):
         ),
     }
 
+    print("[Main] Normalized discovery stats:")
+    print(normalized)
+
+    return normalized
+
 
 def run_fullscan_v34(manual=False):
     init_db()
@@ -196,6 +215,11 @@ def run_fullscan_v34(manual=False):
         now_et.strftime("%Y-%m-%d"),
         manual
     )
+
+    # Support both:
+    #   candidates
+    # and:
+    #   (candidates, discovery_stats)
 
     if (
         isinstance(discovery_result, tuple)
