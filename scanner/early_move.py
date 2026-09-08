@@ -1,5 +1,5 @@
 """
-DAYS-BOT V5.0.1 – Early Move Detection Engine
+DAYS-BOT V5.0.4 – Early Move Detection Engine
 """
 import pytz
 from datetime import datetime, timedelta
@@ -257,7 +257,7 @@ def calculate_early_move_score(
 ) -> Dict[str, Any]:
     """
     Calculate Early Move Score and behavioral state.
-    Returns stable structure even on failure.
+    If data is insufficient, returns state='UNAVAILABLE'.
     """
     if bars is None:
         bars = _get_price_bars(ticker, lookback_minutes=30)
@@ -265,7 +265,7 @@ def calculate_early_move_score(
     if not bars or len(bars) < 5:
         return {
             "early_score": 0,
-            "state": "INSUFFICIENT_DATA",
+            "state": "UNAVAILABLE",
             "components": {},
             "data_quality": "UNKNOWN",
             "error": "Not enough bars"
