@@ -1,5 +1,5 @@
 """
-DAYS-BOT V4.3 – Lesson Engine
+DAYS-BOT V5.0.4 – Lesson Engine
 Tracks daily learning: funnel changes, top5 performance, recommendations.
 """
 from datetime import datetime, timedelta
@@ -52,8 +52,8 @@ def build_lesson(
     # 1. Funnel analysis
     funnel = {
         "universe": discovery_stats.get("universe", 0),
-        "snapshots_received": discovery_stats.get("returned_snapshots", 0),
-        "valid_prices": discovery_stats.get("valid_price", 0),
+        "snapshots_received": discovery_stats.get("snapshots_received", 0),  # FIXED: use normalized field name
+        "valid_price": discovery_stats.get("valid_price", 0),
         "valid_prev_close": discovery_stats.get("valid_prev_close", 0),
         "parsed_raw": discovery_stats.get("parsed_raw", 0),
         "strict_candidates": discovery_stats.get("strict_candidates", 0),
@@ -178,11 +178,10 @@ def format_lesson_for_telegram(lesson: Dict[str, Any]) -> str:
     """Format lesson as Telegram message"""
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📚 DAYS-BOT V4.3 – לקח יומי")
+    lines.append("📚 DAYS-BOT V5.0.4 – לקח יומי")
     lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
-    # Funnel
     funnel = lesson.get("funnel", {})
     lines.append("")
     lines.append("🔎 משפך הגילוי:")
@@ -192,14 +191,12 @@ def format_lesson_for_telegram(lesson: Dict[str, Any]) -> str:
     lines.append(f"  נפסלו: גאפ       {funnel.get('rejected_gap', 0)}")
     lines.append(f"  נפסלו: נפח       {funnel.get('rejected_volume', 0)}")
 
-    # Top5
     top5 = lesson.get("top5", [])
     lines.append("")
     lines.append("🏆 TOP 5:")
     for i, t in enumerate(top5, 1):
         lines.append(f"  {i}. {t['ticker']:6s} | Intraday={t['intraday_score']:.0f} | Swing={t['swing_score']:.0f} | {t['trade_type']}")
 
-    # Changes
     changes = lesson.get("changes_vs_yesterday", {})
     if changes:
         lines.append("")
@@ -208,7 +205,6 @@ def format_lesson_for_telegram(lesson: Dict[str, Any]) -> str:
             arrow = "🔼" if val['direction'] == "up" else "🔽"
             lines.append(f"  {key}: {val['previous']} → {val['current']} {arrow}")
 
-    # Recommendations
     recommendations = lesson.get("recommendations", [])
     if recommendations:
         lines.append("")
@@ -225,37 +221,33 @@ def format_lesson_for_telegram(lesson: Dict[str, Any]) -> str:
 def print_lesson(lesson: Dict[str, Any]):
     """Print lesson to console in readable format"""
     print("\n" + "="*74)
-    print("📚 DAYS-BOT V4.3 – DAILY LESSON")
+    print("📚 DAYS-BOT V5.0.4 – DAILY LESSON")
     print("="*74)
     print(f"📅 {lesson['date']} | 🕐 {lesson['time']} | {lesson['trading_day']}")
     print("-"*74)
 
-    # Funnel
     funnel = lesson.get("funnel", {})
     print("\n🔎 DISCOVERY FUNNEL")
     print(f"  Universe:               {funnel.get('universe', 0)}")
     print(f"  Snapshots received:     {funnel.get('snapshots_received', 0)}")
-    print(f"  Valid prices:           {funnel.get('valid_prices', 0)}")
+    print(f"  Valid prices:           {funnel.get('valid_price', 0)}")
     print(f"  Strict candidates:      {funnel.get('strict_candidates', 0)}")
     print(f"  Rejected: gap           {funnel.get('rejected_gap', 0)}")
     print(f"  Rejected: volume        {funnel.get('rejected_volume', 0)}")
     print(f"  Rejected: price_low     {funnel.get('rejected_price_low', 0)}")
     print(f"  Rejected: price_high    {funnel.get('rejected_price_high', 0)}")
 
-    # Top5
     top5 = lesson.get("top5", [])
     print("\n🏆 TOP 5")
     for i, t in enumerate(top5, 1):
         print(f"  {i}. {t['ticker']:6s} | Intraday={t['intraday_score']:.1f} | Swing={t['swing_score']:.1f} | {t['trade_type']}")
 
-    # Changes
     changes = lesson.get("changes_vs_yesterday", {})
     if changes:
         print("\n📈 CHANGES VS YESTERDAY")
         for key, val in list(changes.items())[:5]:
             print(f"  {key}: {val['previous']} → {val['current']} ({val['direction']})")
 
-    # Recommendations
     recommendations = lesson.get("recommendations", [])
     if recommendations:
         print("\n💡 RECOMMENDATIONS")
