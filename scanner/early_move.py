@@ -305,6 +305,10 @@ def calculate_early_move_score(
 
     data_quality = "GOOD" if len(bars) >= 15 else "PARTIAL"
 
+    # --- Debug: if early_score == 0, print components ---
+    if early_score == 0:
+        print(f"[EarlyMove] {ticker} - Score 0. Components: {components}")
+
     return {
         "early_score": early_score,
         "state": state,
