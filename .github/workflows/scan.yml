@@ -2,44 +2,39 @@ name: DAYS-BOT V5.0.4 Trading Scanner
 
 on:
   schedule:
-    - cron: "45 12 * * 1-5"   # 08:45 ET
-    - cron: "0 13 * * 1-5"    # 09:00 ET
-    - cron: "15 13 * * 1-5"   # 09:15 ET
+    # 08:45 ET (12:45 UTC)
+    - cron: "45 12 * * 1-5"
+    # 09:00 ET (13:00 UTC)
+    - cron: "0 13 * * 1-5"
+    # 09:15 ET (13:15 UTC)
+    - cron: "15 13 * * 1-5"
+
+  # Allows manual trigger
   workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - run: |
+      - name: Install Dependencies
+        run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - run: mkdir -p data
+      - name: Create Data Directory
+        run: mkdir -p data
 
-      - name: Show Runtime Information
-        run: |
-          echo "=============================================="
-          echo "DAYS-BOT V5.0.4 – TRADING SCANNER"
-          echo "=============================================="
-          echo "UTC:"
-          date -u
-          echo ""
-          echo "New York (ET):"
-          TZ=America/New_York date
-          echo ""
-          echo "Event name: ${{ github.event_name }}"
-          echo "=============================================="
-
-      - name: Run V5.0.4 Scanner
+      - name: Run DAYS-BOT V5.0.4
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -57,9 +52,10 @@ jobs:
             python main.py fullscan_v34
           fi
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Database
         if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: alerts-db-v5-${{ github.run_number }}
+          name: alerts-db-v504
           path: data/alerts.db
           retention-days: 30
