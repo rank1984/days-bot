@@ -1,5 +1,5 @@
 """
-DAYS-BOT V4.3 – Premarket Engine (Alpaca)
+DAYS-BOT V5.0.4 – Premarket Engine (Alpaca)
 Fetches real 1-minute premarket bars from Alpaca.
 Returns PM High, Low, VWAP, Volume, Bars count.
 """
@@ -48,7 +48,7 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict:
     target_date = datetime.strptime(target_date_str, "%Y-%m-%d").date()
     current_time = now_et.time()
 
-    # Request 5 days of 1-minute data to cover PM window
+    # Request 7 days of 1-minute data to cover PM window
     start = now_et - timedelta(days=7)
 
     try:
@@ -73,7 +73,11 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict:
         data = response.json()
         bars = data.get("bars", {}).get(ticker, [])
 
+        # --- Debug: print bar count ---
+        print(f"[PM] {ticker} - Total bars: {len(bars)}")
+
         if not bars:
+            print(f"[PM] {ticker} - No bars returned from Alpaca")
             return {"error": "No bars returned"}
 
         # Filter to target date and PM window
@@ -93,7 +97,11 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict:
 
             pm_bars.append(bar)
 
+        # --- Debug: print PM bar count ---
+        print(f"[PM] {ticker} - PM bars (04:00-09:30, today): {len(pm_bars)}")
+
         if not pm_bars:
+            print(f"[PM] {ticker} - No PM bars for target date")
             return {"error": "No PM bars for target date"}
 
         # Calculate metrics
@@ -124,4 +132,5 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict:
         }
 
     except Exception as e:
+        print(f"[PM] {ticker} - Error: {e}")
         return {"error": str(e)}
