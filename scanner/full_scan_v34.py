@@ -1,8 +1,9 @@
 """
-DAYS-BOT V5.0.5 – Full Scan Engine (Type-Safe + Gates)
+DAYS-BOT V5.0.5 – Full Scan Engine (Type-Safe + Gates + NO_TRADE Filter)
 FIXES:
 - Liquidity Gate: spread unknown → SPREAD_UNKNOWN (reject)
 - pm_volume_status: ZERO only when PM data confirmed
+- V5.0.5: Filter out NO_TRADE candidates before ranking
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -220,10 +221,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
             )
 
-            # ============================================================
-            # FIX 2: pm_volume_status – differentiate ZERO vs UNAVAILABLE
-            # ============================================================
-            # Only mark ZERO if we actually received PM bars
+            # pm_volume_status: differentiate ZERO vs UNAVAILABLE
             if c.get('pm_source') in ('alpaca_iex', 'yfinance') and c.get('pm_bars', 0) > 0:
                 if c['pm_volume'] == 0:
                     c['pm_volume_status'] = "ZERO"
@@ -433,18 +431,28 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['analysis'] = analysis
         enriched.append(c)
 
+    # ============================================================
+    # V5.0.5 FIX: Filter out NO_TRADE candidates before ranking
+    # ============================================================
+    actionable = [
+        c for c in enriched
+        if c.get('trade_type') != 'NO_TRADE'
+    ]
+
     print()
     print("=" * 74)
     print("FULLSCAN GATE SUMMARY")
     print("=" * 74)
     print(f"  Corporate Action rejects:  {corp_action_rejects}")
     print(f"  Liquidity rejects:         {liquidity_rejects}")
-    print(f"  Remaining candidates:      {len(enriched)}")
+    print(f"  Total analyzed:            {len(enriched)}")
+    print(f"  Remaining after Gates:     {len(actionable)}")
     print("=" * 74)
 
-    enriched.sort(
+    # Sort only the actionable ones
+    actionable.sort(
         key=lambda x: x.get('composite_score') if isinstance(x.get('composite_score'), (int, float)) else -1,
         reverse=True
     )
 
-    return enriched[:5] if len(enriched) >= 5 else enriched
+    return actionable[:5] if len(actionable) >= 5 else actionable
