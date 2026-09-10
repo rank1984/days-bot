@@ -1,9 +1,14 @@
 """
-DAYS-BOT V5.0.4 – RESEARCH ENGINE WITH LEARNING
-Intraday + Swing 1–3D
+DAYS-BOT V5.0.5 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
 
+Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
+
+V5.0.5 CHANGES:
+- Replay snapshot for ALL strict candidates (not just Top 5)
+- Replay integrity check (records == strict_candidates)
+- No changes to thresholds, weights, or strategy
 """
 
 import sys
@@ -175,12 +180,43 @@ def _normalize_discovery_stats(stats):
         "reject_invalid": int(
             stats.get("reject_invalid", 0) or 0
         ),
+
+        "reject_float": int(
+            stats.get("reject_float", 0) or 0
+        ),
     }
 
     print("[Main] Normalized discovery stats:")
     print(normalized)
 
     return normalized
+
+
+def _run_replay_integrity_check(replay_count, strict_count):
+    """
+    V5.0.5 – Replay Integrity Check
+    Verifies that we saved a replay record for every strict candidate.
+    """
+    print()
+    print("=" * 74)
+    print("REPLAY INTEGRITY CHECK")
+    print("=" * 74)
+
+    strict_ok = (replay_count == strict_count)
+    print(f"  strict_candidates:                    {strict_count}")
+    print(f"  replay_records:                       {replay_count}")
+    print(f"  replay_records == strict_candidates:  {'PASS' if strict_ok else 'FAIL'}")
+
+    if not strict_ok:
+        print()
+        print("  ⚠️  WARNING: Replay count does not match strict candidates.")
+        print("  ⚠️  Do NOT proceed to V5.0.6 until this is resolved.")
+        print("  ⚠️  Inspect save_candidate_snapshot() for silent failures.")
+
+    print("=" * 74)
+    print()
+
+    return strict_ok
 
 
 def run_fullscan_v34(manual=False):
@@ -190,8 +226,8 @@ def run_fullscan_v34(manual=False):
 
     print("\n" + "=" * 74)
     print(
-        "DAYS-BOT V5.0.4 – RESEARCH ENGINE "
-        "(Intraday + Swing + Learning)"
+        "DAYS-BOT V5.0.5 – RESEARCH ENGINE "
+        "(Intraday + Swing + Learning + Replay Integrity)"
     )
     print(
         f"Date: {now_et.strftime('%Y-%m-%d')} | "
@@ -303,13 +339,43 @@ def run_fullscan_v34(manual=False):
     )
 
     # ------------------------------------------------------------
-    # 3. SWING ANALYSIS & REPLAY SNAPSHOT
+    # 3. V5.0.5 – SAVE REPLAY FOR **ALL** STRICT CANDIDATES
+    # ------------------------------------------------------------
+    # We save replay for every candidate that passed the initial
+    # strict discovery (i.e. len(candidates)), not just Top 5.
+    #
+    # This gives us the full research dataset.
     # ------------------------------------------------------------
 
-    print("[Main] Running swing analysis...")
+    print("[Main] Saving replay snapshots for ALL strict candidates...")
+
+    replay_saved = 0
+    replay_failed = 0
+
+    for idx, candidate in enumerate(candidates):
+        try:
+            save_candidate_snapshot(candidate, idx)
+            replay_saved += 1
+        except Exception as e:
+            replay_failed += 1
+            print(
+                f"[Main] ⚠️ Replay snapshot error "
+                f"{candidate.get('ticker')}: "
+                f"{type(e).__name__}: {e}"
+            )
+
+    print(
+        f"[Main] Replay snapshots saved: "
+        f"{replay_saved} (failed: {replay_failed})"
+    )
+
+    # ------------------------------------------------------------
+    # 4. SWING ANALYSIS (TOP 5 ONLY)
+    # ------------------------------------------------------------
+
+    print("[Main] Running swing analysis for Top 5...")
 
     for idx, candidate in enumerate(top5):
-        # Pass analysis from candidate if available
         analysis = candidate.get('analysis', {})
 
         swing = _safe_swing(candidate, analysis)
@@ -341,17 +407,18 @@ def run_fullscan_v34(manual=False):
                 f"{type(e).__name__}: {e}"
             )
 
-        # --------------------------------------------------------
-        # REPLAY SNAPSHOT (protected)
-        # --------------------------------------------------------
-        try:
-            save_candidate_snapshot(candidate, idx)
-            print(f"[Main] Replay snapshot saved: {candidate.get('ticker')}")
-        except Exception as e:
-            print(f"[Main] ⚠️ Replay snapshot error {candidate.get('ticker')}: {e}")
+    # ------------------------------------------------------------
+    # 5. REPLAY INTEGRITY CHECK
+    # ------------------------------------------------------------
+
+    strict_count = discovery_stats.get("strict_candidates", 0)
+    integrity_ok = _run_replay_integrity_check(
+        replay_count=replay_saved,
+        strict_count=strict_count,
+    )
 
     # ------------------------------------------------------------
-    # 4. LEARNING
+    # 6. LEARNING
     # ------------------------------------------------------------
 
     print("[Main] Building daily lesson...")
@@ -375,7 +442,7 @@ def run_fullscan_v34(manual=False):
     print_lesson(lesson)
 
     # ------------------------------------------------------------
-    # 5. TELEGRAM
+    # 7. TELEGRAM
     # ------------------------------------------------------------
 
     print("[Main] Sending Telegram...")
@@ -408,7 +475,7 @@ def run_fullscan_v34(manual=False):
         )
 
     # ------------------------------------------------------------
-    # 6. SUMMARY
+    # 8. SUMMARY
     # ------------------------------------------------------------
 
     print("\n" + "=" * 74)
@@ -427,6 +494,20 @@ def run_fullscan_v34(manual=False):
             f"Data={c.get('data_status', 'UNKNOWN')}"
         )
 
+    print("=" * 74)
+
+    # Replay summary
+    print()
+    print("=" * 74)
+    print("REPLAY SUMMARY")
+    print("=" * 74)
+    print(f"Universe:             {discovery_stats['universe']}")
+    print(f"Valid snapshots:      {discovery_stats['snapshots_received']}")
+    print(f"Strict candidates:    {strict_count}")
+    print(f"Replay records:       {replay_saved}")
+    print(f"Top 5:                {len(top5)}")
+    print()
+    print(f"Replay integrity:     {'✅ PASS' if integrity_ok else '❌ FAIL'}")
     print("=" * 74)
 
     print(
