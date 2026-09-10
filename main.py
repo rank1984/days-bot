@@ -153,6 +153,23 @@ def run_fullscan_v34(manual=False):
     print("[Main] Running full analysis...")
     top5 = full_scan_v34(candidates, manual)
 
+    # ------------------------------------------------------------
+    # GATE SUMMARY (V5.0.5 NEW)
+    # ------------------------------------------------------------
+    if top5:
+        # Count gates across all enriched candidates (if available)
+        # Note: top5 only contains 5, but we can count what we see
+        corp_rejects = sum(1 for c in top5 if c.get('corporate_action', False))
+        liq_rejects = sum(1 for c in top5 if not c.get('liquidity_gate', {}).get('passed', True) and c.get('liquidity_gate'))
+
+        print()
+        print("=" * 74)
+        print("GATE SUMMARY (from Top 5)")
+        print("=" * 74)
+        print(f"  Corporate Action rejects:  {corp_rejects}")
+        print(f"  Liquidity rejects:         {liq_rejects}")
+        print("=" * 74)
+
     if not top5:
         print("[Main] ❌ Full analysis returned empty.")
         msg = "😴 DAYS-BOT\n\nה-Discovery עבד, אבל לא התקבל מועמד לניתוח מלא."
