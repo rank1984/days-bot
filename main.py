@@ -98,22 +98,37 @@ def _normalize_discovery_stats(stats):
     return normalized
 
 
-def _run_replay_integrity_check(replay_count, strict_count):
+def _run_replay_integrity_check(expected, saved, failed_tickers):
+    """
+    V5.0.5 – Replay Integrity Check
+    """
     print()
     print("=" * 74)
     print("REPLAY INTEGRITY CHECK")
     print("=" * 74)
-    strict_ok = (replay_count == strict_count)
-    print(f"  strict_candidates:                    {strict_count}")
-    print(f"  replay_records:                       {replay_count}")
-    print(f"  replay_records == strict_candidates:  {'PASS' if strict_ok else 'FAIL'}")
-    if not strict_ok:
+    print(f"  Expected: {expected}")
+    print(f"  Saved:    {saved}")
+
+    missing = expected - saved
+    print(f"  Missing:  {missing}")
+
+    status = "PASS" if (missing == 0 and saved == expected) else "FAIL"
+    print(f"  Status:   {status}")
+
+    if failed_tickers:
         print()
-        print("  ⚠️ WARNING: Replay count does not match strict candidates.")
-        print("  ⚠️ Do NOT proceed to V5.0.6 until this is resolved.")
+        print("  Failed tickers:")
+        for t in failed_tickers:
+            print(f"    - {t}")
+
+    if status == "FAIL":
+        print()
+        print("  ⚠️ Do NOT proceed to V5.0.6 until integrity is PASS.")
+
     print("=" * 74)
     print()
-    return strict_ok
+
+    return status == "PASS"
 
 
 def run_fullscan_v34(manual=False):
@@ -149,26 +164,40 @@ def run_fullscan_v34(manual=False):
     print(f"[Main] ✅ Discovery returned {len(candidates)} candidates")
     print(f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | snapshots={discovery_stats['snapshots_received']} | strict={discovery_stats['strict_candidates']} | fallback={discovery_stats['fallback_candidates']}")
 
+    # ------------------------------------------------------------
+    # REPLAY: Save ALL strict candidates BEFORE FullScan
+    # (so we capture the original state)
+    # ------------------------------------------------------------
+    print()
+    print("[Main] Saving replay snapshots for ALL strict candidates...")
+    print(f"[REPLAY] Expected Strict Candidates: {len(candidates)}")
+
+    replay_saved = 0
+    replay_failed = 0
+    failed_tickers = []
+
+    for idx, candidate in enumerate(candidates):
+        ticker = candidate.get('ticker', 'UNKNOWN')
+        success = save_candidate_snapshot(candidate, idx)
+        if success:
+            replay_saved += 1
+        else:
+            replay_failed += 1
+            failed_tickers.append(ticker)
+
+    print(f"[REPLAY] Saved: {replay_saved}")
+    print(f"[REPLAY] FAILED: {replay_failed}")
+
+    if failed_tickers:
+        for t in failed_tickers:
+            print(f"[REPLAY ERROR] {t} failed to save")
+
+    # ------------------------------------------------------------
     # FULL ANALYSIS
+    # ------------------------------------------------------------
+    print()
     print("[Main] Running full analysis...")
     top5 = full_scan_v34(candidates, manual)
-
-    # ------------------------------------------------------------
-    # GATE SUMMARY (V5.0.5 NEW)
-    # ------------------------------------------------------------
-    if top5:
-        # Count gates across all enriched candidates (if available)
-        # Note: top5 only contains 5, but we can count what we see
-        corp_rejects = sum(1 for c in top5 if c.get('corporate_action', False))
-        liq_rejects = sum(1 for c in top5 if not c.get('liquidity_gate', {}).get('passed', True) and c.get('liquidity_gate'))
-
-        print()
-        print("=" * 74)
-        print("GATE SUMMARY (from Top 5)")
-        print("=" * 74)
-        print(f"  Corporate Action rejects:  {corp_rejects}")
-        print(f"  Liquidity rejects:         {liq_rejects}")
-        print("=" * 74)
 
     if not top5:
         print("[Main] ❌ Full analysis returned empty.")
@@ -177,21 +206,6 @@ def run_fullscan_v34(manual=False):
         return
 
     print(f"[Main] ✅ Full analysis returned {len(top5)} candidates")
-
-    # REPLAY SNAPSHOTS FOR ALL STRICT
-    print("[Main] Saving replay snapshots for ALL strict candidates...")
-    replay_saved = 0
-    replay_failed = 0
-
-    for idx, candidate in enumerate(candidates):
-        try:
-            save_candidate_snapshot(candidate, idx)
-            replay_saved += 1
-        except Exception as e:
-            replay_failed += 1
-            print(f"[Main] ⚠️ Replay snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
-
-    print(f"[Main] Replay snapshots saved: {replay_saved} (failed: {replay_failed})")
 
     # SWING ANALYSIS FOR TOP 5
     print("[Main] Running swing analysis for Top 5...")
@@ -212,7 +226,7 @@ def run_fullscan_v34(manual=False):
 
     # INTEGRITY CHECK
     strict_count = discovery_stats.get("strict_candidates", 0)
-    integrity_ok = _run_replay_integrity_check(replay_saved, strict_count)
+    integrity_ok = _run_replay_integrity_check(strict_count, replay_saved, failed_tickers)
 
     # LEARNING
     print("[Main] Building daily lesson...")
