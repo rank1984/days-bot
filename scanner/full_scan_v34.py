@@ -1,12 +1,14 @@
 """
-DAYS-BOT V5.0.5 – Full Scan Engine (Type-Safe + Gates + NO_TRADE Filter)
+DAYS-BOT V5.0.5.1 – Full Scan Engine (Hardening)
 FIXES:
-- Liquidity Gate: spread unknown → SPREAD_UNKNOWN (reject)
-- pm_volume_status: ZERO only when PM data confirmed
-- V5.0.5: Filter out NO_TRADE candidates before ranking
+- PM volume status: UNAVAILABLE vs ZERO distinction
+- Gates: Corporate Action + Liquidity (Hard, before scoring)
+- Data Completeness Gate: uses pm_volume_status
+- Analyze ALL strict candidates (not just 25)
+- Explicit Gate Summary logging
 """
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import pytz
 
 from scanner.pm_engine import get_premarket_minute_data
@@ -59,21 +61,15 @@ def _safe_float(value, default=0.0):
 
 
 def _check_liquidity_gate(candidate: dict) -> dict:
-    """
-    Hard Liquidity Gate.
-    V5.0.5 FIX: spread unknown → SPREAD_UNKNOWN (reject)
-    """
+    """Hard Liquidity Gate. Spread unknown → SPREAD_UNKNOWN (reject)."""
     reasons = []
-
     price = _safe_float(candidate.get('price', 0))
     spread = candidate.get('spread_pct')
     adv = candidate.get('average_daily_volume')
 
-    # Price >= 1.0
     if price < LIQUIDITY_MIN_PRICE:
         reasons.append(f"PRICE_TOO_LOW ({price:.2f})")
 
-    # Spread <= 8.0 (STRICT: unknown = reject)
     if spread is None:
         reasons.append("SPREAD_UNKNOWN")
     else:
@@ -84,7 +80,6 @@ def _check_liquidity_gate(candidate: dict) -> dict:
         except (TypeError, ValueError):
             reasons.append("SPREAD_INVALID")
 
-    # ADV check - only if known (optional for now)
     if adv is not None:
         try:
             adv_val = int(adv)
@@ -93,35 +88,59 @@ def _check_liquidity_gate(candidate: dict) -> dict:
         except (TypeError, ValueError):
             pass
 
-    return {
-        "passed": len(reasons) == 0,
-        "reasons": reasons,
-    }
+    return {"passed": len(reasons) == 0, "reasons": reasons}
 
 
 def _check_data_completeness(candidate: dict) -> dict:
+    """
+    V5.0.5.1 FIX:
+    Uses pm_volume_status to distinguish:
+    - UNAVAILABLE → missing (data not received)
+    - ZERO → not missing (data received, zero volume) → WATCH
+    - OK → not missing
+    """
     missing = []
-    critical_fields = [
-        ("price", "מחיר"),
-        ("gap_pct", "גאפ"),
-        ("pm_volume", "נפח PM"),
-        ("pm_high", "PM High"),
-        ("pm_vwap", "VWAP"),
-        ("catalyst_type", "קטליזטור"),
-        ("sec_risk_level", "SEC Risk"),
-    ]
 
-    for field, label in critical_fields:
-        value = candidate.get(field)
-        if value is None or value == "UNAVAILABLE" or value == "":
-            missing.append(label)
+    # Price
+    price = candidate.get('price')
+    if price is None or _safe_float(price) <= 0:
+        missing.append("מחיר")
 
+    # Gap
+    if candidate.get('gap_pct') is None:
+        missing.append("גאפ")
+
+    # PM Volume — uses status, not value
+    pm_vol_status = candidate.get('pm_volume_status', 'UNAVAILABLE')
+    if pm_vol_status == "UNAVAILABLE":
+        missing.append("נפח PM")
+
+    # PM High
     pm_high = candidate.get('pm_high')
-    if pm_high is None or pm_high == 0:
-        if "PM High" not in missing:
-            missing.append("PM High")
+    if pm_high is None or _safe_float(pm_high) <= 0:
+        missing.append("PM High")
 
-    status = "ACTIONABLE" if len(missing) == 0 else "WATCH" if len(missing) <= 2 else "NO_TRADE"
+    # PM VWAP
+    pm_vwap = candidate.get('pm_vwap')
+    if pm_vwap is None or _safe_float(pm_vwap) <= 0:
+        missing.append("VWAP")
+
+    # Catalyst
+    cat_type = candidate.get('catalyst_type')
+    if cat_type in (None, "UNAVAILABLE", ""):
+        missing.append("קטליזטור")
+
+    # SEC
+    sec_level = candidate.get('sec_risk_level')
+    if sec_level in (None, "UNAVAILABLE", ""):
+        missing.append("SEC Risk")
+
+    if len(missing) == 0:
+        status = "ACTIONABLE"
+    elif len(missing) <= 2:
+        status = "WATCH"
+    else:
+        status = "NO_TRADE"
 
     return {
         "complete": len(missing) == 0,
@@ -131,18 +150,25 @@ def _check_data_completeness(candidate: dict) -> dict:
 
 
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
+    """
+    V5.0.5.1 – Analyze ALL strict candidates.
+    Returns Top 5 only (but all are scored for measurement).
+    """
     if not candidates:
         return []
 
-    print(f"[FullScan] Analyzing {len(candidates)} candidates...")
+    total_to_analyze = len(candidates)
+
+    print(f"[FullScan] Analyzing ALL {total_to_analyze} strict candidates...")
 
     corp_action_rejects = 0
     liquidity_rejects = 0
-    enriched = []
+    passed_gates = 0
+    scored = []
 
-    for idx, c in enumerate(candidates[:25]):
+    for idx, c in enumerate(candidates):
         ticker = c.get('ticker', 'UNKNOWN')
-        print(f"[FullScan] {idx+1}/{min(len(candidates), 25)} {ticker}")
+        print(f"[FullScan] {idx+1}/{total_to_analyze} {ticker}")
 
         analysis = {}
 
@@ -169,13 +195,15 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['plan_valid'] = False
             c['plan_error'] = f"CORPORATE_ACTION: {corp_action.get('reason')}"
             c['data_status'] = 'NO_TRADE'
+            c['composite_score'] = None
+            c['score_status'] = 'REJECTED_GATE'
             c['data_completeness'] = {
                 "complete": False,
                 "missing": ["CORPORATE_ACTION"],
                 "status": "NO_TRADE"
             }
             c['analysis'] = analysis
-            enriched.append(c)
+            scored.append(c)
             continue
 
         # ============================================================
@@ -194,52 +222,65 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['plan_valid'] = False
             c['plan_error'] = f"LIQUIDITY: {', '.join(liquidity.get('reasons', []))}"
             c['data_status'] = 'NO_TRADE'
+            c['composite_score'] = None
+            c['score_status'] = 'REJECTED_GATE'
             c['data_completeness'] = {
                 "complete": False,
                 "missing": liquidity.get('reasons', []),
                 "status": "NO_TRADE"
             }
             c['analysis'] = analysis
-            enriched.append(c)
+            scored.append(c)
             continue
 
+        passed_gates += 1
+
         # ============================================================
-        # PM DATA
+        # PM DATA (V5.0.5.1 FIX: UNAVAILABLE vs ZERO)
         # ============================================================
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker, expected_type=dict, name=f"pm:{ticker}")
 
+        pm_bars_received = 0
+        pm_source = "none"
+
         if pm_data and pm_data.get('error') is None:
+            pm_bars_received = int(pm_data.get('pm_bars_count', 0) or 0)
+            pm_source = pm_data.get('source', 'unknown')
+
+        if pm_bars_received > 0:
+            # We HAVE real PM bars
             c['pm_high'] = pm_data.get('pm_high')
             c['pm_low'] = pm_data.get('pm_low')
             c['pm_vwap'] = pm_data.get('pm_vwap')
-            c['pm_volume'] = pm_data.get('pm_volume')
-            c['pm_bars'] = pm_data.get('pm_bars_count', 0)
+            c['pm_volume'] = int(pm_data.get('pm_volume', 0) or 0)
+            c['pm_bars'] = pm_bars_received
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
-            c['pm_source'] = pm_data.get('source', 'unknown')
+            c['pm_source'] = pm_source
             c['pm_dist_signed'] = (
                 ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0
                 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
             )
 
-            # pm_volume_status: differentiate ZERO vs UNAVAILABLE
-            if c.get('pm_source') in ('alpaca_iex', 'yfinance') and c.get('pm_bars', 0) > 0:
-                if c['pm_volume'] == 0:
-                    c['pm_volume_status'] = "ZERO"
-                else:
-                    c['pm_volume_status'] = "OK"
+            if c['pm_volume'] == 0:
+                c['pm_volume_status'] = "ZERO"       # data received, but zero volume
             else:
-                c['pm_volume_status'] = "UNAVAILABLE"
+                c['pm_volume_status'] = "OK"
         else:
+            # No PM bars at all
             c['pm_high'] = None
             c['pm_low'] = None
             c['pm_vwap'] = None
+            c['pm_volume'] = 0
             c['pm_bars'] = 0
-            c['pm_volume_status'] = "UNAVAILABLE"
             c['pm_data_quality'] = 'UNAVAILABLE'
-            c['pm_source'] = 'none'
+            c['pm_source'] = pm_source
             c['pm_dist_signed'] = None
+            c['pm_volume_status'] = "UNAVAILABLE"
 
         analysis['pm_data_quality'] = c['pm_data_quality']
+        analysis['pm_volume_status'] = c['pm_volume_status']
+        analysis['pm_bars_received'] = pm_bars_received
+        analysis['pm_source'] = pm_source
 
         # ============================================================
         # EARLY MOVE
@@ -253,7 +294,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             expected_type=dict,
             name=f"early:{ticker}"
         )
-
         c['early_score'] = early_data.get('early_score', 0)
         c['early_state'] = early_data.get('state', 'UNKNOWN')
         c['early_components'] = early_data.get('components', {})
@@ -279,7 +319,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         )
         if not isinstance(rvol_data, dict):
             rvol_data = {"rvol": None, "status": "UNAVAILABLE", "method": "INVALID_RESPONSE"}
-
         c['rvol'] = rvol_data.get('rvol')
         c['rvol_status'] = rvol_data.get('status', 'UNAVAILABLE')
         c['rvol_method'] = rvol_data.get('method', 'UNAVAILABLE')
@@ -341,7 +380,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             expected_type=dict,
             name=f"personality:{ticker}"
         )
-
         if isinstance(personality, dict):
             c['personality'] = personality.get('personality', 'UNKNOWN')
             c['personality_failure_rate'] = personality.get('failure_rate', 0)
@@ -349,7 +387,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['personality'] = 'UNKNOWN'
             c['personality_failure_rate'] = 0
             personality = {"personality": "UNKNOWN", "failure_rate": 0}
-
         analysis['personality'] = personality
 
         # VWAP
@@ -392,7 +429,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # COMPOSITE SCORE
+        # COMPOSITE SCORE (NO CHANGES)
         score = _safe_call(
             calculate_composite_score,
             None,
@@ -401,7 +438,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             expected_type=(int, float, type(None)),
             name=f"score:{ticker}"
         )
-
         if score is None:
             c['composite_score'] = None
             c['score_status'] = 'ERROR'
@@ -409,7 +445,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['composite_score'] = round(float(score), 1)
             c['score_status'] = 'OK'
 
-        # DATA COMPLETENESS
+        # DATA COMPLETENESS (uses pm_volume_status)
         completeness = _check_data_completeness(c)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
@@ -421,6 +457,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         c['diagnostics'] = {
             'pm': c.get('pm_data_quality'),
+            'pm_volume_status': c.get('pm_volume_status'),
             'early': c.get('early_data_quality'),
             'rvol': c.get('rvol_status'),
             'catalyst': c.get('catalyst_type'),
@@ -429,30 +466,26 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         }
 
         c['analysis'] = analysis
-        enriched.append(c)
+        scored.append(c)
 
-    # ============================================================
-    # V5.0.5 FIX: Filter out NO_TRADE candidates before ranking
-    # ============================================================
-    actionable = [
-        c for c in enriched
-        if c.get('trade_type') != 'NO_TRADE'
-    ]
-
+    # ------------------------------------------------------------
+    # GATE SUMMARY
+    # ------------------------------------------------------------
     print()
     print("=" * 74)
     print("FULLSCAN GATE SUMMARY")
     print("=" * 74)
-    print(f"  Corporate Action rejects:  {corp_action_rejects}")
-    print(f"  Liquidity rejects:         {liquidity_rejects}")
-    print(f"  Total analyzed:            {len(enriched)}")
-    print(f"  Remaining after Gates:     {len(actionable)}")
+    print(f"  Total analyzed:                {total_to_analyze}")
+    print(f"  Corporate Action rejects:      {corp_action_rejects}")
+    print(f"  Liquidity rejects:             {liquidity_rejects}")
+    print(f"  Passed Gates (Scored):         {passed_gates}")
+    print(f"  Top 5 returned:                {min(5, len(scored))}")
     print("=" * 74)
 
-    # Sort only the actionable ones
-    actionable.sort(
+    # Sort by composite_score (None → bottom)
+    scored.sort(
         key=lambda x: x.get('composite_score') if isinstance(x.get('composite_score'), (int, float)) else -1,
         reverse=True
     )
 
-    return actionable[:5] if len(actionable) >= 5 else actionable
+    return scored[:5] if len(scored) >= 5 else scored
