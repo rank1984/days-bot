@@ -1,7 +1,9 @@
-name: DAYS-BOT V5.0.4 Trading Scanner
+name: DAYS-BOT V5.0.5 Trading Scanner
 
 on:
   schedule:
+    # 08:30 ET (12:30 UTC) - Safety buffer
+    - cron: "30 12 * * 1-5"
     # 08:45 ET (12:45 UTC)
     - cron: "45 12 * * 1-5"
     # 09:00 ET (13:00 UTC)
@@ -9,13 +11,13 @@ on:
     # 09:15 ET (13:15 UTC)
     - cron: "15 13 * * 1-5"
 
-  # Allows manual trigger
+  # Allows manual trigger from GitHub UI
   workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -34,7 +36,7 @@ jobs:
       - name: Create Data Directory
         run: mkdir -p data
 
-      - name: Run DAYS-BOT V5.0.4
+      - name: Run DAYS-BOT V5.0.5
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -44,6 +46,15 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
+          echo "=============================================="
+          echo "DAYS-BOT V5.0.5"
+          echo "=============================================="
+          date -u
+          echo ""
+          echo "New York time:"
+          TZ=America/New_York date
+          echo "=============================================="
+
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "[Workflow] Manual execution"
             python main.py fullscan_v34 --manual
@@ -56,6 +67,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alerts-db-v504
+          name: alerts-db-v505-${{ github.run_number }}
           path: data/alerts.db
           retention-days: 30
