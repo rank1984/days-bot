@@ -1,6 +1,6 @@
 """
 telegram_v3.py – V5.0.5.1 Telegram Formatter
-Fixed: version label in lesson (V5.0.4 → V5.0.5.1)
+Fixed: None handling for entry/stop/targets (all format operations)
 """
 import requests
 from datetime import datetime
@@ -31,10 +31,21 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 
 
 def _fmt_price(value, default="N/A"):
+    """Safely format a price value (handles None)."""
     if value is None:
         return default
     try:
         return f"${float(value):.2f}"
+    except (TypeError, ValueError):
+        return default
+
+
+def _fmt_num(value, default=0.0, decimals=1):
+    """Safely format a number."""
+    if value is None:
+        return default
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return default
 
@@ -68,9 +79,9 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         trade_type = c.get('trade_type', 'WATCH')
         icon = "🟢" if "INTRADAY" in trade_type else "🟣" if "SWING" in trade_type else "🟡"
 
-        intraday_score = c.get('composite_score', 0)
-        swing_score = c.get('swing_score', 0)
-        early_score = c.get('early_score', 0)
+        intraday_score = _fmt_num(c.get('composite_score'), 0)
+        swing_score = _fmt_num(c.get('swing_score'), 0)
+        early_score = _fmt_num(c.get('early_score'), 0)
         early_state = c.get('early_state', 'UNKNOWN')
 
         if early_state == 'UNAVAILABLE':
@@ -92,15 +103,19 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         pm_status_display = {
             "OK": "✅",
             "ZERO": "⚠️ ZERO",
-            "UNAVAILABLE": "❌ UNAVAILABLE"
+            "UNAVAILABLE": "❌ N/A"
         }.get(pm_status, pm_status)
 
-        lines.append(f"{i}️⃣ {c['ticker']}")
+        price = _fmt_num(c.get('price'), 0)
+        gap = _fmt_num(c.get('gap_pct'), 0)
+        pm_vol = int(_fmt_num(c.get('pm_volume'), 0))
+
+        lines.append(f"{i}️⃣ {c.get('ticker', 'UNKNOWN')}")
         lines.append(f"  ציון יומי: {intraday_score:.1f}/100 | ציון Swing: {swing_score:.1f}/100")
         lines.append(f"  Early: {early_display}")
         lines.append(f"  סוג: {icon} {type_hebrew}")
-        lines.append(f"  מחיר: ${c.get('price', 0):.2f} | גאפ: {c.get('gap_pct', 0):+.1f}%")
-        lines.append(f"  נפח PM: {c.get('pm_volume', 0):,} ({pm_status_display})")
+        lines.append(f"  מחיר: ${price:.2f} | גאפ: {gap:+.1f}%")
+        lines.append(f"  נפח PM: {pm_vol:,} ({pm_status_display})")
         lines.append(f"  PM Bars: {c.get('pm_bars', 0)} | Source: {c.get('pm_source', 'none')}")
 
         completeness = c.get('data_completeness', {})
@@ -109,7 +124,8 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         if status == 'ACTIONABLE':
             lines.append("  סטטוס נתונים: ✅ כל הנתונים תקינים")
         elif status == 'WATCH':
-            lines.append(f"  סטטוס נתונים: 🟡 חסרים: {', '.join(missing)} – מעקב")
+            missing_str = ', '.join(missing) if missing else 'לא ידוע'
+            lines.append(f"  סטטוס נתונים: 🟡 חסרים: {missing_str} – מעקב")
         else:
             lines.append("  סטטוס נתונים: 🔴 חסרים נתונים קריטיים")
 
@@ -117,11 +133,15 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         if spread is None:
             spread_str = "לא זמין"
         else:
-            spread_str = f"{spread:.2f}% ⚠️" if spread > 2.0 else f"{spread:.2f}%"
+            try:
+                spread_val = float(spread)
+                spread_str = f"{spread_val:.2f}% ⚠️" if spread_val > 2.0 else f"{spread_val:.2f}%"
+            except (TypeError, ValueError):
+                spread_str = "לא זמין"
         lines.append(f"  מרווח (Spread): {spread_str}")
 
         cat_type = c.get('catalyst_type', 'UNAVAILABLE')
-        cat_score = c.get('catalyst_score', 0)
+        cat_score = _fmt_num(c.get('catalyst_score'), 0)
         if cat_type != "UNAVAILABLE":
             type_names = {
                 "FDA_APPROVAL": "אישור FDA",
@@ -135,16 +155,22 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
                 "NO_NEWS": "אין חדשות"
             }
             name = type_names.get(cat_type, cat_type)
-            lines.append(f"  זרז: {name} (ציון: {cat_score}/10)")
+            lines.append(f"  זרז: {name} (ציון: {cat_score:.0f}/10)")
         else:
             lines.append(f"  זרז: לא זמין")
 
         float_val = c.get('float')
         short = c.get('short_interest')
         if float_val:
-            lines.append(f"  Float: {float_val:,.0f}")
+            try:
+                lines.append(f"  Float: {float(float_val):,.0f}")
+            except (TypeError, ValueError):
+                pass
         if short:
-            lines.append(f"  Short Interest: {short*100:.1f}%")
+            try:
+                lines.append(f"  Short Interest: {float(short)*100:.1f}%")
+            except (TypeError, ValueError):
+                pass
 
         sec_level = c.get('sec_risk_level', 'LOW')
         sec_map = {"LOW": "נמוך", "MEDIUM": "בינוני", "HIGH": "גבוה ⚠️", "CRITICAL": "קריטי 🚨", "UNAVAILABLE": "לא זמין"}
@@ -153,6 +179,7 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         qualified = c.get('qualified', False)
         lines.append(f"  מועמד Swing: {'✅' if qualified else '❌'}")
 
+        # Trade Plan – with None handling
         if c.get('plan_valid', False):
             entry_str = _fmt_price(c.get('entry'))
             stop_str = _fmt_price(c.get('stop'))
@@ -160,27 +187,30 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
             t2_str = _fmt_price(c.get('target_2'))
             lines.append(f"  כניסה: {entry_str} | סטופ: {stop_str}")
             lines.append(f"  יעד 1: {t1_str} | יעד 2: {t2_str}")
-            position_size = c.get('position_size', 0)
-            max_loss = c.get('max_loss', 0)
-            lines.append(f"  מניות: {position_size} | הפסד מקס': ${float(max_loss or 0):.2f}")
+
+            position_size = c.get('position_size', 0) or 0
+            max_loss_val = _fmt_num(c.get('max_loss'), 0)
+            lines.append(f"  מניות: {position_size} | הפסד מקס': ${max_loss_val:.2f}")
         else:
             lines.append(f"  ⚠️ {c.get('plan_error', 'אין תוכנית מסחר')}")
 
         lines.append("")
 
+    # Best Swing (qualified) – with None handling
     swing_best = next((c for c in top5 if c.get('qualified', False)), None)
     if swing_best:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("🟣 מועמד Swing מאושר")
         lines.append("━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"{swing_best['ticker']}")
-        lines.append(f"ציון Swing: {swing_best.get('swing_score', 0):.0f}/100")
+        lines.append(f"{swing_best.get('ticker', 'UNKNOWN')}")
+        lines.append(f"ציון Swing: {_fmt_num(swing_best.get('swing_score'), 0):.0f}/100")
         lines.append(f"כניסה: {_fmt_price(swing_best.get('entry'))}")
         lines.append(f"סטופ:  {_fmt_price(swing_best.get('stop'))}")
         lines.append(f"יעד 1: {_fmt_price(swing_best.get('target_1'))}")
         lines.append(f"יעד 2: {_fmt_price(swing_best.get('target_2'))}")
         lines.append("")
 
+    # Decision
     actionable = [
         c for c in top5
         if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']
@@ -189,7 +219,7 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("✅ החלטה: נמצאו מועמדויות למסחר")
         best = actionable[0]
-        lines.append(f"📌 המועמדת המובילה: {best['ticker']} (Day {best.get('composite_score', 0):.0f} | Swing {best.get('swing_score', 0):.0f})")
+        lines.append(f"📌 המועמדת המובילה: {best.get('ticker', 'UNKNOWN')} (Day {_fmt_num(best.get('composite_score'), 0):.0f} | Swing {_fmt_num(best.get('swing_score'), 0):.0f})")
     else:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("🚫 החלטה: אין מסחר היום")
@@ -205,8 +235,8 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
 def format_lesson_for_telegram(lesson: dict) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📚 DAYS-BOT V5.0.5.1 – לקח יומי")   # <-- FIXED version
-    lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
+    lines.append("📚 DAYS-BOT V5.0.5.1 – לקח יומי")
+    lines.append(f"📅 {lesson.get('date', 'N/A')} | {lesson.get('trading_day', 'N/A')}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
     funnel = lesson.get("funnel", {})
@@ -229,7 +259,10 @@ def format_lesson_for_telegram(lesson: dict) -> str:
                 "BOTH": "שניהם",
                 "WATCH": "מעקב"
             }.get(t.get('trade_type', 'WATCH'), t.get('trade_type', 'WATCH'))
-            lines.append(f"  {i}. {t['ticker']:6s} | Day={t.get('day_trade_score', t.get('intraday_score', 0)):.0f} | Swing={t.get('swing_score', 0):.0f} | {type_hebrew}")
+            day_score = _fmt_num(t.get('day_trade_score', t.get('intraday_score', 0)), 0)
+            swing_s = _fmt_num(t.get('swing_score'), 0)
+            ticker = t.get('ticker', 'UNKNOWN')
+            lines.append(f"  {i}. {ticker:6s} | Day={day_score:.0f} | Swing={swing_s:.0f} | {type_hebrew}")
 
     recommendations = lesson.get("recommendations", [])
     if recommendations:
