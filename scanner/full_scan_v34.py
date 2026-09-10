@@ -1,5 +1,8 @@
 """
 DAYS-BOT V5.0.5 – Full Scan Engine (Type-Safe + Gates)
+FIXES:
+- Liquidity Gate: spread unknown → SPREAD_UNKNOWN (reject)
+- pm_volume_status: ZERO only when PM data confirmed
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -25,7 +28,7 @@ from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALU
 ET = pytz.timezone("America/New_York")
 
 # ------------------------------------------------------------
-# Liquidity Gate thresholds (configurable via config if needed)
+# Liquidity Gate thresholds (configurable)
 # ------------------------------------------------------------
 LIQUIDITY_MAX_SPREAD_PCT = 8.0
 LIQUIDITY_MIN_PRICE = 1.0
@@ -57,7 +60,7 @@ def _safe_float(value, default=0.0):
 def _check_liquidity_gate(candidate: dict) -> dict:
     """
     Hard Liquidity Gate.
-    Returns: {"passed": bool, "reasons": list}
+    V5.0.5 FIX: spread unknown → SPREAD_UNKNOWN (reject)
     """
     reasons = []
 
@@ -69,16 +72,18 @@ def _check_liquidity_gate(candidate: dict) -> dict:
     if price < LIQUIDITY_MIN_PRICE:
         reasons.append(f"PRICE_TOO_LOW ({price:.2f})")
 
-    # Spread <= 8.0 (only if known)
-    if spread is not None:
+    # Spread <= 8.0 (STRICT: unknown = reject)
+    if spread is None:
+        reasons.append("SPREAD_UNKNOWN")
+    else:
         try:
             spread_val = float(spread)
             if spread_val > LIQUIDITY_MAX_SPREAD_PCT:
                 reasons.append(f"SPREAD_TOO_WIDE ({spread_val:.2f}%)")
         except (TypeError, ValueError):
-            pass
+            reasons.append("SPREAD_INVALID")
 
-    # ADV check (only if known; otherwise skip)
+    # ADV check - only if known (optional for now)
     if adv is not None:
         try:
             adv_val = int(adv)
@@ -130,12 +135,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
     print(f"[FullScan] Analyzing {len(candidates)} candidates...")
 
-    # ------------------------------------------------------------
-    # Gate counters
-    # ------------------------------------------------------------
     corp_action_rejects = 0
     liquidity_rejects = 0
-
     enriched = []
 
     for idx, c in enumerate(candidates[:25]):
@@ -205,6 +206,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         # PM DATA
         # ============================================================
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker, expected_type=dict, name=f"pm:{ticker}")
+
         if pm_data and pm_data.get('error') is None:
             c['pm_high'] = pm_data.get('pm_high')
             c['pm_low'] = pm_data.get('pm_low')
@@ -213,13 +215,22 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_bars'] = pm_data.get('pm_bars_count', 0)
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
             c['pm_source'] = pm_data.get('source', 'unknown')
-            c['pm_dist_signed'] = ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
+            c['pm_dist_signed'] = (
+                ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0
+                if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
+            )
 
-            # pm_volume_status: ZERO vs UNAVAILABLE
-            if c['pm_volume'] == 0:
-                c['pm_volume_status'] = "ZERO"
+            # ============================================================
+            # FIX 2: pm_volume_status – differentiate ZERO vs UNAVAILABLE
+            # ============================================================
+            # Only mark ZERO if we actually received PM bars
+            if c.get('pm_source') in ('alpaca_iex', 'yfinance') and c.get('pm_bars', 0) > 0:
+                if c['pm_volume'] == 0:
+                    c['pm_volume_status'] = "ZERO"
+                else:
+                    c['pm_volume_status'] = "OK"
             else:
-                c['pm_volume_status'] = "OK"
+                c['pm_volume_status'] = "UNAVAILABLE"
         else:
             c['pm_high'] = None
             c['pm_low'] = None
