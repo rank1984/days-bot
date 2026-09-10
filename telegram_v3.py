@@ -1,6 +1,6 @@
 """
 telegram_v3.py – V5.0.5.1 Telegram Formatter
-Fixed: None handling for entry/stop/targets (all format operations)
+FIX: display VOLUME_UNAVAILABLE (yfinance) as N/A, not ZERO
 """
 import requests
 from datetime import datetime
@@ -15,11 +15,7 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     for parse_mode in ["HTML", None]:
         try:
-            payload = {
-                "chat_id": chat_id,
-                "text": text,
-                "disable_web_page_preview": True,
-            }
+            payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
             if parse_mode:
                 payload["parse_mode"] = parse_mode
             resp = requests.post(url, json=payload, timeout=30)
@@ -31,7 +27,6 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 
 
 def _fmt_price(value, default="N/A"):
-    """Safely format a price value (handles None)."""
     if value is None:
         return default
     try:
@@ -40,8 +35,7 @@ def _fmt_price(value, default="N/A"):
         return default
 
 
-def _fmt_num(value, default=0.0, decimals=1):
-    """Safely format a number."""
+def _fmt_num(value, default=0.0):
     if value is None:
         return default
     try:
@@ -103,6 +97,7 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         pm_status_display = {
             "OK": "✅",
             "ZERO": "⚠️ ZERO",
+            "VOLUME_UNAVAILABLE": "🟡 N/A (yfinance)",
             "UNAVAILABLE": "❌ N/A"
         }.get(pm_status, pm_status)
 
@@ -144,15 +139,10 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         cat_score = _fmt_num(c.get('catalyst_score'), 0)
         if cat_type != "UNAVAILABLE":
             type_names = {
-                "FDA_APPROVAL": "אישור FDA",
-                "EARNINGS": "דוחות",
-                "CONTRACT": "חוזה",
-                "PARTNERSHIP": "שותפות",
-                "M&A": "מיזוג",
-                "STRONG": "חזק",
-                "WEAK": "חלש",
-                "GENERAL": "כללי",
-                "NO_NEWS": "אין חדשות"
+                "FDA_APPROVAL": "אישור FDA", "EARNINGS": "דוחות",
+                "CONTRACT": "חוזה", "PARTNERSHIP": "שותפות",
+                "M&A": "מיזוג", "STRONG": "חזק",
+                "WEAK": "חלש", "GENERAL": "כללי", "NO_NEWS": "אין חדשות"
             }
             name = type_names.get(cat_type, cat_type)
             lines.append(f"  זרז: {name} (ציון: {cat_score:.0f}/10)")
@@ -179,7 +169,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         qualified = c.get('qualified', False)
         lines.append(f"  מועמד Swing: {'✅' if qualified else '❌'}")
 
-        # Trade Plan – with None handling
         if c.get('plan_valid', False):
             entry_str = _fmt_price(c.get('entry'))
             stop_str = _fmt_price(c.get('stop'))
@@ -187,7 +176,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
             t2_str = _fmt_price(c.get('target_2'))
             lines.append(f"  כניסה: {entry_str} | סטופ: {stop_str}")
             lines.append(f"  יעד 1: {t1_str} | יעד 2: {t2_str}")
-
             position_size = c.get('position_size', 0) or 0
             max_loss_val = _fmt_num(c.get('max_loss'), 0)
             lines.append(f"  מניות: {position_size} | הפסד מקס': ${max_loss_val:.2f}")
@@ -196,7 +184,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
 
         lines.append("")
 
-    # Best Swing (qualified) – with None handling
     swing_best = next((c for c in top5 if c.get('qualified', False)), None)
     if swing_best:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -210,7 +197,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append(f"יעד 2: {_fmt_price(swing_best.get('target_2'))}")
         lines.append("")
 
-    # Decision
     actionable = [
         c for c in top5
         if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']
@@ -253,12 +239,7 @@ def format_lesson_for_telegram(lesson: dict) -> str:
         lines.append("")
         lines.append("🏆 חמשת המובילים:")
         for i, t in enumerate(top5, 1):
-            type_hebrew = {
-                "INTRADAY": "יומי",
-                "SWING_1_3D": "Swing",
-                "BOTH": "שניהם",
-                "WATCH": "מעקב"
-            }.get(t.get('trade_type', 'WATCH'), t.get('trade_type', 'WATCH'))
+            type_hebrew = {"INTRADAY": "יומי", "SWING_1_3D": "Swing", "BOTH": "שניהם", "WATCH": "מעקב"}.get(t.get('trade_type', 'WATCH'), t.get('trade_type', 'WATCH'))
             day_score = _fmt_num(t.get('day_trade_score', t.get('intraday_score', 0)), 0)
             swing_s = _fmt_num(t.get('swing_score'), 0)
             ticker = t.get('ticker', 'UNKNOWN')
