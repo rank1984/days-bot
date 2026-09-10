@@ -1,5 +1,6 @@
 """
-telegram_v3.py – V5.0.4 Telegram Formatter
+telegram_v3.py – V5.0.5 Telegram Formatter
+Fixed: None handling for entry/stop/targets
 """
 import requests
 from datetime import datetime
@@ -29,10 +30,20 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
     return False
 
 
+def _fmt_price(value, default="N/A"):
+    """Safely format a price value."""
+    if value is None:
+        return default
+    try:
+        return f"${float(value):.2f}"
+    except (TypeError, ValueError):
+        return default
+
+
 def format_research_report(candidates: list, now_et: datetime) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚀 DAYS-BOT V5.0.4 – דוח מחקר יומי")
+    lines.append("🚀 DAYS-BOT V5.0.5 – דוח מחקר יומי")
     lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
@@ -43,7 +54,11 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("⚠️ ביצוע ידני בלבד")
         return "\n".join(lines)
 
-    top5 = sorted(candidates, key=lambda x: x.get('composite_score', 0) if isinstance(x.get('composite_score'), (int, float)) else 0, reverse=True)[:5]
+    top5 = sorted(
+        candidates,
+        key=lambda x: x.get('composite_score', 0) if isinstance(x.get('composite_score'), (int, float)) else 0,
+        reverse=True
+    )[:5]
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -138,17 +153,25 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         qualified = c.get('qualified', False)
         lines.append(f"  מועמד Swing: {'✅' if qualified else '❌'}")
 
-        # Trade Plan
+        # Trade Plan (with None handling)
         if c.get('plan_valid', False):
-            lines.append(f"  כניסה: ${c.get('entry', 0):.2f} | סטופ: ${c.get('stop', 0):.2f}")
-            lines.append(f"  יעד 1: ${c.get('target_1', 0):.2f} | יעד 2: ${c.get('target_2', 0):.2f}")
-            lines.append(f"  מניות: {c.get('position_size', 0)} | הפסד מקס': ${c.get('max_loss', 0):.2f}")
+            entry_str = _fmt_price(c.get('entry'))
+            stop_str = _fmt_price(c.get('stop'))
+            t1_str = _fmt_price(c.get('target_1'))
+            t2_str = _fmt_price(c.get('target_2'))
+
+            lines.append(f"  כניסה: {entry_str} | סטופ: {stop_str}")
+            lines.append(f"  יעד 1: {t1_str} | יעד 2: {t2_str}")
+
+            position_size = c.get('position_size', 0)
+            max_loss = c.get('max_loss', 0)
+            lines.append(f"  מניות: {position_size} | הפסד מקס': ${float(max_loss or 0):.2f}")
         else:
             lines.append(f"  ⚠️ {c.get('plan_error', 'אין תוכנית מסחר')}")
 
         lines.append("")
 
-    # Best Swing (qualified)
+    # Best Swing (qualified) - with None handling
     swing_best = next((c for c in top5 if c.get('qualified', False)), None)
     if swing_best:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -156,14 +179,17 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"{swing_best['ticker']}")
         lines.append(f"ציון Swing: {swing_best.get('swing_score', 0):.0f}/100")
-        lines.append(f"כניסה: ${swing_best.get('entry', 0):.2f}")
-        lines.append(f"סטופ:  ${swing_best.get('stop', 0):.2f}")
-        lines.append(f"יעד 1: ${swing_best.get('target_1', 0):.2f}")
-        lines.append(f"יעד 2: ${swing_best.get('target_2', 0):.2f}")
+        lines.append(f"כניסה: {_fmt_price(swing_best.get('entry'))}")
+        lines.append(f"סטופ:  {_fmt_price(swing_best.get('stop'))}")
+        lines.append(f"יעד 1: {_fmt_price(swing_best.get('target_1'))}")
+        lines.append(f"יעד 2: {_fmt_price(swing_best.get('target_2'))}")
         lines.append("")
 
     # Decision
-    actionable = [c for c in top5 if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']]
+    actionable = [
+        c for c in top5
+        if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']
+    ]
     if actionable:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
         lines.append("✅ החלטה: נמצאו מועמדויות למסחר")
@@ -184,7 +210,7 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
 def format_lesson_for_telegram(lesson: dict) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📚 DAYS-BOT V5.0.4 – לקח יומי")
+    lines.append("📚 DAYS-BOT V5.0.5 – לקח יומי")
     lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
