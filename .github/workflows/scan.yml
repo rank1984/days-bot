@@ -1,18 +1,22 @@
-name: DAYS-BOT V5.0.5 Trading Scanner
+name: DAYS-BOT V5.0.5.1 Trading Scanner
 
 on:
   schedule:
-    # 08:30 ET (12:30 UTC) - Safety buffer
-    - cron: "30 12 * * 1-5"
-    # 08:45 ET (12:45 UTC)
+    # 08:45 ET (12:45 UTC in EDT)
     - cron: "45 12 * * 1-5"
-    # 09:00 ET (13:00 UTC)
+    # 09:00 ET (13:00 UTC in EDT)
     - cron: "0 13 * * 1-5"
-    # 09:15 ET (13:15 UTC)
+    # 09:15 ET (13:15 UTC in EDT)
     - cron: "15 13 * * 1-5"
-
-  # Allows manual trigger from GitHub UI
+  
+  # Manual trigger
   workflow_dispatch:
+  
+  # Trigger on push to main (keeps workflow alive)
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
   scan:
@@ -28,6 +32,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Show current time (UTC + ET)
+        run: |
+          echo "UTC: $(date -u)"
+          echo "ET:  $(TZ=America/New_York date)"
+          echo "Git SHA: $GITHUB_SHA"
+          echo "Event: ${{ github.event_name }}"
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
@@ -36,7 +47,7 @@ jobs:
       - name: Create Data Directory
         run: mkdir -p data
 
-      - name: Run DAYS-BOT V5.0.5
+      - name: Run DAYS-BOT V5.0.5.1
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -46,15 +57,6 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
-          echo "=============================================="
-          echo "DAYS-BOT V5.0.5"
-          echo "=============================================="
-          date -u
-          echo ""
-          echo "New York time:"
-          TZ=America/New_York date
-          echo "=============================================="
-
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "[Workflow] Manual execution"
             python main.py fullscan_v34 --manual
@@ -67,6 +69,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: alerts-db-v505-${{ github.run_number }}
+          name: alerts-db-v5051-${{ github.run_number }}
           path: data/alerts.db
+          if-no-files-found: warn
           retention-days: 30
