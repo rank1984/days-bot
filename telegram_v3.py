@@ -1,6 +1,6 @@
 """
-telegram_v3.py – V5.0.5 Telegram Formatter
-Fixed: None handling for entry/stop/targets
+telegram_v3.py – V5.0.5.1 Telegram Formatter
+Fixed: version label in lesson (V5.0.4 → V5.0.5.1)
 """
 import requests
 from datetime import datetime
@@ -31,7 +31,6 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
 
 
 def _fmt_price(value, default="N/A"):
-    """Safely format a price value."""
     if value is None:
         return default
     try:
@@ -43,7 +42,7 @@ def _fmt_price(value, default="N/A"):
 def format_research_report(candidates: list, now_et: datetime) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("🚀 DAYS-BOT V5.0.5 – דוח מחקר יומי")
+    lines.append("🚀 DAYS-BOT V5.0.5.1 – דוח מחקר יומי")
     lines.append(f"📅 {now_et.strftime('%d/%m/%Y')} | 🕐 {now_et.strftime('%H:%M')} ET")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
@@ -74,7 +73,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         early_score = c.get('early_score', 0)
         early_state = c.get('early_state', 'UNKNOWN')
 
-        # Early display
         if early_state == 'UNAVAILABLE':
             early_display = "N/A (UNAVAILABLE)"
         elif early_state == 'UNKNOWN':
@@ -90,14 +88,21 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
             "NO_TRADE": "אין מסחר"
         }.get(trade_type, trade_type)
 
+        pm_status = c.get('pm_volume_status', 'UNKNOWN')
+        pm_status_display = {
+            "OK": "✅",
+            "ZERO": "⚠️ ZERO",
+            "UNAVAILABLE": "❌ UNAVAILABLE"
+        }.get(pm_status, pm_status)
+
         lines.append(f"{i}️⃣ {c['ticker']}")
         lines.append(f"  ציון יומי: {intraday_score:.1f}/100 | ציון Swing: {swing_score:.1f}/100")
         lines.append(f"  Early: {early_display}")
         lines.append(f"  סוג: {icon} {type_hebrew}")
         lines.append(f"  מחיר: ${c.get('price', 0):.2f} | גאפ: {c.get('gap_pct', 0):+.1f}%")
-        lines.append(f"  נפח PM: {c.get('pm_volume', 0):,}")
+        lines.append(f"  נפח PM: {c.get('pm_volume', 0):,} ({pm_status_display})")
+        lines.append(f"  PM Bars: {c.get('pm_bars', 0)} | Source: {c.get('pm_source', 'none')}")
 
-        # Data completeness
         completeness = c.get('data_completeness', {})
         status = completeness.get('status', 'NO_TRADE')
         missing = completeness.get('missing', [])
@@ -108,7 +113,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         else:
             lines.append("  סטטוס נתונים: 🔴 חסרים נתונים קריטיים")
 
-        # Spread
         spread = c.get('spread_pct')
         if spread is None:
             spread_str = "לא זמין"
@@ -116,7 +120,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
             spread_str = f"{spread:.2f}% ⚠️" if spread > 2.0 else f"{spread:.2f}%"
         lines.append(f"  מרווח (Spread): {spread_str}")
 
-        # Catalyst
         cat_type = c.get('catalyst_type', 'UNAVAILABLE')
         cat_score = c.get('catalyst_score', 0)
         if cat_type != "UNAVAILABLE":
@@ -136,7 +139,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         else:
             lines.append(f"  זרז: לא זמין")
 
-        # Float & Short
         float_val = c.get('float')
         short = c.get('short_interest')
         if float_val:
@@ -144,25 +146,20 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         if short:
             lines.append(f"  Short Interest: {short*100:.1f}%")
 
-        # SEC
         sec_level = c.get('sec_risk_level', 'LOW')
         sec_map = {"LOW": "נמוך", "MEDIUM": "בינוני", "HIGH": "גבוה ⚠️", "CRITICAL": "קריטי 🚨", "UNAVAILABLE": "לא זמין"}
         lines.append(f"  סיכון SEC: {sec_map.get(sec_level, sec_level)}")
 
-        # Qualified
         qualified = c.get('qualified', False)
         lines.append(f"  מועמד Swing: {'✅' if qualified else '❌'}")
 
-        # Trade Plan (with None handling)
         if c.get('plan_valid', False):
             entry_str = _fmt_price(c.get('entry'))
             stop_str = _fmt_price(c.get('stop'))
             t1_str = _fmt_price(c.get('target_1'))
             t2_str = _fmt_price(c.get('target_2'))
-
             lines.append(f"  כניסה: {entry_str} | סטופ: {stop_str}")
             lines.append(f"  יעד 1: {t1_str} | יעד 2: {t2_str}")
-
             position_size = c.get('position_size', 0)
             max_loss = c.get('max_loss', 0)
             lines.append(f"  מניות: {position_size} | הפסד מקס': ${float(max_loss or 0):.2f}")
@@ -171,7 +168,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
 
         lines.append("")
 
-    # Best Swing (qualified) - with None handling
     swing_best = next((c for c in top5 if c.get('qualified', False)), None)
     if swing_best:
         lines.append("━━━━━━━━━━━━━━━━━━━━")
@@ -185,7 +181,6 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
         lines.append(f"יעד 2: {_fmt_price(swing_best.get('target_2'))}")
         lines.append("")
 
-    # Decision
     actionable = [
         c for c in top5
         if c.get('data_status') == 'ACTIONABLE' and c.get('trade_type') in ['INTRADAY', 'SWING_1_3D', 'BOTH']
@@ -210,7 +205,7 @@ def format_research_report(candidates: list, now_et: datetime) -> str:
 def format_lesson_for_telegram(lesson: dict) -> str:
     lines = []
     lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📚 DAYS-BOT V5.0.5 – לקח יומי")
+    lines.append("📚 DAYS-BOT V5.0.5.1 – לקח יומי")   # <-- FIXED version
     lines.append(f"📅 {lesson['date']} | {lesson['trading_day']}")
     lines.append("━━━━━━━━━━━━━━━━━━━━")
 
