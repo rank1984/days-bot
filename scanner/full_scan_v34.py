@@ -1,5 +1,5 @@
 """
-DAYS-BOT V5.0.4 – Full Scan Engine (Type-Safe)
+DAYS-BOT V5.0.5 – Full Scan Engine (Type-Safe + Gates)
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -15,6 +15,7 @@ from scanner.analyzers.volume_analyzer import calculate_rvol
 from scanner.analyzers.rs_analyzer import get_relative_strength
 from scanner.analyzers.personality_analyzer import get_stock_personality
 from scanner.analyzers.sympathy_scanner import find_sympathy_candidates
+from scanner.analyzers.corporate_action_analyzer import check_corporate_action
 from scanner.vwap_engine import calculate_vwap
 from scanner.early_move import calculate_early_move_score
 from risk.trade_plan_v34 import build_trade_plan
@@ -23,26 +24,22 @@ from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALU
 
 ET = pytz.timezone("America/New_York")
 
+# ------------------------------------------------------------
+# Liquidity Gate thresholds (configurable via config if needed)
+# ------------------------------------------------------------
+LIQUIDITY_MAX_SPREAD_PCT = 8.0
+LIQUIDITY_MIN_PRICE = 1.0
+LIQUIDITY_MIN_ADV = 100_000
+
 
 def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
-    """
-    Type-safe wrapper: ensures result is of expected_type, otherwise returns default.
-    """
     label = name or getattr(func, "__name__", "unknown")
-
     try:
         result = func(*args, **kwargs)
-
         if expected_type is not None and not isinstance(result, expected_type):
-            print(
-                f"[FullScan] ⚠️ {label}: "
-                f"expected {expected_type.__name__}, "
-                f"got {type(result).__name__}"
-            )
+            print(f"[FullScan] ⚠️ {label}: expected {expected_type.__name__}, got {type(result).__name__}")
             return default
-
         return result
-
     except Exception as e:
         print(f"[FullScan] ❌ {label}: {type(e).__name__}: {e}")
         return default
@@ -55,6 +52,45 @@ def _safe_float(value, default=0.0):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _check_liquidity_gate(candidate: dict) -> dict:
+    """
+    Hard Liquidity Gate.
+    Returns: {"passed": bool, "reasons": list}
+    """
+    reasons = []
+
+    price = _safe_float(candidate.get('price', 0))
+    spread = candidate.get('spread_pct')
+    adv = candidate.get('average_daily_volume')
+
+    # Price >= 1.0
+    if price < LIQUIDITY_MIN_PRICE:
+        reasons.append(f"PRICE_TOO_LOW ({price:.2f})")
+
+    # Spread <= 8.0 (only if known)
+    if spread is not None:
+        try:
+            spread_val = float(spread)
+            if spread_val > LIQUIDITY_MAX_SPREAD_PCT:
+                reasons.append(f"SPREAD_TOO_WIDE ({spread_val:.2f}%)")
+        except (TypeError, ValueError):
+            pass
+
+    # ADV check (only if known; otherwise skip)
+    if adv is not None:
+        try:
+            adv_val = int(adv)
+            if adv_val > 0 and adv_val < LIQUIDITY_MIN_ADV:
+                reasons.append(f"ADV_TOO_LOW ({adv_val:,})")
+        except (TypeError, ValueError):
+            pass
+
+    return {
+        "passed": len(reasons) == 0,
+        "reasons": reasons,
+    }
 
 
 def _check_data_completeness(candidate: dict) -> dict:
@@ -93,6 +129,13 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         return []
 
     print(f"[FullScan] Analyzing {len(candidates)} candidates...")
+
+    # ------------------------------------------------------------
+    # Gate counters
+    # ------------------------------------------------------------
+    corp_action_rejects = 0
+    liquidity_rejects = 0
+
     enriched = []
 
     for idx, c in enumerate(candidates[:25]):
@@ -101,9 +144,66 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         analysis = {}
 
-        # ------------------------------------------------------------
-        # 1. PM DATA (Alpaca 1-min bars)
-        # ------------------------------------------------------------
+        # ============================================================
+        # GATE 1: Corporate Action (HARD)
+        # ============================================================
+        corp_action = _safe_call(
+            check_corporate_action, {}, ticker,
+            expected_type=dict,
+            name=f"corp_action:{ticker}"
+        )
+        c['corporate_action'] = corp_action.get('corporate_action', False)
+        c['corporate_action_type'] = corp_action.get('corporate_action_type')
+        c['halt_flag'] = corp_action.get('halt_flag', False)
+
+        if corp_action.get('corporate_action'):
+            corp_action_rejects += 1
+            print(
+                f"[FullScan] ❌ {ticker} | Corporate Action: TRUE | "
+                f"Type: {corp_action.get('corporate_action_type')} | "
+                f"Reason: {corp_action.get('reason')} | Decision: NO_TRADE"
+            )
+            c['trade_type'] = 'NO_TRADE'
+            c['plan_valid'] = False
+            c['plan_error'] = f"CORPORATE_ACTION: {corp_action.get('reason')}"
+            c['data_status'] = 'NO_TRADE'
+            c['data_completeness'] = {
+                "complete": False,
+                "missing": ["CORPORATE_ACTION"],
+                "status": "NO_TRADE"
+            }
+            c['analysis'] = analysis
+            enriched.append(c)
+            continue
+
+        # ============================================================
+        # GATE 2: Liquidity (HARD)
+        # ============================================================
+        liquidity = _check_liquidity_gate(c)
+        c['liquidity_gate'] = liquidity
+
+        if not liquidity.get('passed'):
+            liquidity_rejects += 1
+            print(
+                f"[FullScan] ❌ {ticker} | Liquidity: FAIL | "
+                f"Reasons: {', '.join(liquidity.get('reasons', []))} | Decision: NO_TRADE"
+            )
+            c['trade_type'] = 'NO_TRADE'
+            c['plan_valid'] = False
+            c['plan_error'] = f"LIQUIDITY: {', '.join(liquidity.get('reasons', []))}"
+            c['data_status'] = 'NO_TRADE'
+            c['data_completeness'] = {
+                "complete": False,
+                "missing": liquidity.get('reasons', []),
+                "status": "NO_TRADE"
+            }
+            c['analysis'] = analysis
+            enriched.append(c)
+            continue
+
+        # ============================================================
+        # PM DATA
+        # ============================================================
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker, expected_type=dict, name=f"pm:{ticker}")
         if pm_data and pm_data.get('error') is None:
             c['pm_high'] = pm_data.get('pm_high')
@@ -112,20 +212,29 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_volume'] = pm_data.get('pm_volume')
             c['pm_bars'] = pm_data.get('pm_bars_count', 0)
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
+            c['pm_source'] = pm_data.get('source', 'unknown')
             c['pm_dist_signed'] = ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
+
+            # pm_volume_status: ZERO vs UNAVAILABLE
+            if c['pm_volume'] == 0:
+                c['pm_volume_status'] = "ZERO"
+            else:
+                c['pm_volume_status'] = "OK"
         else:
             c['pm_high'] = None
             c['pm_low'] = None
             c['pm_vwap'] = None
             c['pm_bars'] = 0
+            c['pm_volume_status'] = "UNAVAILABLE"
             c['pm_data_quality'] = 'UNAVAILABLE'
+            c['pm_source'] = 'none'
             c['pm_dist_signed'] = None
 
         analysis['pm_data_quality'] = c['pm_data_quality']
 
-        # ------------------------------------------------------------
-        # 2. EARLY MOVE ENGINE
-        # ------------------------------------------------------------
+        # ============================================================
+        # EARLY MOVE
+        # ============================================================
         early_data = _safe_call(
             calculate_early_move_score,
             {"early_score": 0, "state": "UNKNOWN", "components": {}, "data_quality": "UNKNOWN"},
@@ -142,26 +251,16 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['early_data_quality'] = early_data.get('data_quality', 'UNKNOWN')
         analysis['early'] = early_data
 
-        # ------------------------------------------------------------
-        # 3. BASIC FIELDS
-        # ------------------------------------------------------------
+        # BASIC FIELDS
         c['price'] = _safe_float(c.get('price', 0))
         c['gap_pct'] = _safe_float(c.get('gap_pct', 0))
 
-        # Spread
         spread = c.get('spread_pct')
         if spread is None or spread == "UNAVAILABLE":
             c['spread_pct'] = None
         analysis['spread_pct'] = c['spread_pct']
 
-        c['bid'] = c.get('bid', None)
-        c['ask'] = c.get('ask', None)
-        analysis['bid'] = c['bid']
-        analysis['ask'] = c['ask']
-
-        # ------------------------------------------------------------
-        # 4. RVOL (INFORMATIONAL – with rvol_data dict)
-        # ------------------------------------------------------------
+        # RVOL
         rvol_data = _safe_call(
             calculate_rvol,
             {"rvol": None, "status": "UNAVAILABLE", "method": "DEFAULT"},
@@ -169,38 +268,25 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             expected_type=dict,
             name=f"rvol:{ticker}"
         )
-
         if not isinstance(rvol_data, dict):
             rvol_data = {"rvol": None, "status": "UNAVAILABLE", "method": "INVALID_RESPONSE"}
 
         c['rvol'] = rvol_data.get('rvol')
         c['rvol_status'] = rvol_data.get('status', 'UNAVAILABLE')
         c['rvol_method'] = rvol_data.get('method', 'UNAVAILABLE')
-
-        # Store full dict for scoring
         analysis['rvol_data'] = rvol_data
         analysis['rvol'] = c['rvol']
         analysis['rvol_status'] = c['rvol_status']
 
-        # ------------------------------------------------------------
-        # 5. RS
-        # ------------------------------------------------------------
+        # RS
         analysis['rs'] = _safe_call(get_relative_strength, None, ticker, expected_type=(float, int, type(None)), name=f"rs:{ticker}")
         c['rs'] = analysis['rs']
 
-        # ------------------------------------------------------------
-        # 6. NEWS & CATALYST
-        # ------------------------------------------------------------
+        # NEWS & CATALYST
         analysis['news'] = _safe_call(fetch_news, [], ticker, expected_type=list, name=f"news:{ticker}")
         c['news'] = analysis['news']
 
-        catalyst = _safe_call(
-            classify_catalyst,
-            {},
-            analysis['news'],
-            expected_type=dict,
-            name=f"catalyst:{ticker}"
-        )
+        catalyst = _safe_call(classify_catalyst, {}, analysis['news'], expected_type=dict, name=f"catalyst:{ticker}")
         if isinstance(catalyst, dict):
             c['catalyst_type'] = catalyst.get('type', 'UNAVAILABLE')
             c['catalyst_score'] = catalyst.get('score', 0)
@@ -211,15 +297,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['catalyst_summary'] = ''
         analysis['catalyst'] = catalyst
 
-        # ------------------------------------------------------------
-        # 7. SENTIMENT (optional)
-        # ------------------------------------------------------------
+        # SENTIMENT (OPTIONAL)
         analysis['sentiment'] = _safe_call(get_stocktwits_sentiment, {}, ticker, expected_type=dict, name=f"sentiment:{ticker}")
         c['sentiment'] = analysis['sentiment']
 
-        # ------------------------------------------------------------
-        # 8. SEC RISK
-        # ------------------------------------------------------------
+        # SEC RISK
         sec_risk = _safe_call(
             check_offering_risk,
             {"has_offering": False, "risk_level": "UNAVAILABLE"},
@@ -232,16 +314,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sec_risk_level'] = sec_risk.get('risk_level', 'UNAVAILABLE')
         c['sec_has_offering'] = sec_risk.get('has_offering', False)
 
-        # ------------------------------------------------------------
-        # 9. FLOAT & SHORT
-        # ------------------------------------------------------------
-        float_data = _safe_call(
-            get_float_and_short,
-            {},
-            ticker,
-            expected_type=dict,
-            name=f"float:{ticker}"
-        )
+        # FLOAT & SHORT
+        float_data = _safe_call(get_float_and_short, {}, ticker, expected_type=dict, name=f"float:{ticker}")
         analysis['float_data'] = float_data
         c['float'] = float_data.get('float')
         c['short_interest'] = float_data.get('short_interest')
@@ -249,9 +323,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['float'] = c['float']
         analysis['short_interest'] = c['short_interest']
 
-        # ------------------------------------------------------------
-        # 10. PERSONALITY (CRITICAL: store as dict, not string)
-        # ------------------------------------------------------------
+        # PERSONALITY (OPTIONAL)
         personality = _safe_call(
             get_stock_personality,
             {"personality": "UNKNOWN", "failure_rate": 0, "sample_size": 0},
@@ -264,18 +336,14 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         if isinstance(personality, dict):
             c['personality'] = personality.get('personality', 'UNKNOWN')
             c['personality_failure_rate'] = personality.get('failure_rate', 0)
-            c['personality_sample_size'] = personality.get('sample_size', 0)
         else:
             c['personality'] = 'UNKNOWN'
             c['personality_failure_rate'] = 0
-            c['personality_sample_size'] = 0
-            personality = {"personality": "UNKNOWN", "failure_rate": 0, "sample_size": 0}
+            personality = {"personality": "UNKNOWN", "failure_rate": 0}
 
-        analysis['personality'] = personality  # store dict, not string
+        analysis['personality'] = personality
 
-        # ------------------------------------------------------------
-        # 11. VWAP
-        # ------------------------------------------------------------
+        # VWAP
         if c.get('pm_high') is not None and _safe_float(c['pm_high']) > 0:
             vwap_data = {
                 "vwap": c.get('pm_vwap'),
@@ -291,15 +359,11 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['vwap_data'] = vwap_data
         c['vwap'] = vwap_data.get('vwap', 0) if vwap_data else None
 
-        # ------------------------------------------------------------
-        # 12. SYMPATHY (optional)
-        # ------------------------------------------------------------
+        # SYMPATHY (OPTIONAL)
         analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3, expected_type=list, name=f"sympathy:{ticker}")
         c['sympathy'] = analysis['sympathy']
 
-        # ------------------------------------------------------------
-        # 13. TRADE PLAN
-        # ------------------------------------------------------------
+        # TRADE PLAN
         plan = _safe_call(
             build_trade_plan,
             {},
@@ -319,9 +383,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
-        # ------------------------------------------------------------
-        # 14. COMPOSITE SCORE (with error distinction)
-        # ------------------------------------------------------------
+        # COMPOSITE SCORE
         score = _safe_call(
             calculate_composite_score,
             None,
@@ -338,9 +400,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['composite_score'] = round(float(score), 1)
             c['score_status'] = 'OK'
 
-        # ------------------------------------------------------------
-        # 15. DATA COMPLETENESS GATE
-        # ------------------------------------------------------------
+        # DATA COMPLETENESS
         completeness = _check_data_completeness(c)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
@@ -350,9 +410,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         elif completeness['status'] == 'WATCH':
             c['trade_type'] = 'WATCH'
 
-        # ------------------------------------------------------------
-        # 16. DIAGNOSTICS CONTRACT
-        # ------------------------------------------------------------
         c['diagnostics'] = {
             'pm': c.get('pm_data_quality'),
             'early': c.get('early_data_quality'),
@@ -365,7 +422,15 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['analysis'] = analysis
         enriched.append(c)
 
-    # Sort: handle None scores
+    print()
+    print("=" * 74)
+    print("FULLSCAN GATE SUMMARY")
+    print("=" * 74)
+    print(f"  Corporate Action rejects:  {corp_action_rejects}")
+    print(f"  Liquidity rejects:         {liquidity_rejects}")
+    print(f"  Remaining candidates:      {len(enriched)}")
+    print("=" * 74)
+
     enriched.sort(
         key=lambda x: x.get('composite_score') if isinstance(x.get('composite_score'), (int, float)) else -1,
         reverse=True
