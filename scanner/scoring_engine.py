@@ -1,5 +1,6 @@
 """
-DAYS-BOT V5.0.4 – Scoring Engine
+DAYS-BOT V5.0.5.1 – Scoring Engine
+FIX C: VOLUME_UNAVAILABLE ≠ 0 (neutral score, not penalty)
 """
 from utils.config import LEARNING_MODE
 
@@ -17,17 +18,24 @@ def _score_gap(gap):
     return min(max(_safe_float(gap, 0), 0) * 2, 30)
 
 
-def _score_volume(volume):
+def _score_volume(volume, pm_volume_status="OK"):
+    """
+    FIX C:
+    - VOLUME_UNAVAILABLE → neutral score (12.5 = midpoint, not 0)
+    - ZERO → 0 (real zero volume)
+    - OK → normal scoring
+    """
+    if pm_volume_status == "VOLUME_UNAVAILABLE":
+        return 12.5  # neutral midpoint, not a penalty
+
+    if pm_volume_status == "UNAVAILABLE":
+        return 0  # data truly missing → hard miss
+
     volume = _safe_float(volume, 0)
     return min((volume / 100_000) * 15, 25)
 
 
 def _score_pm_distance(dist):
-    """
-    PM Distance score.
-    If dist is None (no PM data) → 0 points (neutral, no penalty).
-    Only score when we have real PM data.
-    """
     if dist is None:
         return 0
     dist = _safe_float(dist, -100)
@@ -105,10 +113,11 @@ def calculate_composite_score(candidate: dict, analysis: dict) -> float:
     # 1. Gap (0-30)
     score += _score_gap(candidate.get('gap_pct', 0))
 
-    # 2. PM Volume (0-25)
-    score += _score_volume(candidate.get('pm_volume', 0))
+    # 2. PM Volume (0-25) — FIX C
+    pm_vol_status = candidate.get('pm_volume_status', 'OK')
+    score += _score_volume(candidate.get('pm_volume', 0), pm_vol_status)
 
-    # 3. PM Distance (0-20) – neutral if None
+    # 3. PM Distance (0-20)
     score += _score_pm_distance(candidate.get('pm_dist_signed'))
 
     # 4. RVOL (0-15)
@@ -131,11 +140,7 @@ def calculate_composite_score(candidate: dict, analysis: dict) -> float:
     sentiment = analysis.get('sentiment', {})
     score += _score_sentiment(sentiment)
 
-    # ============================================================
-    # PENALTIES (soft)
-    # ============================================================
-
-    # SEC Offering
+    # Penalties (soft)
     sec_risk = analysis.get('sec_risk', {})
     if isinstance(sec_risk, dict) and sec_risk.get('has_offering'):
         risk_level = sec_risk.get('risk_level', 'UNKNOWN')
@@ -148,7 +153,6 @@ def calculate_composite_score(candidate: dict, analysis: dict) -> float:
         elif risk_level == 'UNKNOWN':
             score -= 5
 
-    # Personality
     personality_data = analysis.get('personality', {})
     if isinstance(personality_data, dict):
         personality = personality_data.get('personality', 'NEUTRAL')
