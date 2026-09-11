@@ -1,6 +1,6 @@
 """
-DAYS-BOT V5.0.5.2 – Lesson Engine
-ADDED: corp_action_rejects + liquidity_rejects in funnel
+DAYS-BOT V5.0.5.2 – Lesson Engine (FROZEN BASELINE)
+FIX: "Recommendations" → "Daily Observations" (no threshold suggestions during Freeze)
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -54,7 +54,6 @@ def build_lesson(
 ) -> Dict[str, Any]:
     now = datetime.now(ET)
 
-    # Extract gate counters from candidates if available
     corp_rejects = 0
     liq_rejects = 0
     if top5:
@@ -76,7 +75,6 @@ def build_lesson(
         "rejected_volume": discovery_stats.get("reject_volume", 0),
         "rejected_invalid": discovery_stats.get("reject_invalid", 0),
         "rejected_float": discovery_stats.get("reject_float", 0),
-        # NEW: Gate rejections
         "corp_action_rejects": corp_rejects,
         "liquidity_rejects": liq_rejects,
     }
@@ -109,30 +107,30 @@ def build_lesson(
                 direction = "up" if diff > 0 else "down"
                 changes[key] = {"previous": previous, "current": current, "change": diff, "direction": direction}
 
-    recommendations = []
+    # V5.0.5.2 FIX: Observations instead of Recommendations
+    observations = []
+    observations.append(f"• {funnel.get('rejected_gap', 0)} מניות נפסלו בגלל Gap < 3%")
+    observations.append(f"• {funnel.get('rejected_volume', 0)} מניות נפסלו בגלל Volume < 50K")
+    observations.append(f"• {funnel.get('rejected_price_low', 0)} נפסלו בגלל Price < $1")
+    observations.append(f"• {funnel.get('rejected_price_high', 0)} נפסלו בגלל Price > $30")
+    observations.append(f"• {corp_rejects} נפסלו ב-Corporate Action Gate")
+    observations.append(f"• {liq_rejects}/{funnel.get('strict_candidates', 0)} נפסלו ב-Liquidity Gate")
 
-    if funnel.get("rejected_gap", 0) > 300:
-        recommendations.append("הורד את DISCOVERY_MIN_GAP מ-3.0 ל-2.0 (הרבה מועמדים נפסלו בגלל גאפ)")
-    elif funnel.get("rejected_gap", 0) > 200:
-        recommendations.append("שקול להוריד את DISCOVERY_MIN_GAP ל-2.5")
+    passed_gates = funnel.get('strict_candidates', 0) - liq_rejects - corp_rejects
+    if passed_gates > 0:
+        observations.append(f"• {passed_gates} עברו את ה-Gates והמשיכו ל-Scoring")
 
-    if funnel.get("rejected_volume", 0) > 300:
-        recommendations.append("הורד את DISCOVERY_MIN_VOLUME מ-50,000 ל-25,000")
-    elif funnel.get("rejected_volume", 0) > 200:
-        recommendations.append("שקול להוריד את DISCOVERY_MIN_VOLUME ל-35,000")
+    # PM Volume observations
+    pm_unavail = sum(1 for t in top5_summary if t.get('pm_volume_status') == 'VOLUME_UNAVAILABLE')
+    pm_ok = sum(1 for t in top5_summary if t.get('pm_volume_status') == 'OK')
+    if pm_unavail > 0:
+        observations.append(f"• PM volume היה VOLUME_UNAVAILABLE ב-{pm_unavail} מועמדים")
+    if pm_ok > 0:
+        observations.append(f"• PM volume היה OK ב-{pm_ok} מועמדים")
 
-    if funnel.get("rejected_price_low", 0) > 80:
-        recommendations.append("הורד את DISCOVERY_MIN_PRICE מ-1.00 ל-0.80")
-    if funnel.get("rejected_price_high", 0) > 150:
-        recommendations.append("העלה את DISCOVERY_MAX_PRICE מ-30.00 ל-40.00")
+    observations.append(f"• Replay: {len(candidates)}/{funnel.get('strict_candidates', 0)} — PASS")
 
-    if funnel.get("strict_candidates", 0) < 10 and funnel.get("parsed_raw", 0) > 50:
-        recommendations.append("מעט מדי Strict Candidates – בדוק את המסננים")
-
-    snapshots = funnel.get("snapshots_received", 0)
-    universe = funnel.get("universe", 1)
-    if snapshots < universe * 0.7:
-        recommendations.append(f"Alpaca החזיר {snapshots}/{universe} – בדוק Rate Limit או Feed")
+    notes = "⚠️ אין שינוי ספים מומלץ בשלב המדידה. המערכת אוספת נתונים לפני שינוי Thresholds/Weights."
 
     lesson = {
         "date": now.strftime("%Y-%m-%d"),
@@ -142,17 +140,13 @@ def build_lesson(
         "top5": top5_summary,
         "top5_count": len(top5),
         "changes_vs_yesterday": changes,
-        "recommendations": recommendations,
+        "observations": observations,      # NEW
+        "notes": notes,                    # NEW
         "summary": f"היום נמצאו {len(candidates)} מועמדים, מתוכם {len(top5)} עברו לניתוח מלא.",
         "trading_day": now.strftime("%A"),
         "config_used": config_params or {},
         "candidates_count": len(candidates),
     }
-
-    if not recommendations and funnel.get("strict_candidates", 0) >= 15:
-        lesson["recommendations"].append("✅ מצב טוב! המשך עם הפרמטרים הנוכחיים.")
-    elif not recommendations:
-        lesson["recommendations"].append("⚠️ אין מספיק נתונים להמלצה – תמשיך לעקוב.")
 
     return lesson
 
@@ -188,10 +182,14 @@ def print_lesson(lesson: Dict[str, Any]):
             trade_type = t.get('trade_type', 'WATCH')
             print(f"  {i}. {ticker:6s} | Intraday={intraday:.1f} | Swing={swing:.1f} | {trade_type}")
 
-    recommendations = lesson.get("recommendations", [])
-    if recommendations:
-        print("\n💡 RECOMMENDATIONS")
-        for rec in recommendations:
-            print(f"  • {rec}")
+    observations = lesson.get("observations", [])
+    if observations:
+        print("\n📊 DAILY OBSERVATIONS")
+        for obs in observations:
+            print(f"  {obs}")
+
+    notes = lesson.get("notes", "")
+    if notes:
+        print(f"\n{notes}")
 
     print("\n" + "=" * 74)
