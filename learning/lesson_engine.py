@@ -1,6 +1,6 @@
 """
-DAYS-BOT V5.0.5.1 – Lesson Engine
-FIX B: version label V5.0.5.1
+DAYS-BOT V5.0.5.2 – Lesson Engine
+ADDED: corp_action_rejects + liquidity_rejects in funnel
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -12,13 +12,12 @@ ET = pytz.timezone("America/New_York")
 BASE_DIR = Path(__file__).resolve().parent.parent
 LEARNING_PATH = BASE_DIR / "data" / "learning"
 
-STRATEGY_VERSION = "V5.0.5.1"
+STRATEGY_VERSION = "V5.0.5.2"
 
 
 def _safe_float(value, default=0.0):
     try:
-        if value is None:
-            return default
+        if value is None: return default
         return float(value)
     except (TypeError, ValueError):
         return default
@@ -55,6 +54,14 @@ def build_lesson(
 ) -> Dict[str, Any]:
     now = datetime.now(ET)
 
+    # Extract gate counters from candidates if available
+    corp_rejects = 0
+    liq_rejects = 0
+    if top5:
+        gate = top5[0].get('_gate_summary', {})
+        corp_rejects = gate.get('corp_action_rejects', 0)
+        liq_rejects = gate.get('liquidity_rejects', 0)
+
     funnel = {
         "universe": discovery_stats.get("universe", 0),
         "snapshots_received": discovery_stats.get("snapshots_received", 0),
@@ -69,6 +76,9 @@ def build_lesson(
         "rejected_volume": discovery_stats.get("reject_volume", 0),
         "rejected_invalid": discovery_stats.get("reject_invalid", 0),
         "rejected_float": discovery_stats.get("reject_float", 0),
+        # NEW: Gate rejections
+        "corp_action_rejects": corp_rejects,
+        "liquidity_rejects": liq_rejects,
     }
 
     top5_summary = []
@@ -127,7 +137,7 @@ def build_lesson(
     lesson = {
         "date": now.strftime("%Y-%m-%d"),
         "time": now.strftime("%H:%M:%S ET"),
-        "strategy_version": STRATEGY_VERSION,  # FIX B
+        "strategy_version": STRATEGY_VERSION,
         "funnel": funnel,
         "top5": top5_summary,
         "top5_count": len(top5),
@@ -148,9 +158,8 @@ def build_lesson(
 
 
 def print_lesson(lesson: Dict[str, Any]):
-    """FIX B: version V5.0.5.1"""
     print("\n" + "=" * 74)
-    print("📚 DAYS-BOT V5.0.5.1 – DAILY LESSON")
+    print(f"📚 DAYS-BOT {STRATEGY_VERSION} – DAILY LESSON")
     print("=" * 74)
     print(f"📅 {lesson.get('date', 'N/A')} | 🕐 {lesson.get('time', 'N/A')} | {lesson.get('trading_day', 'N/A')}")
     print(f"📌 Strategy: {lesson.get('strategy_version', 'N/A')}")
@@ -158,14 +167,16 @@ def print_lesson(lesson: Dict[str, Any]):
 
     funnel = lesson.get("funnel", {})
     print("\n🔎 DISCOVERY FUNNEL")
-    print(f"  Universe:               {funnel.get('universe', 0)}")
-    print(f"  Snapshots received:     {funnel.get('snapshots_received', 0)}")
-    print(f"  Valid prices:           {funnel.get('valid_prices', 0)}")
-    print(f"  Strict candidates:      {funnel.get('strict_candidates', 0)}")
-    print(f"  Rejected: gap           {funnel.get('rejected_gap', 0)}")
-    print(f"  Rejected: volume        {funnel.get('rejected_volume', 0)}")
-    print(f"  Rejected: price_low     {funnel.get('rejected_price_low', 0)}")
-    print(f"  Rejected: price_high    {funnel.get('rejected_price_high', 0)}")
+    print(f"  Universe:                  {funnel.get('universe', 0)}")
+    print(f"  Snapshots received:        {funnel.get('snapshots_received', 0)}")
+    print(f"  Valid prices:              {funnel.get('valid_prices', 0)}")
+    print(f"  Strict candidates:         {funnel.get('strict_candidates', 0)}")
+    print(f"  Rejected: gap              {funnel.get('rejected_gap', 0)}")
+    print(f"  Rejected: volume           {funnel.get('rejected_volume', 0)}")
+    print(f"  Rejected: price_low        {funnel.get('rejected_price_low', 0)}")
+    print(f"  Rejected: price_high       {funnel.get('rejected_price_high', 0)}")
+    print(f"  GATE - Corporate Action:   {funnel.get('corp_action_rejects', 0)}")
+    print(f"  GATE - Liquidity:          {funnel.get('liquidity_rejects', 0)}")
 
     top5 = lesson.get("top5", [])
     if top5:
