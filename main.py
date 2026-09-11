@@ -1,12 +1,9 @@
 """
 DAYS-BOT V5.0.5.1 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
 
-V5.0.5.1 HARDENING:
-- No changes to thresholds, weights, or scoring
-- Improved PM volume status (UNAVAILABLE vs ZERO)
-- Explicit Gate Summary in both FullScan and main
-- Replay for ALL strict candidates
-- Correct version labels
+Intraday + Swing 1–3D
+Manual execution only.
+No automatic orders.
 """
 import sys
 from pathlib import Path
@@ -24,6 +21,8 @@ from scanner.full_scan_v34 import full_scan_v34
 from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
 from telegram_v3 import send_message, format_research_report
+from telegram_v3 import format_lesson_for_telegram   # FIX: moved to telegram_v3
+
 from learning.replay_engine import save_candidate_snapshot
 
 from learning.lesson_engine import (
@@ -31,7 +30,6 @@ from learning.lesson_engine import (
     save_learning,
     print_lesson,
     load_previous_learning,
-    format_lesson_for_telegram,
 )
 
 
@@ -151,7 +149,12 @@ def run_fullscan_v34(manual=False):
         return
 
     print(f"[Main] ✅ Discovery returned {len(candidates)} candidates")
-    print(f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | snapshots={discovery_stats['snapshots_received']} | strict={discovery_stats['strict_candidates']} | fallback={discovery_stats['fallback_candidates']}")
+    print(
+        f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | "
+        f"snapshots={discovery_stats['snapshots_received']} | "
+        f"strict={discovery_stats['strict_candidates']} | "
+        f"fallback={discovery_stats['fallback_candidates']}"
+    )
 
     # FULL ANALYSIS
     print("[Main] Running full analysis on ALL strict candidates...")
@@ -165,7 +168,7 @@ def run_fullscan_v34(manual=False):
 
     print(f"[Main] ✅ Full analysis returned {len(top5)} candidates")
 
-    # REPLAY SNAPSHOTS FOR ALL STRICT
+    # REPLAY SNAPSHOTS FOR ALL STRICT CANDIDATES
     print("[Main] Saving replay snapshots for ALL strict candidates...")
     replay_saved = 0
     replay_failed = 0
@@ -197,7 +200,7 @@ def run_fullscan_v34(manual=False):
         except Exception as e:
             print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
-    # INTEGRITY CHECK
+    # REPLAY INTEGRITY CHECK
     strict_count = discovery_stats.get("strict_candidates", 0)
     integrity_ok = _run_replay_integrity_check(replay_saved, strict_count)
 
@@ -229,7 +232,7 @@ def run_fullscan_v34(manual=False):
         lesson_msg = format_lesson_for_telegram(lesson)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, lesson_msg)
 
-    # DISCOVERY → GATES → TOP 5 FLOW SUMMARY
+    # FLOW SUMMARY
     print()
     print("=" * 74)
     print("DISCOVERY → GATES → TOP 5 FLOW")
@@ -238,20 +241,28 @@ def run_fullscan_v34(manual=False):
     print(f"  Valid snapshots:           {discovery_stats['snapshots_received']}")
     print(f"  Strict candidates:         {discovery_stats['strict_candidates']}")
     print(f"  Analyzed (FullScan):       {len(candidates)}")
-    print(f"  Passed Gates:              {len(top5)}")  # not exact but shows final
     print(f"  In Top 5:                  {len(top5)}")
     print("=" * 74)
 
-    # TOP 5
+    # TOP 5 SUMMARY
     print()
     print("=" * 74)
     print("TOP 5")
     print("=" * 74)
     for i, c in enumerate(top5, 1):
         pm_status = c.get('pm_volume_status', 'UNKNOWN')
-        print(f"{i}. {c.get('ticker')} | Intraday={float(c.get('composite_score', 0) or 0):.1f} | Early={float(c.get('early_score', 0) or 0):.1f} | Swing={float(c.get('swing_score', 0) or 0):.1f} | PMVol={pm_status} | Type={c.get('trade_type', 'WATCH')} | Data={c.get('data_status', 'UNKNOWN')}")
+        print(
+            f"{i}. {c.get('ticker')} | "
+            f"Intraday={float(c.get('composite_score', 0) or 0):.1f} | "
+            f"Early={float(c.get('early_score', 0) or 0):.1f} | "
+            f"Swing={float(c.get('swing_score', 0) or 0):.1f} | "
+            f"PMVol={pm_status} | "
+            f"Type={c.get('trade_type', 'WATCH')} | "
+            f"Data={c.get('data_status', 'UNKNOWN')}"
+        )
     print("=" * 74)
 
+    # REPLAY SUMMARY
     print()
     print("=" * 74)
     print("REPLAY SUMMARY")
