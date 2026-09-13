@@ -1,5 +1,5 @@
 """
-DAYS-BOT V5.0.5.1 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
+DAYS-BOT V5.0.5.2 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
 
 Intraday + Swing 1–3D
 Manual execution only.
@@ -21,7 +21,7 @@ from scanner.full_scan_v34 import full_scan_v34
 from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
 from telegram_v3 import send_message, format_research_report
-from telegram_v3 import format_lesson_for_telegram   # FIX: moved to telegram_v3
+from telegram_v3 import format_lesson_for_telegram
 
 from learning.replay_engine import save_candidate_snapshot
 
@@ -123,7 +123,7 @@ def run_fullscan_v34(manual=False):
     now_et = datetime.now(ET)
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.5.1 – RESEARCH ENGINE (Hardening)")
+    print("DAYS-BOT V5.0.5.2 – RESEARCH ENGINE (Hardening)")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
@@ -228,7 +228,7 @@ def run_fullscan_v34(manual=False):
     telegram_ok = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     print(f"[Main] Telegram report sent: {telegram_ok}")
 
-    if lesson.get("recommendations"):
+    if lesson.get("observations") or lesson.get("notes"):
         lesson_msg = format_lesson_for_telegram(lesson)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, lesson_msg)
 
