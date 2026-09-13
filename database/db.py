@@ -1,6 +1,6 @@
 """
-DAYS-BOT V5.0.5.2 – Database
-Extended schema: all fields from V5.0.5.2 pipeline
+DAYS-BOT V5.0.5.2 – Database (Fixed)
+Uses named placeholders to prevent column count mismatches.
 """
 import os
 import sqlite3
@@ -21,7 +21,6 @@ def init_db():
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Create table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -95,7 +94,6 @@ def init_db():
         )
     """)
 
-    # Safe migration: add missing columns
     cursor.execute("PRAGMA table_info(alerts)")
     existing_cols = [row["name"] for row in cursor.fetchall()]
 
@@ -150,7 +148,10 @@ def init_db():
 
 
 def save_alert(**kwargs):
-    """Flexible save: accepts any kwargs, fills defaults for missing."""
+    """
+    Save alert using NAMED parameters.
+    This prevents 'values for columns' count mismatches.
+    """
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -168,22 +169,93 @@ def save_alert(**kwargs):
         if isinstance(v, (list, dict)):
             try:
                 return json.dumps(v, default=str)
-            except:
+            except Exception:
                 return None
         return v
 
-    try:
-        raw_json = json.dumps(kwargs, default=str)
-    except:
-        raw_json = None
-
-    # Extract liquidity gate info safely
+    # Extract liquidity gate info
     liq_gate = _safe("liquidity_gate")
     liq_passed = None
     liq_reasons = None
     if isinstance(liq_gate, dict):
         liq_passed = _bool_to_int(liq_gate.get("passed"))
         liq_reasons = _to_json(liq_gate.get("reasons"))
+
+    # Full dump for debugging
+    try:
+        raw_json = json.dumps(kwargs, default=str)
+    except Exception:
+        raw_json = None
+
+    # Build params dict with named placeholders
+    params = {
+        "ticker": _safe("ticker"),
+        "price": _safe("price"),
+        "gap_pct": _safe("gap_pct"),
+        "spread_pct": _safe("spread_pct"),
+        "pm_volume": _safe("pm_volume"),
+        "pm_bars": _safe("pm_bars"),
+        "pm_high": _safe("pm_high"),
+        "pm_low": _safe("pm_low"),
+        "pm_vwap": _safe("pm_vwap"),
+        "pm_dist_signed": _safe("pm_dist_signed"),
+        "pm_high_dist": _safe("pm_high_dist"),
+        "pm_data_quality": _safe("pm_data_quality"),
+        "pm_volume_status": _safe("pm_volume_status"),
+        "pm_source": _safe("pm_source"),
+        "rvol": _safe("rvol"),
+        "rvol_status": _safe("rvol_status"),
+        "rvol_method": _safe("rvol_method"),
+        "catalyst_score": _safe("catalyst_score"),
+        "catalyst_type": _safe("catalyst_type"),
+        "catalyst_summary": _safe("catalyst_summary"),
+        "sec_risk_level": _safe("sec_risk_level"),
+        "sec_has_offering": _bool_to_int(_safe("sec_has_offering")),
+        "corporate_action": _bool_to_int(_safe("corporate_action")),
+        "corporate_action_type": _safe("corporate_action_type"),
+        "halt_flag": _bool_to_int(_safe("halt_flag")),
+        "liquidity_gate_passed": liq_passed,
+        "liquidity_reasons": liq_reasons,
+        "float": _safe("float"),
+        "short_interest": _safe("short_interest"),
+        "short_ratio": _safe("short_ratio"),
+        "early_score": _safe("early_score"),
+        "early_state": _safe("early_state"),
+        "early_components": _to_json(_safe("early_components")),
+        "swing_score": _safe("swing_score"),
+        "qualified": _bool_to_int(_safe("qualified")),
+        "data_status": _safe("data_status"),
+        "data_completeness": _to_json(_safe("data_completeness")),
+        "plan_valid": _bool_to_int(_safe("plan_valid")),
+        "plan_error": _safe("plan_error"),
+        "trade_type": _safe("trade_type"),
+        "decision": _safe("decision"),
+        "entry": _safe("entry"),
+        "stop": _safe("stop"),
+        "target_1": _safe("target_1"),
+        "target_2": _safe("target_2"),
+        "risk_per_share": _safe("risk_per_share"),
+        "position_size": _safe("position_size"),
+        "max_loss": _safe("max_loss"),
+        "hold_type": _safe("hold_type"),
+        "hold_min": _safe("hold_min"),
+        "hold_max": _safe("hold_max"),
+        "risk_model": _safe("risk_model"),
+        "spread_status": _safe("spread_status"),
+        "composite_score": _safe("composite_score"),
+        "score_status": _safe("score_status"),
+        "strategy_version": _safe("strategy_version"),
+        "data_version": _safe("data_version"),
+        "mode": _safe("mode"),
+        "scan_date": _safe("scan_date"),
+        "source": _safe("source"),
+        "rvol_calc": _safe("rvol_calc"),
+        "rs_score": _safe("rs_score"),
+        "sentiment_stocktwits": _safe("sentiment_stocktwits"),
+        "sentiment_google_trends": _safe("sentiment_google_trends"),
+        "news_headlines": _safe("news_headlines"),
+        "raw_candidate_json": raw_json,
+    }
 
     cursor.execute("""
         INSERT INTO alerts (
@@ -210,97 +282,30 @@ def save_alert(**kwargs):
             sentiment_stocktwits, sentiment_google_trends,
             news_headlines, raw_candidate_json
         ) VALUES (
-            ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?, ?,
-            ?, ?, ?,
-            ?, ?, ?, ?, ?, ?,
-            ?, ?,
-            ?, ?,
-            ?, ?
+            :ticker, :price, :gap_pct, :spread_pct,
+            :pm_volume, :pm_bars, :pm_high, :pm_low, :pm_vwap,
+            :pm_dist_signed, :pm_high_dist, :pm_data_quality,
+            :pm_volume_status, :pm_source,
+            :rvol, :rvol_status, :rvol_method,
+            :catalyst_score, :catalyst_type, :catalyst_summary,
+            :sec_risk_level, :sec_has_offering,
+            :corporate_action, :corporate_action_type, :halt_flag,
+            :liquidity_gate_passed, :liquidity_reasons,
+            :float, :short_interest, :short_ratio,
+            :early_score, :early_state, :early_components,
+            :swing_score, :qualified,
+            :data_status, :data_completeness,
+            :plan_valid, :plan_error, :trade_type,
+            :decision, :entry, :stop, :target_1, :target_2,
+            :risk_per_share, :position_size, :max_loss,
+            :hold_type, :hold_min, :hold_max, :risk_model,
+            :spread_status, :composite_score, :score_status,
+            :strategy_version, :data_version, :mode, :scan_date, :source,
+            :rvol_calc, :rs_score,
+            :sentiment_stocktwits, :sentiment_google_trends,
+            :news_headlines, :raw_candidate_json
         )
-    """, (
-        _safe("ticker"),
-        _safe("price"),
-        _safe("gap_pct"),
-        _safe("spread_pct"),
-        _safe("pm_volume"),
-        _safe("pm_bars"),
-        _safe("pm_high"),
-        _safe("pm_low"),
-        _safe("pm_vwap"),
-        _safe("pm_dist_signed"),
-        _safe("pm_high_dist"),
-        _safe("pm_data_quality"),
-        _safe("pm_volume_status"),
-        _safe("pm_source"),
-        _safe("rvol"),
-        _safe("rvol_status"),
-        _safe("rvol_method"),
-        _safe("catalyst_score"),
-        _safe("catalyst_type"),
-        _safe("catalyst_summary"),
-        _safe("sec_risk_level"),
-        _bool_to_int(_safe("sec_has_offering")),
-        _bool_to_int(_safe("corporate_action")),
-        _safe("corporate_action_type"),
-        _bool_to_int(_safe("halt_flag")),
-        liq_passed,
-        liq_reasons,
-        _safe("float"),
-        _safe("short_interest"),
-        _safe("short_ratio"),
-        _safe("early_score"),
-        _safe("early_state"),
-        _to_json(_safe("early_components")),
-        _safe("swing_score"),
-        _bool_to_int(_safe("qualified")),
-        _safe("data_status"),
-        _to_json(_safe("data_completeness")),
-        _bool_to_int(_safe("plan_valid")),
-        _safe("plan_error"),
-        _safe("trade_type"),
-        _safe("decision"),
-        _safe("entry"),
-        _safe("stop"),
-        _safe("target_1"),
-        _safe("target_2"),
-        _safe("risk_per_share"),
-        _safe("position_size"),
-        _safe("max_loss"),
-        _safe("hold_type"),
-        _safe("hold_min"),
-        _safe("hold_max"),
-        _safe("risk_model"),
-        _safe("spread_status"),
-        _safe("composite_score"),
-        _safe("score_status"),
-        _safe("strategy_version"),
-        _safe("data_version"),
-        _safe("mode"),
-        _safe("scan_date"),
-        _safe("source"),
-        _safe("rvol_calc"),
-        _safe("rs_score"),
-        _safe("sentiment_stocktwits"),
-        _safe("sentiment_google_trends"),
-        _safe("news_headlines"),
-        raw_json,
-    ))
+    """, params)
 
     conn.commit()
     conn.close()
