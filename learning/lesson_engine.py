@@ -1,6 +1,8 @@
 """
-DAYS-BOT V5.0.5.2 – Lesson Engine (FROZEN BASELINE)
-FIX: "Recommendations" → "Daily Observations" (no threshold suggestions during Freeze)
+DAYS-BOT V5.0.5.2.4 – Lesson Engine (FROZEN BASELINE)
+FIXES:
+- "Recommendations" → "Daily Observations" (no threshold suggestions during Freeze)
+- V5.0.5.2.4: Float Funnel + per-source visibility (yfinance vs FMP)
 """
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
@@ -12,12 +14,13 @@ ET = pytz.timezone("America/New_York")
 BASE_DIR = Path(__file__).resolve().parent.parent
 LEARNING_PATH = BASE_DIR / "data" / "learning"
 
-STRATEGY_VERSION = "V5.0.5.2"
+STRATEGY_VERSION = "V5.0.5.2.4"
 
 
 def _safe_float(value, default=0.0):
     try:
-        if value is None: return default
+        if value is None:
+            return default
         return float(value)
     except (TypeError, ValueError):
         return default
@@ -31,7 +34,7 @@ def load_previous_learning(date_str: str = None) -> Dict[str, Any]:
         try:
             with open(path, 'r') as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
     return {}
 
@@ -61,6 +64,9 @@ def build_lesson(
         corp_rejects = gate.get('corp_action_rejects', 0)
         liq_rejects = gate.get('liquidity_rejects', 0)
 
+    # ================================================================
+    # FUNNEL — V5.0.5.2.4 includes Float funnel + per-source fields
+    # ================================================================
     funnel = {
         "universe": discovery_stats.get("universe", 0),
         "snapshots_received": discovery_stats.get("snapshots_received", 0),
@@ -74,7 +80,18 @@ def build_lesson(
         "rejected_gap": discovery_stats.get("reject_gap", 0),
         "rejected_volume": discovery_stats.get("reject_volume", 0),
         "rejected_invalid": discovery_stats.get("reject_invalid", 0),
-        "rejected_float": discovery_stats.get("reject_float", 0),
+        # Float funnel (V5.0.5.2.4)
+        "rejected_float": discovery_stats.get("reject_float", 0),          # legacy combined
+        "rejected_float_over_20m": discovery_stats.get("reject_float_over_20m", 0),
+        "float_unknown": discovery_stats.get("float_unknown", 0),
+        "strict_passed_pre_float": discovery_stats.get("strict_passed_pre_float", 0),
+        "float_fetches": discovery_stats.get("float_fetches", 0),
+        # Per-source (V5.0.5.2.4)
+        "float_yfinance_ok": discovery_stats.get("float_yfinance_ok", 0),
+        "float_yfinance_none": discovery_stats.get("float_yfinance_none", 0),
+        "float_fmp_ok": discovery_stats.get("float_fmp_ok", 0),
+        "float_yfinance_avg_ms": discovery_stats.get("float_yfinance_avg_ms", 0),
+        # Gate outcomes (post-discovery)
         "corp_action_rejects": corp_rejects,
         "liquidity_rejects": liq_rejects,
     }
@@ -105,9 +122,16 @@ def build_lesson(
             if previous > 0 and current != previous:
                 diff = current - previous
                 direction = "up" if diff > 0 else "down"
-                changes[key] = {"previous": previous, "current": current, "change": diff, "direction": direction}
+                changes[key] = {
+                    "previous": previous,
+                    "current": current,
+                    "change": diff,
+                    "direction": direction,
+                }
 
-    # V5.0.5.2 FIX: Observations instead of Recommendations
+    # ================================================================
+    # OBSERVATIONS (V5.0.5.2.4)
+    # ================================================================
     observations = []
     observations.append(f"• {funnel.get('rejected_gap', 0)} מניות נפסלו בגלל Gap < 3%")
     observations.append(f"• {funnel.get('rejected_volume', 0)} מניות נפסלו בגלל Volume < 50K")
@@ -119,6 +143,32 @@ def build_lesson(
     passed_gates = funnel.get('strict_candidates', 0) - liq_rejects - corp_rejects
     if passed_gates > 0:
         observations.append(f"• {passed_gates} עברו את ה-Gates והמשיכו ל-Scoring")
+
+    # ================================================================
+    # FLOAT FUNNEL — V5.0.5.2.4
+    # ================================================================
+    strict_passed_pre_float = funnel.get("strict_passed_pre_float", 0)
+    float_over_20m = funnel.get("rejected_float_over_20m", 0)
+    float_unknown = funnel.get("float_unknown", 0)
+    float_fetches = funnel.get("float_fetches", 0)
+
+    if strict_passed_pre_float > 0:
+        observations.append(
+            f"• Float Gate: {strict_passed_pre_float} עברו Strict → "
+            f"{float_over_20m} נפסלו >20M | {float_unknown} UNKNOWN → WATCH"
+        )
+
+    # Per-source visibility (yfinance vs FMP)
+    yf_ok = funnel.get("float_yfinance_ok", 0)
+    yf_none = funnel.get("float_yfinance_none", 0)
+    yf_ms = funnel.get("float_yfinance_avg_ms", 0)
+    fmp_ok = funnel.get("float_fmp_ok", 0)
+
+    if float_fetches > 0:
+        observations.append(
+            f"• Float source: yfinance {yf_ok} OK / {yf_none} חסר "
+            f"(avg {yf_ms}ms) | FMP {fmp_ok} OK"
+        )
 
     # PM Volume observations
     pm_unavail = sum(1 for t in top5_summary if t.get('pm_volume_status') == 'VOLUME_UNAVAILABLE')
@@ -140,8 +190,8 @@ def build_lesson(
         "top5": top5_summary,
         "top5_count": len(top5),
         "changes_vs_yesterday": changes,
-        "observations": observations,      # NEW
-        "notes": notes,                    # NEW
+        "observations": observations,
+        "notes": notes,
         "summary": f"היום נמצאו {len(candidates)} מועמדים, מתוכם {len(top5)} עברו לניתוח מלא.",
         "trading_day": now.strftime("%A"),
         "config_used": config_params or {},
@@ -169,6 +219,13 @@ def print_lesson(lesson: Dict[str, Any]):
     print(f"  Rejected: volume           {funnel.get('rejected_volume', 0)}")
     print(f"  Rejected: price_low        {funnel.get('rejected_price_low', 0)}")
     print(f"  Rejected: price_high       {funnel.get('rejected_price_high', 0)}")
+
+    # Float funnel (V5.0.5.2.4)
+    print(f"  Rejected: float >20M       {funnel.get('rejected_float_over_20m', 0)}")
+    print(f"  Float: UNKNOWN (WATCH)     {funnel.get('float_unknown', 0)}")
+    print(f"  Float: yfinance OK/NONE    {funnel.get('float_yfinance_ok', 0)}/{funnel.get('float_yfinance_none', 0)}")
+    print(f"  Float: avg yfinance call   {funnel.get('float_yfinance_avg_ms', 0)}ms")
+
     print(f"  GATE - Corporate Action:   {funnel.get('corp_action_rejects', 0)}")
     print(f"  GATE - Liquidity:          {funnel.get('liquidity_rejects', 0)}")
 
