@@ -1,10 +1,11 @@
 """
-DAYS-BOT V5.0.5.2.1 – Full Scan Engine
+DAYS-BOT V5.0.5.2.2 – Full Scan Engine
 FIXES:
 - Liquidity: SPREAD_UNKNOWN → WATCH (not reject)
 - Removed average_daily_volume check (not populated)
 - Gate counters propagated to candidate
 - V5.0.5.2.1: Float Hard Gate (<=20M) enforced locally; UNKNOWN → WATCH (not Strict)
+- V5.0.5.2.2: Reuse float from Discovery when injected (avoids double fetch)
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -51,7 +52,8 @@ def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
 
 def _safe_float(value, default=0.0):
     try:
-        if value is None: return default
+        if value is None:
+            return default
         return float(value)
     except (TypeError, ValueError):
         return default
@@ -187,6 +189,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     corp_action_rejects = 0
     liquidity_rejects = 0
     float_rejects = 0
+    float_cache_hits = 0
+    float_live_fetches = 0
     passed_gates = 0
     scored = []
 
@@ -197,7 +201,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis = {}
 
         # GATE 1: Corporate Action
-        corp_action = _safe_call(check_corporate_action, {}, ticker, expected_type=dict, name=f"corp_action:{ticker}")
+        corp_action = _safe_call(check_corporate_action, {}, ticker,
+                                 expected_type=dict, name=f"corp_action:{ticker}")
         c['corporate_action'] = corp_action.get('corporate_action', False)
         c['corporate_action_type'] = corp_action.get('corporate_action_type')
         c['halt_flag'] = corp_action.get('halt_flag', False)
@@ -241,7 +246,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         passed_gates += 1
 
         # PM DATA
-        pm_data = _safe_call(get_premarket_minute_data, {}, ticker, expected_type=dict, name=f"pm:{ticker}")
+        pm_data = _safe_call(get_premarket_minute_data, {}, ticker,
+                             expected_type=dict, name=f"pm:{ticker}")
 
         pm_bars_received = 0
         pm_source = "none"
@@ -317,16 +323,19 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             expected_type=(float, int, type(None)), name=f"rs:{ticker}")
         c['rs'] = analysis['rs']
 
-        analysis['news'] = _safe_call(fetch_news, [], ticker, expected_type=list, name=f"news:{ticker}")
+        analysis['news'] = _safe_call(fetch_news, [], ticker,
+                                      expected_type=list, name=f"news:{ticker}")
         c['news'] = analysis['news']
 
-        catalyst = _safe_call(classify_catalyst, {}, analysis['news'], expected_type=dict, name=f"catalyst:{ticker}")
+        catalyst = _safe_call(classify_catalyst, {}, analysis['news'],
+                              expected_type=dict, name=f"catalyst:{ticker}")
         c['catalyst_type'] = catalyst.get('type', 'UNAVAILABLE') if isinstance(catalyst, dict) else 'UNAVAILABLE'
         c['catalyst_score'] = catalyst.get('score', 0) if isinstance(catalyst, dict) else 0
         c['catalyst_summary'] = catalyst.get('summary', '') if isinstance(catalyst, dict) else ''
         analysis['catalyst'] = catalyst
 
-        analysis['sentiment'] = _safe_call(get_stocktwits_sentiment, {}, ticker, expected_type=dict, name=f"sentiment:{ticker}")
+        analysis['sentiment'] = _safe_call(get_stocktwits_sentiment, {}, ticker,
+                                           expected_type=dict, name=f"sentiment:{ticker}")
         c['sentiment'] = analysis['sentiment']
 
         sec_risk = _safe_call(check_offering_risk,
@@ -337,13 +346,37 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sec_has_offering'] = sec_risk.get('has_offering', False)
         analysis['sec_risk'] = sec_risk
 
-        float_data = _safe_call(get_float_and_short, {}, ticker, expected_type=dict, name=f"float:{ticker}")
-        analysis['float_data'] = float_data
-        c['float'] = float_data.get('float')
-        c['short_interest'] = float_data.get('short_interest')
-        c['short_ratio'] = float_data.get('short_ratio')
-        analysis['float'] = c['float']
-        analysis['short_interest'] = c['short_interest']
+        # ================================================================
+        # FLOAT: reuse from Discovery if injected (V5.0.5.2.2)
+        # Discovery fetches float once and stores on candidate.
+        # FullScan should NOT re-fetch — it wastes time and API quota.
+        # ================================================================
+        float_from_discovery = c.get('float')
+        float_source_from_discovery = c.get('float_source')
+
+        if float_from_discovery is not None:
+            float_cache_hits += 1
+            analysis['float_data'] = {
+                'float': float_from_discovery,
+                'short_interest': c.get('short_interest'),
+                'short_ratio': c.get('short_ratio'),
+                'source': float_source_from_discovery or 'discovery_cache',
+                'status': 'CACHED_FROM_DISCOVERY',
+            }
+            analysis['float'] = float_from_discovery
+            analysis['short_interest'] = c.get('short_interest')
+            # c['float'] already set; leave as is
+        else:
+            float_live_fetches += 1
+            float_data = _safe_call(get_float_and_short, {}, ticker,
+                                    expected_type=dict, name=f"float:{ticker}")
+            analysis['float_data'] = float_data
+            c['float'] = float_data.get('float')
+            c['short_interest'] = float_data.get('short_interest')
+            c['short_ratio'] = float_data.get('short_ratio')
+            c['float_source'] = float_data.get('source', 'fmp_or_yfinance')
+            analysis['float'] = c['float']
+            analysis['short_interest'] = c['short_interest']
 
         # ================================================================
         # GATE 3 (V5.0.5.2.1): FLOAT HARD GATE
@@ -399,22 +432,27 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         if c.get('pm_high') is not None and _safe_float(c['pm_high']) > 0:
             vwap_data = {
-                "vwap": c.get('pm_vwap'), "vwap_high": c.get('pm_high'), "vwap_low": c.get('pm_low'),
+                "vwap": c.get('pm_vwap'),
+                "vwap_high": c.get('pm_high'),
+                "vwap_low": c.get('pm_low'),
                 "vwap_support": _safe_float(c.get('pm_vwap')) * 0.995 if c.get('pm_vwap') else None,
                 "vwap_resistance": _safe_float(c.get('pm_vwap')) * 1.005 if c.get('pm_vwap') else None,
                 "source": "premarket"
             }
         else:
-            vwap_data = _safe_call(calculate_vwap, {}, ticker, 30, expected_type=dict, name=f"vwap:{ticker}")
+            vwap_data = _safe_call(calculate_vwap, {}, ticker, 30,
+                                   expected_type=dict, name=f"vwap:{ticker}")
         analysis['vwap'] = vwap_data
         c['vwap_data'] = vwap_data
         c['vwap'] = vwap_data.get('vwap', 0) if vwap_data else None
 
-        analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3, expected_type=list, name=f"sympathy:{ticker}")
+        analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3,
+                                          expected_type=list, name=f"sympathy:{ticker}")
         c['sympathy'] = analysis['sympathy']
 
-        plan = _safe_call(build_trade_plan, {}, c, ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
-            expected_type=dict, name=f"tradeplan:{ticker}")
+        plan = _safe_call(build_trade_plan, {}, c, ACCOUNT_SIZE,
+                          MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
+                          expected_type=dict, name=f"tradeplan:{ticker}")
         if plan:
             c.update(plan)
         else:
@@ -451,6 +489,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             'sec': c.get('sec_risk_level'),
             'score': c.get('score_status'),
             'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
+            'float_source': c.get('float_source', 'unknown'),
         }
 
         c['analysis'] = analysis
@@ -464,6 +503,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     print(f"  Corporate Action rejects:      {corp_action_rejects}")
     print(f"  Liquidity rejects:             {liquidity_rejects}")
     print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
+    print(f"  Float cache hits (Discovery):  {float_cache_hits}")
+    print(f"  Float live fetches:            {float_live_fetches}")
     print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
     print(f"  Top 5 returned:                {min(5, len(scored))}")
     print("=" * 74)
@@ -473,6 +514,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         "corp_action_rejects": corp_action_rejects,
         "liquidity_rejects": liquidity_rejects,
         "float_rejects": float_rejects,
+        "float_cache_hits": float_cache_hits,
+        "float_live_fetches": float_live_fetches,
     }
     for c in scored:
         c['_gate_summary'] = gate_summary
