@@ -1,17 +1,17 @@
 """
-DAYS-BOT V5.0.5.2.4 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
+DAYS-BOT V5.0.5.2.6 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
 
 Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
 
-V5.0.5.2.4 changes:
-- _normalize_discovery_stats now passes through ALL float fields:
-  strict_passed_pre_float, float_fetches,
-  float_yfinance_ok, float_yfinance_none, float_fmp_ok, float_yfinance_avg_ms
-- These flow to Lesson/Funnel for per-source visibility
+V5.0.5.2.6 changes:
+- Added save_alert diagnostic at startup (TEMP — remove after bug is fixed)
+- _normalize_discovery_stats passes through all float fields
 """
 import sys
+import os
+import subprocess
 from pathlib import Path
 from datetime import datetime
 import pytz
@@ -37,6 +37,77 @@ from learning.lesson_engine import (
     print_lesson,
     load_previous_learning,
 )
+
+
+def _run_save_alert_diagnostic():
+    """
+    V5.0.5.2.6 – TEMP DIAGNOSTIC
+    Identifies which db.py is actually loaded and whether multiple exist.
+    Remove this block after the composite_score bug is fixed.
+    """
+    print()
+    print("=" * 74)
+    print("SAVE_ALERT DIAGNOSTIC (V5.0.5.2.6 – TEMP)")
+    print("=" * 74)
+
+    # 1. grep: def save_alert
+    print("\n[1] grep: def save_alert (all .py files):")
+    try:
+        result = subprocess.run(
+            ["grep", "-rn", "def save_alert", "--include=*.py", "."],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.stdout.strip():
+            print(result.stdout.rstrip())
+        else:
+            print("  (no matches)")
+    except Exception as e:
+        print(f"  grep failed: {type(e).__name__}: {e}")
+
+    # 2. grep: composite_score / event_score in database/db.py
+    print("\n[2] grep: composite_score / event_score in database/db.py:")
+    try:
+        result = subprocess.run(
+            ["grep", "-n", "composite_score\\|event_score", "database/db.py"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.stdout.strip():
+            print(result.stdout.rstrip())
+        else:
+            print("  (no matches or file not found)")
+    except Exception as e:
+        print(f"  grep failed: {type(e).__name__}: {e}")
+
+    # 3. python: which file is imported?
+    print("\n[3] python: which db.py is imported?")
+    try:
+        import database.db as db_module
+        import inspect
+        src_file = inspect.getsourcefile(db_module.save_alert)
+        src_line = inspect.getsourcelines(db_module.save_alert)[1]
+        print(f"  Module file:    {db_module.__file__}")
+        print(f"  save_alert at:  {src_file}:{src_line}")
+    except Exception as e:
+        print(f"  inspect failed: {type(e).__name__}: {e}")
+
+    # 4. find: all db.py files in repo
+    print("\n[4] find: all db.py files:")
+    try:
+        result = subprocess.run(
+            ["find", ".", "-name", "db.py", "-not", "-path", "*/node_modules/*"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.stdout.strip():
+            print(result.stdout.rstrip())
+        else:
+            print("  (none found)")
+    except Exception as e:
+        print(f"  find failed: {type(e).__name__}: {e}")
+
+    print("\n" + "=" * 74)
+    print("END SAVE_ALERT DIAGNOSTIC")
+    print("=" * 74)
+    print()
 
 
 def _safe_swing(candidate, analysis=None):
@@ -90,12 +161,10 @@ def _normalize_discovery_stats(stats):
     if not universe_value:
         universe_value = 500
 
-    # Float diagnostics — new keys, with legacy fallback
     reject_float_over_20m = int(stats.get("reject_float_over_20m", 0) or 0)
     float_unknown = int(stats.get("float_unknown", 0) or 0)
     reject_float_legacy = int(stats.get("reject_float", 0) or 0)
 
-    # If Discovery still reports only legacy key, use it as combined
     if reject_float_over_20m == 0 and float_unknown == 0 and reject_float_legacy > 0:
         reject_float_over_20m = reject_float_legacy
 
@@ -112,14 +181,11 @@ def _normalize_discovery_stats(stats):
         "reject_gap": int(stats.get("reject_gap", 0) or 0),
         "reject_volume": int(stats.get("reject_volume", 0) or 0),
         "reject_invalid": int(stats.get("reject_invalid", 0) or 0),
-        # Float diagnostics (V5.0.5.2.4)
         "reject_float_over_20m": reject_float_over_20m,
         "float_unknown": float_unknown,
-        "reject_float": reject_float_over_20m + float_unknown,   # legacy combined
-        # Float funnel (V5.0.5.2.4) — was missing before
+        "reject_float": reject_float_over_20m + float_unknown,
         "strict_passed_pre_float": int(stats.get("strict_passed_pre_float", 0) or 0),
         "float_fetches": int(stats.get("float_fetches", 0) or 0),
-        # Per-source (V5.0.5.2.4) — was missing before
         "float_yfinance_ok": int(stats.get("float_yfinance_ok", 0) or 0),
         "float_yfinance_none": int(stats.get("float_yfinance_none", 0) or 0),
         "float_fmp_ok": int(stats.get("float_fmp_ok", 0) or 0),
@@ -154,9 +220,14 @@ def run_fullscan_v34(manual=False):
     now_et = datetime.now(ET)
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.5.2.4 – RESEARCH ENGINE (Hardening)")
+    print("DAYS-BOT V5.0.5.2.6 – RESEARCH ENGINE (Hardening)")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
+
+    # ================================================================
+    # V5.0.5.2.6 – TEMP: save_alert diagnostic (remove after bug fixed)
+    # ================================================================
+    _run_save_alert_diagnostic()
 
     # DISCOVERY
     print("[Main] Starting discovery...")
@@ -226,6 +297,13 @@ def run_fullscan_v34(manual=False):
         candidate["qualified"] = swing.get("qualified", False)
         candidate["swing_data"] = swing
         candidate["trade_type"] = _classify_trade_type(candidate)
+
+        # V5.0.5.2.6 – TEMP: verify composite_score at save time
+        print(f"[Main-SAVE-DIAG] {candidate.get('ticker')} | "
+              f"composite_score={candidate.get('composite_score')} | "
+              f"swing_score={candidate.get('swing_score')} | "
+              f"event_score={candidate.get('event_score')} | "
+              f"trade_type={candidate.get('trade_type')}")
 
         try:
             save_alert(**candidate)
