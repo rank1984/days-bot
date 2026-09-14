@@ -5,16 +5,12 @@ Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
 
-V5.0.5.2.6 changes:
-- Added save_alert location diagnostic (TEMP — remove after bug fixed)
-- Added DB write verification (TEMP — queries DB after saves)
-- These two diagnostics answer: "does DB actually store what we send?"
+V5.0.5.2.6 FINAL:
+- Diagnostics removed (bug fixed in #545: DB == RAW JSON, 5/5 MATCH)
+- _normalize_discovery_stats passes through all float fields
+- Ready for FREEZE data collection
 """
 import sys
-import os
-import subprocess
-import json
-import sqlite3
 from pathlib import Path
 from datetime import datetime
 import pytz
@@ -40,166 +36,6 @@ from learning.lesson_engine import (
     print_lesson,
     load_previous_learning,
 )
-
-
-def _run_save_alert_diagnostic():
-    """
-    V5.0.5.2.6 – TEMP DIAGNOSTIC #1
-    Identifies which db.py is loaded and whether multiple exist.
-    """
-    print()
-    print("=" * 74)
-    print("SAVE_ALERT DIAGNOSTIC (V5.0.5.2.6 – TEMP)")
-    print("=" * 74)
-
-    # 1. grep: def save_alert
-    print("\n[1] grep: def save_alert (all .py files):")
-    try:
-        result = subprocess.run(
-            ["grep", "-rn", "def save_alert", "--include=*.py", "."],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.stdout.strip():
-            print(result.stdout.rstrip())
-        else:
-            print("  (no matches)")
-    except Exception as e:
-        print(f"  grep failed: {type(e).__name__}: {e}")
-
-    # 2. grep: composite_score / event_score in database/db.py
-    print("\n[2] grep: composite_score / event_score in database/db.py:")
-    try:
-        result = subprocess.run(
-            ["grep", "-n", "composite_score\\|event_score", "database/db.py"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.stdout.strip():
-            print(result.stdout.rstrip())
-        else:
-            print("  (no matches or file not found)")
-    except Exception as e:
-        print(f"  grep failed: {type(e).__name__}: {e}")
-
-    # 3. python: which file is imported?
-    print("\n[3] python: which db.py is imported?")
-    try:
-        import database.db as db_module
-        import inspect
-        src_file = inspect.getsourcefile(db_module.save_alert)
-        src_line = inspect.getsourcelines(db_module.save_alert)[1]
-        print(f"  Module file:    {db_module.__file__}")
-        print(f"  save_alert at:  {src_file}:{src_line}")
-    except Exception as e:
-        print(f"  inspect failed: {type(e).__name__}: {e}")
-
-    # 4. find: all db.py files in repo
-    print("\n[4] find: all db.py files:")
-    try:
-        result = subprocess.run(
-            ["find", ".", "-name", "db.py", "-not", "-path", "*/node_modules/*"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.stdout.strip():
-            print(result.stdout.rstrip())
-        else:
-            print("  (none found)")
-    except Exception as e:
-        print(f"  find failed: {type(e).__name__}: {e}")
-
-    print("\n" + "=" * 74)
-    print("END SAVE_ALERT DIAGNOSTIC")
-    print("=" * 74)
-    print()
-
-
-def _verify_db_writes(scan_date: str):
-    """
-    V5.0.5.2.6 – TEMP DIAGNOSTIC #2
-    Queries alerts.db AFTER saves and prints what actually landed.
-    Compares DB column vs RAW JSON to detect mismatches.
-    """
-    print()
-    print("=" * 74)
-    print("DB WRITE VERIFICATION (V5.0.5.2.6 – TEMP)")
-    print("=" * 74)
-
-    db_path = BASE_DIR / "data" / "alerts.db"
-    if not db_path.exists():
-        print(f"  ❌ DB not found at {db_path}")
-        print("=" * 74)
-        return
-
-    try:
-        conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-
-        # Check row count for today
-        row = cur.execute(
-            "SELECT COUNT(*) AS n FROM alerts WHERE scan_date = ?",
-            (scan_date,)
-        ).fetchone()
-        print(f"\n  Total rows for scan_date={scan_date}: {row['n']}")
-
-        # Per-row detail
-        print(f"\n  {'ticker':8s} | {'DB_comp':>8s} | {'DB_swing':>8s} | "
-              f"{'RAW_comp':>9s} | {'RAW_swing':>9s} | {'MATCH?':>7s}")
-        print("  " + "-" * 70)
-
-        mismatch_count = 0
-        for row in cur.execute(
-            """SELECT ticker, composite_score, swing_score, raw_candidate_json
-               FROM alerts WHERE scan_date = ?
-               ORDER BY id DESC""",
-            (scan_date,)
-        ):
-            ticker = row["ticker"]
-            db_comp = row["composite_score"]
-            db_swing = row["swing_score"]
-
-            raw_comp = None
-            raw_swing = None
-            if row["raw_candidate_json"]:
-                try:
-                    raw = json.loads(row["raw_candidate_json"])
-                    raw_comp = raw.get("composite_score")
-                    raw_swing = raw.get("swing_score")
-                except Exception:
-                    pass
-
-            # Determine match
-            match = "?"
-            if db_comp is not None and raw_comp is not None:
-                if abs(float(db_comp) - float(raw_comp)) < 0.01:
-                    match = "OK"
-                else:
-                    match = "MISMATCH"
-                    mismatch_count += 1
-            elif db_comp is None and raw_comp is None:
-                match = "both-null"
-
-            db_comp_s = f"{db_comp}" if db_comp is not None else "None"
-            db_swing_s = f"{db_swing}" if db_swing is not None else "None"
-            raw_comp_s = f"{raw_comp}" if raw_comp is not None else "None"
-            raw_swing_s = f"{raw_swing}" if raw_swing is not None else "None"
-
-            print(f"  {ticker:8s} | {db_comp_s:>8s} | {db_swing_s:>8s} | "
-                  f"{raw_comp_s:>9s} | {raw_swing_s:>9s} | {match:>7s}")
-
-        print("  " + "-" * 70)
-        if mismatch_count == 0:
-            print(f"  ✅ All rows match: DB column == RAW JSON")
-        else:
-            print(f"  ❌ {mismatch_count} MISMATCH(es) detected")
-
-        conn.close()
-    except Exception as e:
-        print(f"  ❌ Verification failed: {type(e).__name__}: {e}")
-
-    print("\n" + "=" * 74)
-    print("END DB WRITE VERIFICATION")
-    print("=" * 74)
-    print()
 
 
 def _safe_swing(candidate, analysis=None):
@@ -238,6 +74,11 @@ def _classify_trade_type(candidate):
 
 
 def _normalize_discovery_stats(stats):
+    """
+    V5.0.5.2.4 – Normalize discovery diagnostics.
+    Passes through ALL float-related fields including per-source counters
+    (yfinance_ok / yfinance_none / fmp_ok / avg_ms) so Lesson can display them.
+    """
     if not isinstance(stats, dict):
         stats = {}
 
@@ -312,11 +153,6 @@ def run_fullscan_v34(manual=False):
     print(f"Date: {scan_date} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
-    # ================================================================
-    # V5.0.5.2.6 – TEMP: save_alert location diagnostic
-    # ================================================================
-    _run_save_alert_diagnostic()
-
     # DISCOVERY
     print("[Main] Starting discovery...")
     from scanner.premarket import scan_premarket
@@ -386,23 +222,11 @@ def run_fullscan_v34(manual=False):
         candidate["swing_data"] = swing
         candidate["trade_type"] = _classify_trade_type(candidate)
 
-        # V5.0.5.2.6 – TEMP: log composite_score just before save
-        print(f"[Main-SAVE-DIAG] {candidate.get('ticker')} | "
-              f"composite_score={candidate.get('composite_score')} | "
-              f"swing_score={candidate.get('swing_score')} | "
-              f"event_score={candidate.get('event_score')} | "
-              f"trade_type={candidate.get('trade_type')}")
-
         try:
             save_alert(**candidate)
             print(f"[Main] DB saved: {candidate.get('ticker')}")
         except Exception as e:
             print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
-
-    # ================================================================
-    # V5.0.5.2.6 – TEMP: verify DB writes
-    # ================================================================
-    _verify_db_writes(scan_date)
 
     # REPLAY INTEGRITY CHECK
     strict_count = discovery_stats.get("strict_candidates", 0)
