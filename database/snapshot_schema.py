@@ -3,11 +3,9 @@ DAYS-BOT V5.0.6-prep.1 – Snapshot Schema
 
 FIXES (prep.1):
 - HARD LOCK of composite_score / swing_score at function entry
-  (previous bug: event_score leaked into composite_score column — same bug
-   that was fixed in save_alert, now fixed here)
 - Debug print at entry (shows exactly what the candidate contains)
 - Post-write DB verification (reads back after INSERT)
-- Defense in depth: _lock() helper guarantees we never silently write the wrong field
+- Defense in depth: guarantees we never silently write the wrong field
 
 Three tables:
     snapshots          — T0 immutable record
@@ -168,22 +166,6 @@ def init_snapshot_schema():
 
 
 # =====================================================================
-# HARD LOCK HELPER — never trust implicit lookup
-# =====================================================================
-
-def _lock(candidate: dict, key: str, ticker: str):
-    """
-    V5.0.6-prep.1 HARD LOCK.
-    Explicitly reads a value from the candidate dict, with debug output
-    if it looks suspicious. Returns the value or None.
-    """
-    if key not in candidate:
-        return None
-    val = candidate[key]
-    return val
-
-
-# =====================================================================
 # WRITE — Snapshot
 # =====================================================================
 
@@ -219,7 +201,6 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
           f"swing={_swing} (type={type(_swing).__name__}) | "
           f"event={_event} | discovery={_discovery}")
 
-    # If composite_score is None but event_score exists — that's a red flag
     if _composite is None and _event is not None:
         print(f"[save_snapshot] ⚠️ {ticker} composite is None but event={_event} — "
               f"NOT substituting. Saving None as-is.")
@@ -324,8 +305,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
         snap_id = cur.lastrowid
 
         # ================================================================
-        # POST-WRITE VERIFICATION (V5.0.6-prep.1)
-        # Read back and compare — catch silent writes.
+        # POST-WRITE VERIFICATION
         # ================================================================
         row = cur.execute(
             "SELECT composite_score, swing_score FROM snapshots WHERE snapshot_id = ?",
@@ -353,17 +333,13 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
 
 
 # =====================================================================
-# DIAGNOSTIC (run manually)
+# DIAGNOSTIC
 # =====================================================================
 
 def verify_snapshot_integrity(scan_date: str = None):
     """
     Read back all snapshots and compare against their originating alerts.
     Run after a scan to confirm no event_score leakage.
-
-    Usage:
-        from database.snapshot_schema import verify_snapshot_integrity
-        verify_snapshot_integrity('2026-09-14')
     """
     if scan_date is None:
         scan_date = datetime.now().strftime("%Y-%m-%d")
@@ -392,7 +368,6 @@ def verify_snapshot_integrity(scan_date: str = None):
         snap_comp = snap_row["composite_score"]
         snap_swing = snap_row["swing_score"]
 
-        # Find corresponding alert (by ticker + scan_date)
         alert_row = cur.execute(
             """SELECT composite_score, swing_score, raw_candidate_json
                FROM alerts
