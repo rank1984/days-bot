@@ -1,11 +1,13 @@
 """
-DAYS-BOT V5.0.5.2.2 – Full Scan Engine
+DAYS-BOT V5.0.5.2.5 – Full Scan Engine
 FIXES:
 - Liquidity: SPREAD_UNKNOWN → WATCH (not reject)
 - Removed average_daily_volume check (not populated)
 - Gate counters propagated to candidate
 - V5.0.5.2.1: Float Hard Gate (<=20M) enforced locally; UNKNOWN → WATCH (not Strict)
 - V5.0.5.2.2: Reuse float from Discovery when injected (avoids double fetch)
+- V5.0.5.2.5: Added 3 tag-only fields (gap_bucket, is_extreme_gap, gap_sign)
+              — NO gate/score changes; tags for future analysis only
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -179,6 +181,51 @@ def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
     scored.append(c)
 
 
+def _classify_gap(gap_pct: float) -> dict:
+    """
+    V5.0.5.2.5 – Tag-only gap classification.
+    NO influence on gates, scoring, or trade decisions.
+    Purpose: enable post-hoc analysis after 50-100 setups.
+
+    Returns:
+        {
+            "gap_sign": "POS" | "NEG" | "FLAT",
+            "gap_bucket": "<3" | "3-5" | "5-10" | "10-25" | "25-40" | "40+",
+            "is_extreme_gap": bool   # True if gap >= 40% (or <= -40%)
+        }
+    """
+    gap = _safe_float(gap_pct, 0.0)
+    abs_gap = abs(gap)
+
+    # Sign
+    if gap > 0.05:
+        sign = "POS"
+    elif gap < -0.05:
+        sign = "NEG"
+    else:
+        sign = "FLAT"
+
+    # Bucket (based on absolute gap %)
+    if abs_gap < 3:
+        bucket = "<3"
+    elif abs_gap < 5:
+        bucket = "3-5"
+    elif abs_gap < 10:
+        bucket = "5-10"
+    elif abs_gap < 25:
+        bucket = "10-25"
+    elif abs_gap < 40:
+        bucket = "25-40"
+    else:
+        bucket = "40+"
+
+    return {
+        "gap_sign": sign,
+        "gap_bucket": bucket,
+        "is_extreme_gap": abs_gap >= 40.0,
+    }
+
+
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     if not candidates:
         return []
@@ -199,6 +246,15 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         print(f"[FullScan] {idx+1}/{total_to_analyze} {ticker}")
 
         analysis = {}
+
+        # ================================================================
+        # V5.0.5.2.5 – Tag-only gap classification (NO gates, NO scoring)
+        # Computed early so it's set on EVERY candidate (even rejected)
+        # ================================================================
+        gap_tags = _classify_gap(c.get('gap_pct', 0))
+        c['gap_sign'] = gap_tags['gap_sign']
+        c['gap_bucket'] = gap_tags['gap_bucket']
+        c['is_extreme_gap'] = gap_tags['is_extreme_gap']
 
         # GATE 1: Corporate Action
         corp_action = _safe_call(check_corporate_action, {}, ticker,
@@ -348,8 +404,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         # ================================================================
         # FLOAT: reuse from Discovery if injected (V5.0.5.2.2)
-        # Discovery fetches float once and stores on candidate.
-        # FullScan should NOT re-fetch — it wastes time and API quota.
         # ================================================================
         float_from_discovery = c.get('float')
         float_source_from_discovery = c.get('float_source')
@@ -365,7 +419,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             }
             analysis['float'] = float_from_discovery
             analysis['short_interest'] = c.get('short_interest')
-            # c['float'] already set; leave as is
         else:
             float_live_fetches += 1
             float_data = _safe_call(get_float_and_short, {}, ticker,
@@ -506,7 +559,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     print(f"  Float cache hits (Discovery):  {float_cache_hits}")
     print(f"  Float live fetches:            {float_live_fetches}")
     print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
-    print(f"  Top 5 returned:                {min(5, len(scored))}")
+    valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
+    print(f"  Top 5 returned:                {min(5, len(valid_scored))}")
     print("=" * 74)
 
     # Attach gate counters to candidates for Lesson
@@ -520,7 +574,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     for c in scored:
         c['_gate_summary'] = gate_summary
 
-    valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
     valid_scored.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
 
     return valid_scored[:5] if len(valid_scored) >= 5 else valid_scored
