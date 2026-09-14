@@ -1,9 +1,14 @@
 """
-DAYS-BOT V5.0.5.2 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
+DAYS-BOT V5.0.5.2.2 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
 
 Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
+
+V5.0.5.2.2 changes:
+- _normalize_discovery_stats supports new Float diagnostics:
+  reject_float_over_20m, float_unknown (from Discovery)
+- Legacy reject_float kept for backward compat
 """
 import sys
 from pathlib import Path
@@ -69,6 +74,11 @@ def _classify_trade_type(candidate):
 
 
 def _normalize_discovery_stats(stats):
+    """
+    V5.0.5.2.2 – Normalize discovery diagnostics.
+    Handles both old (reject_float) and new (reject_float_over_20m + float_unknown)
+    diagnostics keys from Discovery.
+    """
     if not isinstance(stats, dict):
         stats = {}
 
@@ -78,6 +88,15 @@ def _normalize_discovery_stats(stats):
     universe_value = stats.get("universe", stats.get("requested_symbols", 0))
     if not universe_value:
         universe_value = 500
+
+    # Float diagnostics: new keys, with legacy fallback
+    reject_float_over_20m = int(stats.get("reject_float_over_20m", 0) or 0)
+    float_unknown = int(stats.get("float_unknown", 0) or 0)
+    reject_float_legacy = int(stats.get("reject_float", 0) or 0)
+
+    # If Discovery still reports only legacy key, use it as combined
+    if reject_float_over_20m == 0 and float_unknown == 0 and reject_float_legacy > 0:
+        reject_float_over_20m = reject_float_legacy  # best-effort mapping
 
     normalized = {
         "universe": int(universe_value or 0),
@@ -92,7 +111,11 @@ def _normalize_discovery_stats(stats):
         "reject_gap": int(stats.get("reject_gap", 0) or 0),
         "reject_volume": int(stats.get("reject_volume", 0) or 0),
         "reject_invalid": int(stats.get("reject_invalid", 0) or 0),
-        "reject_float": int(stats.get("reject_float", 0) or 0),
+        # V5.0.5.2.2 – split float diagnostics
+        "reject_float_over_20m": reject_float_over_20m,
+        "float_unknown": float_unknown,
+        # Legacy combined (kept for backward compat)
+        "reject_float": reject_float_over_20m + float_unknown,
     }
 
     print("[Main] Normalized discovery stats:")
@@ -123,7 +146,7 @@ def run_fullscan_v34(manual=False):
     now_et = datetime.now(ET)
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.5.2 – RESEARCH ENGINE (Hardening)")
+    print("DAYS-BOT V5.0.5.2.2 – RESEARCH ENGINE (Hardening)")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
@@ -153,7 +176,9 @@ def run_fullscan_v34(manual=False):
         f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | "
         f"snapshots={discovery_stats['snapshots_received']} | "
         f"strict={discovery_stats['strict_candidates']} | "
-        f"fallback={discovery_stats['fallback_candidates']}"
+        f"fallback={discovery_stats['fallback_candidates']} | "
+        f"float_over_20m={discovery_stats['reject_float_over_20m']} | "
+        f"float_unknown={discovery_stats['float_unknown']}"
     )
 
     # FULL ANALYSIS
