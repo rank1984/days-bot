@@ -1,8 +1,9 @@
 """
-DAYS-BOT V5.0.5.2.2 – Fast Discovery (Alpaca Snapshots)
+DAYS-BOT V5.0.5.2.3 – Fast Discovery (Alpaca Snapshots)
 FIXES:
-- Float fetched once per ticker, stored on candidate
-- UNKNOWN float passes through (FullScan decides)
+- V5.0.5.2.2: Float fetched once per ticker, stored on candidate
+- V5.0.5.2.3: Reorder — strict check FIRST, float fetch only for strict passes
+              (saves ~110s per run — was fetching float for all 500 tickers)
 - Removed dead code (_get_float_from_alpaca_snapshot)
 - Diagnostics split: reject_float_over_20m vs float_unknown
 """
@@ -172,7 +173,7 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime,
         "rejection_reasons": rejection_reasons,
         "pm_data_quality": "SNAPSHOT_DATA",
         "mode": "LIVE",
-        "strategy_version": "V5.0.5.2.2",
+        "strategy_version": "V5.0.5.2.3",
         "data_version": "ALPACA_IEX_V5052",
         "scan_date": now_et.strftime("%Y-%m-%d"),
         "source": "ALPACA_SNAPSHOT",
@@ -214,9 +215,10 @@ def fast_discovery() -> Tuple[List[dict], dict]:
         seen.add(symbol)
         clean_universe.append(symbol)
 
-    print("\n[FastDiscovery] V5.0.5.2.2 ALPACA DISCOVERY (Float Hard Gate)")
+    print("\n[FastDiscovery] V5.0.5.2.3 ALPACA DISCOVERY (Float Hard Gate)")
     print(f"[FastDiscovery] Universe symbols: {len(clean_universe)}")
     print(f"[FastDiscovery] Float Hard Gate: {FLOAT_HARD_LIMIT:,}")
+    print(f"[FastDiscovery] NOTE: Float fetched only for strict-pass tickers")
 
     batches = successful_batches = failed_batches = 0
     requested_symbols = returned_snapshots = 0
@@ -226,9 +228,11 @@ def fast_discovery() -> Tuple[List[dict], dict]:
     reject_price_low = reject_price_high = 0
     reject_gap = reject_volume = reject_invalid = 0
 
-    # Float diagnostics: split the two reasons
+    # Float diagnostics
     reject_float_over_20m = 0
     float_unknown = 0
+    strict_passed_pre_float = 0  # כמה עברו strict לפני Float
+    float_fetches = 0            # כמה קריאות Float בפועל
 
     session = requests.Session()
     session.headers.update(_headers())
@@ -253,6 +257,9 @@ def fast_discovery() -> Tuple[List[dict], dict]:
 
         for ticker, snapshot in snapshots.items():
             try:
+                # ------------------------------------------------------
+                # 1. Cheap: count valid prices/prev_close
+                # ------------------------------------------------------
                 raw_price = _safe_float(
                     snapshot.get("latestTrade", {}).get("p"),
                     _safe_float(snapshot.get("dailyBar", {}).get("c")),
@@ -263,6 +270,9 @@ def fast_discovery() -> Tuple[List[dict], dict]:
                 if raw_prev_close > 0:
                     valid_prev_close += 1
 
+                # ------------------------------------------------------
+                # 2. Cheap: fallback parse (for diagnostics counters)
+                # ------------------------------------------------------
                 fallback = _parse_snapshot(ticker, snapshot, now_et, strict=False)
                 if fallback is None:
                     reject_invalid += 1
@@ -280,11 +290,23 @@ def fast_discovery() -> Tuple[List[dict], dict]:
                 if "VOLUME_TOO_LOW" in reasons:
                     reject_volume += 1
 
-                # =====================================================
-                # Float Hard Gate – fetch ONCE, store on candidate
-                # =====================================================
+                # ------------------------------------------------------
+                # 3. Cheap: STRICT parse FIRST
+                #    If it fails price/gap/volume → skip (no float fetch!)
+                # ------------------------------------------------------
+                strict_candidate = _parse_snapshot(ticker, snapshot, now_et, strict=True)
+                if not strict_candidate:
+                    continue  # ← No float fetch for 485/500 tickers
+
+                strict_passed_pre_float += 1
+
+                # ------------------------------------------------------
+                # 4. Expensive: float fetch ONLY for strict-pass tickers
+                #    (~9-15 tickers, not 500)
+                # ------------------------------------------------------
                 float_val = None
                 float_source = "none"
+                float_fetches += 1
                 try:
                     float_data = get_float_and_short(ticker)
                     float_val = float_data.get("float")
@@ -295,17 +317,17 @@ def fast_discovery() -> Tuple[List[dict], dict]:
                 if float_val is None:
                     float_unknown += 1
                     # Pass through to FullScan; FullScan will WATCH it.
-                    # (But mark for diagnostics)
                 elif float_val > FLOAT_HARD_LIMIT:
                     reject_float_over_20m += 1
-                    continue  # hard reject at Discovery level
+                    continue  # hard reject
 
-                strict_candidate = _parse_snapshot(ticker, snapshot, now_et, strict=True)
-                if strict_candidate:
-                    # Inject float so FullScan doesn't re-fetch
-                    strict_candidate["float"] = float_val
-                    strict_candidate["float_source"] = float_source
-                    strict_candidates.append(strict_candidate)
+                # ------------------------------------------------------
+                # 5. Attach float and accept
+                # ------------------------------------------------------
+                strict_candidate["float"] = float_val
+                strict_candidate["float_source"] = float_source
+                strict_candidates.append(strict_candidate)
+
             except Exception as exc:
                 reject_invalid += 1
                 print(f"[FastDiscovery] {ticker} parse error: {exc}")
@@ -332,7 +354,15 @@ def fast_discovery() -> Tuple[List[dict], dict]:
         "reject_invalid": reject_invalid,
         "reject_float_over_20m": reject_float_over_20m,
         "float_unknown": float_unknown,
+        # V5.0.5.2.3 diagnostics
+        "strict_passed_pre_float": strict_passed_pre_float,
+        "float_fetches": float_fetches,
     }
+
+    print(f"[FastDiscovery] Strict-passed (pre-float): {strict_passed_pre_float}")
+    print(f"[FastDiscovery] Float fetches performed:   {float_fetches}")
+    print(f"[FastDiscovery] Float > 20M rejected:      {reject_float_over_20m}")
+    print(f"[FastDiscovery] Float unknown:             {float_unknown}")
 
     if strict_candidates:
         return strict_candidates[:MAX_DISCOVERY_CANDIDATES], diagnostics
