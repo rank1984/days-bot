@@ -1,6 +1,10 @@
 """
-DAYS-BOT V5.0.5.2 – Database (Fixed)
+DAYS-BOT V5.0.5.2.5 – Database (Fixed)
 Uses named placeholders to prevent column count mismatches.
+
+V5.0.5.2.5 changes:
+- Added 3 tag-only columns: gap_sign, gap_bucket, is_extreme_gap
+- These support post-hoc analysis (V5.1) without affecting any logic
 """
 import os
 import sqlite3
@@ -28,6 +32,9 @@ def init_db():
             ticker TEXT,
             price REAL,
             gap_pct REAL,
+            gap_sign TEXT,
+            gap_bucket TEXT,
+            is_extreme_gap INTEGER,
             spread_pct REAL,
             pm_volume INTEGER,
             pm_bars INTEGER,
@@ -134,6 +141,10 @@ def init_db():
         ("sentiment_google_trends", "REAL"),
         ("news_headlines", "TEXT"),
         ("raw_candidate_json", "TEXT"),
+        # V5.0.5.2.5 – tag-only gap classification
+        ("gap_sign", "TEXT"),
+        ("gap_bucket", "TEXT"),
+        ("is_extreme_gap", "INTEGER"),
     ]
 
     for col_name, col_type in columns_to_add:
@@ -192,6 +203,9 @@ def save_alert(**kwargs):
         "ticker": _safe("ticker"),
         "price": _safe("price"),
         "gap_pct": _safe("gap_pct"),
+        "gap_sign": _safe("gap_sign"),
+        "gap_bucket": _safe("gap_bucket"),
+        "is_extreme_gap": _bool_to_int(_safe("is_extreme_gap")),
         "spread_pct": _safe("spread_pct"),
         "pm_volume": _safe("pm_volume"),
         "pm_bars": _safe("pm_bars"),
@@ -259,7 +273,9 @@ def save_alert(**kwargs):
 
     cursor.execute("""
         INSERT INTO alerts (
-            ticker, price, gap_pct, spread_pct,
+            ticker, price, gap_pct,
+            gap_sign, gap_bucket, is_extreme_gap,
+            spread_pct,
             pm_volume, pm_bars, pm_high, pm_low, pm_vwap,
             pm_dist_signed, pm_high_dist, pm_data_quality,
             pm_volume_status, pm_source,
@@ -282,7 +298,9 @@ def save_alert(**kwargs):
             sentiment_stocktwits, sentiment_google_trends,
             news_headlines, raw_candidate_json
         ) VALUES (
-            :ticker, :price, :gap_pct, :spread_pct,
+            :ticker, :price, :gap_pct,
+            :gap_sign, :gap_bucket, :is_extreme_gap,
+            :spread_pct,
             :pm_volume, :pm_bars, :pm_high, :pm_low, :pm_vwap,
             :pm_dist_signed, :pm_high_dist, :pm_data_quality,
             :pm_volume_status, :pm_source,
