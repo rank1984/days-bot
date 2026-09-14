@@ -1,14 +1,16 @@
 """
-DAYS-BOT V5.0.5.2.2 – Float Analyzer (FMP Stable + Fallback)
+DAYS-BOT V5.0.5.2.4 – Float Analyzer
+yfinance primary (FMP gated behind FMP_ENABLED flag)
+
 FIXES:
-- Migrated from deprecated /api/v3/float-shares to /stable/shares-float
-- Added detailed logging (status, body, endpoint) for diagnosis
-- Added yfinance fallback when FMP returns nothing
-- Tracks float_source so DB can distinguish FMP vs yfinance
+- FMP calls gated (Free tier is dead: shares-float = 402, quota = 429)
+- Short-interest query removed (404 on stable endpoint, wasted quota)
+- yfinance .info timing logged (known slow: 1-3s/call; can return {} for micro-caps)
+- Returns elapsed_ms + reason so Discovery can track per-source health
 """
-import os
+import time
 import requests
-from utils.config import FMP_API_KEY
+from utils.config import FMP_API_KEY, FMP_ENABLED
 
 FMP_STABLE_URL = "https://financialmodelingprep.com/stable"
 
@@ -18,35 +20,26 @@ def _log(msg: str):
 
 
 def _get_from_fmp(endpoint: str, params: dict) -> dict:
-    """
-    Call FMP stable API. Returns dict or {}.
-    Logs status_code and body (truncated) for every call.
-    """
+    """Call FMP stable API. Returns dict or {}."""
+    if not FMP_ENABLED:
+        return {}
     if not FMP_API_KEY:
         _log("FMP_API_KEY missing – skipping FMP call")
         return {}
-
     try:
         url = f"{FMP_STABLE_URL}/{endpoint}"
         params["apikey"] = FMP_API_KEY
         resp = requests.get(url, params=params, timeout=10)
-
-        # Diagnostic log
-        body_preview = resp.text[:300] if resp.text else "<empty>"
+        body_preview = resp.text[:200] if resp.text else "<empty>"
         _log(f"FMP GET {endpoint} | status={resp.status_code} | body={body_preview}")
-
         if resp.status_code != 200:
             return {}
-
         data = resp.json()
         if not data:
             return {}
-
-        # FMP returns list for some endpoints, dict for others
         if isinstance(data, list):
             return data[0] if data else {}
         return data
-
     except Exception as e:
         _log(f"FMP EXCEPTION on {endpoint}: {type(e).__name__}: {e}")
         return {}
@@ -54,76 +47,105 @@ def _get_from_fmp(endpoint: str, params: dict) -> dict:
 
 def _get_float_yfinance(ticker: str) -> dict:
     """
-    Fallback: yfinance info dict.
-    Returns {'float': int|None, 'source': 'yfinance'} or empty.
+    yfinance .info — known slow (1-3s) and may return {} or None for micro-caps.
+    Returns:
+        {
+            "float": int | None,
+            "source": "yfinance",
+            "elapsed_ms": int,
+            "reason": "OK" | "NO_KEY" | "EXCEPTION" | "EMPTY_INFO"
+        }
     """
+    t0 = time.time()
     try:
         import yfinance as yf
         info = yf.Ticker(ticker).info or {}
+        elapsed_ms = int((time.time() - t0) * 1000)
+
+        if not info:
+            _log(f"{ticker}: yfinance EMPTY_INFO | {elapsed_ms}ms")
+            return {
+                "float": None,
+                "source": "yfinance",
+                "elapsed_ms": elapsed_ms,
+                "reason": "EMPTY_INFO",
+            }
+
         float_shares = info.get("floatShares")
         if float_shares and float_shares > 0:
-            _log(f"yfinance fallback OK for {ticker}: float={float_shares:,}")
-            return {"float": int(float_shares), "source": "yfinance"}
-        _log(f"yfinance fallback: no floatShares for {ticker}")
-        return {}
+            _log(f"{ticker}: yfinance OK | float={int(float_shares):,} | {elapsed_ms}ms")
+            return {
+                "float": int(float_shares),
+                "source": "yfinance",
+                "elapsed_ms": elapsed_ms,
+                "reason": "OK",
+            }
+
+        _log(f"{ticker}: yfinance NO_KEY | keys={len(info)} | {elapsed_ms}ms")
+        return {
+            "float": None,
+            "source": "yfinance",
+            "elapsed_ms": elapsed_ms,
+            "reason": "NO_KEY",
+        }
+
     except Exception as e:
-        _log(f"yfinance fallback EXCEPTION for {ticker}: {type(e).__name__}: {e}")
-        return {}
+        elapsed_ms = int((time.time() - t0) * 1000)
+        _log(f"{ticker}: yfinance EXCEPTION {type(e).__name__} | {elapsed_ms}ms")
+        return {
+            "float": None,
+            "source": "yfinance",
+            "elapsed_ms": elapsed_ms,
+            "reason": "EXCEPTION",
+        }
 
 
 def get_float_and_short(ticker: str) -> dict:
+    """
+    Unified float fetch.
+    Priority:
+      1. FMP (only if FMP_ENABLED=True)
+      2. yfinance fallback / primary
+    Returns dict with: float, short_interest, short_ratio, status, source, elapsed_ms, reason
+    """
     result = {
         "float": None,
-        "short_interest": None,
-        "short_ratio": None,
+        "short_interest": None,   # reserved; not fetched (FMP stable has no free endpoint)
+        "short_ratio": None,      # reserved
         "status": "UNAVAILABLE",
         "source": "none",
+        "elapsed_ms": 0,
+        "reason": None,
     }
 
-    if not FMP_API_KEY:
-        _log(f"{ticker}: FMP_API_KEY not set")
-        return result
+    # ================================================================
+    # 1. FMP (only if enabled + key present)
+    # ================================================================
+    if FMP_ENABLED and FMP_API_KEY:
+        float_data = _get_from_fmp("shares-float", {"symbol": ticker})
+        if float_data:
+            float_val = float_data.get("floatShares")
+            if float_val and float_val > 0:
+                result["float"] = float(float_val)
+                result["status"] = "SUCCESS_FMP"
+                result["source"] = "fmp"
+                result["reason"] = "OK"
+                _log(f"{ticker}: FMP float OK = {float_val:,.0f}")
+                return result
 
     # ================================================================
-    # 1. FMP stable: shares-float
-    #    Correct endpoint (v3 'float-shares' is dead)
+    # 2. yfinance (primary while FMP disabled)
     # ================================================================
-    float_data = _get_from_fmp("shares-float", {"symbol": ticker})
+    yf_result = _get_float_yfinance(ticker)
+    result["elapsed_ms"] = yf_result.get("elapsed_ms", 0)
+    result["reason"] = yf_result.get("reason")
 
-    if float_data:
-        float_val = float_data.get("floatShares")
-        if float_val and float_val > 0:
-            result["float"] = float(float_val)
-            result["status"] = "SUCCESS"
-            result["source"] = "fmp_float"
-            _log(f"{ticker}: FMP float OK = {float_val:,.0f}")
-        else:
-            _log(f"{ticker}: FMP returned dict but no floatShares (keys={list(float_data.keys())})")
+    if yf_result.get("float"):
+        result["float"] = yf_result["float"]
+        result["status"] = "SUCCESS_YFINANCE"
+        result["source"] = "yfinance"
     else:
-        _log(f"{ticker}: FMP shares-float returned empty")
-
-    # ================================================================
-    # 2. FMP stable: short-interest (optional, non-blocking)
-    # ================================================================
-    if result["float"] is not None:
-        short_data = _get_from_fmp("short-interest", {"symbol": ticker})
-        if short_data:
-            short_pct = short_data.get("shortPercent")
-            if short_pct is not None:
-                result["short_interest"] = float(short_pct)
-                result["short_ratio"] = float(short_data.get("shortRatio", 0))
-                result["source"] = "fmp_both"
-                _log(f"{ticker}: FMP short OK = {short_pct}%")
-
-    # ================================================================
-    # 3. Fallback: yfinance (only if FMP float missing)
-    # ================================================================
-    if result["float"] is None:
-        _log(f"{ticker}: FMP float missing → trying yfinance fallback")
-        yf_result = _get_float_yfinance(ticker)
-        if yf_result.get("float"):
-            result["float"] = yf_result["float"]
-            result["status"] = "SUCCESS_FALLBACK"
-            result["source"] = yf_result["source"]
+        result["status"] = "UNAVAILABLE"
+        result["source"] = "yfinance"
 
     return result
