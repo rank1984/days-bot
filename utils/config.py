@@ -1,13 +1,13 @@
 import os
 
 # ============================================================
-# DAYS-BOT V4.3 – CENTRAL CONFIG
+# DAYS-BOT V5.0.5.2.4 – CENTRAL CONFIG
 # ============================================================
 
-BOT_VERSION = "V4.3"
-STRATEGY_VERSION = "V4.3"
-EXPERIMENT_MODE = "V4.3_LIVE_RESEARCH"
-DATA_VERSION = "ALPACA_IEX_V43"
+BOT_VERSION = "V5.0.5.2.4"
+STRATEGY_VERSION = "V5.0.5.2.4"
+EXPERIMENT_MODE = "V5.0.5.2.4_MEASUREMENT"
+DATA_VERSION = "ALPACA_IEX_V5052"
 
 # ------------------------------------------------------------
 # API KEYS
@@ -35,6 +35,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # FMP (Financial Modeling Prep) – for Float & Short Interest
 FMP_API_KEY = os.getenv("FMP_API_KEY", "")
+
+# ------------------------------------------------------------
+# FMP PLAN GATE (V5.0.5.2.4)
+# ------------------------------------------------------------
+# Free tier: shares-float returns 402 (not in plan),
+#            quota exhausted at ~250 calls/day (429)
+# Set True only after upgrading to Starter+ plan
+# ------------------------------------------------------------
+
+FMP_ENABLED = False
 
 # ------------------------------------------------------------
 # DISCOVERY
