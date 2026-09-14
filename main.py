@@ -1,14 +1,15 @@
 """
-DAYS-BOT V5.0.5.2.2 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
+DAYS-BOT V5.0.5.2.4 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
 
 Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
 
-V5.0.5.2.2 changes:
-- _normalize_discovery_stats supports new Float diagnostics:
-  reject_float_over_20m, float_unknown (from Discovery)
-- Legacy reject_float kept for backward compat
+V5.0.5.2.4 changes:
+- _normalize_discovery_stats now passes through ALL float fields:
+  strict_passed_pre_float, float_fetches,
+  float_yfinance_ok, float_yfinance_none, float_fmp_ok, float_yfinance_avg_ms
+- These flow to Lesson/Funnel for per-source visibility
 """
 import sys
 from pathlib import Path
@@ -75,9 +76,9 @@ def _classify_trade_type(candidate):
 
 def _normalize_discovery_stats(stats):
     """
-    V5.0.5.2.2 – Normalize discovery diagnostics.
-    Handles both old (reject_float) and new (reject_float_over_20m + float_unknown)
-    diagnostics keys from Discovery.
+    V5.0.5.2.4 – Normalize discovery diagnostics.
+    Passes through ALL float-related fields including per-source counters
+    (yfinance_ok / yfinance_none / fmp_ok / avg_ms) so Lesson can display them.
     """
     if not isinstance(stats, dict):
         stats = {}
@@ -89,14 +90,14 @@ def _normalize_discovery_stats(stats):
     if not universe_value:
         universe_value = 500
 
-    # Float diagnostics: new keys, with legacy fallback
+    # Float diagnostics — new keys, with legacy fallback
     reject_float_over_20m = int(stats.get("reject_float_over_20m", 0) or 0)
     float_unknown = int(stats.get("float_unknown", 0) or 0)
     reject_float_legacy = int(stats.get("reject_float", 0) or 0)
 
     # If Discovery still reports only legacy key, use it as combined
     if reject_float_over_20m == 0 and float_unknown == 0 and reject_float_legacy > 0:
-        reject_float_over_20m = reject_float_legacy  # best-effort mapping
+        reject_float_over_20m = reject_float_legacy
 
     normalized = {
         "universe": int(universe_value or 0),
@@ -111,11 +112,18 @@ def _normalize_discovery_stats(stats):
         "reject_gap": int(stats.get("reject_gap", 0) or 0),
         "reject_volume": int(stats.get("reject_volume", 0) or 0),
         "reject_invalid": int(stats.get("reject_invalid", 0) or 0),
-        # V5.0.5.2.2 – split float diagnostics
+        # Float diagnostics (V5.0.5.2.4)
         "reject_float_over_20m": reject_float_over_20m,
         "float_unknown": float_unknown,
-        # Legacy combined (kept for backward compat)
-        "reject_float": reject_float_over_20m + float_unknown,
+        "reject_float": reject_float_over_20m + float_unknown,   # legacy combined
+        # Float funnel (V5.0.5.2.4) — was missing before
+        "strict_passed_pre_float": int(stats.get("strict_passed_pre_float", 0) or 0),
+        "float_fetches": int(stats.get("float_fetches", 0) or 0),
+        # Per-source (V5.0.5.2.4) — was missing before
+        "float_yfinance_ok": int(stats.get("float_yfinance_ok", 0) or 0),
+        "float_yfinance_none": int(stats.get("float_yfinance_none", 0) or 0),
+        "float_fmp_ok": int(stats.get("float_fmp_ok", 0) or 0),
+        "float_yfinance_avg_ms": int(stats.get("float_yfinance_avg_ms", 0) or 0),
     }
 
     print("[Main] Normalized discovery stats:")
@@ -146,7 +154,7 @@ def run_fullscan_v34(manual=False):
     now_et = datetime.now(ET)
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.5.2.2 – RESEARCH ENGINE (Hardening)")
+    print("DAYS-BOT V5.0.5.2.4 – RESEARCH ENGINE (Hardening)")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
