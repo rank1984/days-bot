@@ -1,9 +1,10 @@
 """
-DAYS-BOT V5.0.5.2 – Full Scan Engine
+DAYS-BOT V5.0.5.2.1 – Full Scan Engine
 FIXES:
 - Liquidity: SPREAD_UNKNOWN → WATCH (not reject)
 - Removed average_daily_volume check (not populated)
 - Gate counters propagated to candidate
+- V5.0.5.2.1: Float Hard Gate (<=20M) enforced locally; UNKNOWN → WATCH (not Strict)
 """
 from datetime import datetime
 from typing import List, Dict, Any
@@ -30,6 +31,9 @@ ET = pytz.timezone("America/New_York")
 
 LIQUIDITY_MAX_SPREAD_PCT = 8.0
 LIQUIDITY_MIN_PRICE = 1.0
+
+# V5.0.5.2.1 – Float Hard Gate (local, deterministic)
+FLOAT_MAX_HARD_GATE = 20_000_000
 
 
 def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
@@ -137,6 +141,42 @@ def _check_data_completeness(candidate: dict) -> dict:
     }
 
 
+def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
+                      float_gate_reason=None):
+    """
+    V5.0.5.2.1 – Uniform reject/WATCH helper.
+    Sets consistent fields so DB + Replay can identify the gate outcome.
+    """
+    c['float_gate_passed'] = (gate_name != 'FLOAT_OVER_20M' and gate_name != 'FLOAT_UNAVAILABLE')
+    c['float_gate_reason'] = float_gate_reason if float_gate_reason is not None else gate_name
+    c['qualified'] = False
+    c['trade_type'] = trade_type
+    c['plan_valid'] = False
+    c['plan_error'] = f'{gate_name}: {reason}'
+    c['composite_score'] = None
+    c['score_status'] = 'REJECTED_GATE'
+    c['data_completeness'] = {
+        'complete': False,
+        'missing': [gate_name],
+        'hard_missing': [gate_name] if trade_type == 'NO_TRADE' else [],
+        'soft_flags': [gate_name] if trade_type == 'WATCH' else [],
+        'status': trade_type,
+    }
+    c['data_status'] = trade_type
+    c['diagnostics'] = {
+        'pm': c.get('pm_data_quality'),
+        'pm_volume_status': c.get('pm_volume_status'),
+        'early': c.get('early_data_quality'),
+        'rvol': c.get('rvol_status'),
+        'catalyst': c.get('catalyst_type'),
+        'sec': c.get('sec_risk_level'),
+        'score': 'REJECTED_GATE',
+        'float_gate': gate_name,
+    }
+    c['analysis'] = analysis
+    scored.append(c)
+
+
 def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     if not candidates:
         return []
@@ -146,6 +186,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
     corp_action_rejects = 0
     liquidity_rejects = 0
+    float_rejects = 0
     passed_gates = 0
     scored = []
 
@@ -304,6 +345,51 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['float'] = c['float']
         analysis['short_interest'] = c['short_interest']
 
+        # ================================================================
+        # GATE 3 (V5.0.5.2.1): FLOAT HARD GATE
+        #   known > 20M          → NO_TRADE  (skip scoring)
+        #   known <= 20M         → PASS
+        #   unknown              → WATCH     (skip scoring, NOT Strict)
+        # ================================================================
+        raw_float = c.get('float')
+        float_num = None
+        if raw_float is not None:
+            try:
+                float_num = float(raw_float)
+            except (TypeError, ValueError):
+                float_num = None
+
+        if float_num is None:
+            float_rejects += 1
+            print(f"[FullScan] ⚠️ {ticker} | Float: FLOAT_UNAVAILABLE | WATCH (not Strict)")
+            _reject_candidate(
+                c, scored, analysis,
+                gate_name='FLOAT_UNAVAILABLE',
+                trade_type='WATCH',
+                reason='FLOAT_UNAVAILABLE',
+                float_gate_reason='FLOAT_UNAVAILABLE',
+            )
+            continue
+        elif float_num > FLOAT_MAX_HARD_GATE:
+            float_rejects += 1
+            reason = f"FLOAT_OVER_20M ({float_num:,.0f})"
+            print(f"[FullScan] ❌ {ticker} | Float: {reason} | NO_TRADE")
+            _reject_candidate(
+                c, scored, analysis,
+                gate_name='FLOAT_OVER_20M',
+                trade_type='NO_TRADE',
+                reason=reason,
+                float_gate_reason=reason,
+            )
+            continue
+        else:
+            c['float_gate_passed'] = True
+            c['float_gate_reason'] = 'PASS'
+            c['qualified'] = True
+            analysis['float_gate'] = {'passed': True, 'reason': 'PASS'}
+
+        # ===== END FLOAT HARD GATE =====
+
         personality = _safe_call(get_stock_personality,
             {"personality": "UNKNOWN", "failure_rate": 0, "sample_size": 0},
             ticker, c.get('gap_pct', 0), expected_type=dict, name=f"personality:{ticker}")
@@ -364,6 +450,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             'catalyst': c.get('catalyst_type'),
             'sec': c.get('sec_risk_level'),
             'score': c.get('score_status'),
+            'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
         }
 
         c['analysis'] = analysis
@@ -376,7 +463,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     print(f"  Total analyzed:                {total_to_analyze}")
     print(f"  Corporate Action rejects:      {corp_action_rejects}")
     print(f"  Liquidity rejects:             {liquidity_rejects}")
-    print(f"  Passed Gates (Scored):         {passed_gates}")
+    print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
+    print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
     print(f"  Top 5 returned:                {min(5, len(scored))}")
     print("=" * 74)
 
@@ -384,6 +472,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     gate_summary = {
         "corp_action_rejects": corp_action_rejects,
         "liquidity_rejects": liquidity_rejects,
+        "float_rejects": float_rejects,
     }
     for c in scored:
         c['_gate_summary'] = gate_summary
