@@ -1,19 +1,11 @@
 """
 DAYS-BOT V5.0.6-prep – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
 
-Intraday + Swing 1–3D
-Manual execution only.
-No automatic orders.
-
 V5.0.6-prep changes:
-- Added snapshot_schema integration (V5.0.6 Measurement Engine)
-- Save T0 immutable snapshot for EVERY Strict Candidate in EVERY scan
+- FIX: save_snapshot now runs on top5 candidates INSIDE the loop
+  (before fix: ran on `candidates` list, which may contain stale/event_score)
+- Save T0 immutable snapshot for EVERY Strict Candidate
 - scan_id format: YYYY-MM-DD_HHMM (ET)
-- No changes to gates, scores, or trade logic
-
-Previous (V5.0.5.2.6):
-- _normalize_discovery_stats passes through all float fields
-- Diagnostics removed (bug fixed: DB == RAW JSON verified)
 """
 import sys
 from pathlib import Path
@@ -80,11 +72,6 @@ def _classify_trade_type(candidate):
 
 
 def _normalize_discovery_stats(stats):
-    """
-    V5.0.5.2.4 – Normalize discovery diagnostics.
-    Passes through ALL float-related fields including per-source counters
-    (yfinance_ok / yfinance_none / fmp_ok / avg_ms) so Lesson can display them.
-    """
     if not isinstance(stats, dict):
         stats = {}
 
@@ -151,10 +138,10 @@ def _run_replay_integrity_check(replay_count, strict_count):
 
 def run_fullscan_v34(manual=False):
     init_db()
-    init_snapshot_schema()  # V5.0.6-prep: ensure snapshot tables exist
+    init_snapshot_schema()
     now_et = datetime.now(ET)
     scan_date = now_et.strftime("%Y-%m-%d")
-    scan_id = now_et.strftime("%Y-%m-%d_%H%M")  # V5.0.6-prep: unique per scan
+    scan_id = now_et.strftime("%Y-%m-%d_%H%M")
 
     print("\n" + "=" * 74)
     print("DAYS-BOT V5.0.6-prep – RESEARCH ENGINE (Snapshot Schema)")
@@ -183,14 +170,6 @@ def run_fullscan_v34(manual=False):
         return
 
     print(f"[Main] ✅ Discovery returned {len(candidates)} candidates")
-    print(
-        f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | "
-        f"snapshots={discovery_stats['snapshots_received']} | "
-        f"strict={discovery_stats['strict_candidates']} | "
-        f"fallback={discovery_stats['fallback_candidates']} | "
-        f"float_over_20m={discovery_stats['reject_float_over_20m']} | "
-        f"float_unknown={discovery_stats['float_unknown']}"
-    )
 
     # FULL ANALYSIS
     print("[Main] Running full analysis on ALL strict candidates...")
@@ -219,8 +198,15 @@ def run_fullscan_v34(manual=False):
 
     print(f"[Main] Replay snapshots saved: {replay_saved} (failed: {replay_failed})")
 
-    # SWING ANALYSIS FOR TOP 5
-    print("[Main] Running swing analysis for Top 5...")
+    # ================================================================
+    # V5.0.6-prep FIX: Save snapshots + alerts for top5 INSIDE the loop
+    # (so we get the SAME candidate dict with correct composite_score)
+    # ================================================================
+    print("[Main] Running swing analysis for Top 5 + saving snapshots...")
+    snapshot_saved = 0
+    snapshot_failed = 0
+    saved_tickers = set()
+
     for idx, candidate in enumerate(top5):
         analysis = candidate.get('analysis', {})
         swing = _safe_swing(candidate, analysis)
@@ -230,30 +216,39 @@ def run_fullscan_v34(manual=False):
         candidate["swing_data"] = swing
         candidate["trade_type"] = _classify_trade_type(candidate)
 
+        # Save alert
         try:
             save_alert(**candidate)
             print(f"[Main] DB saved: {candidate.get('ticker')}")
         except Exception as e:
             print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
-    # ================================================================
-    # V5.0.6-prep: Save T0 snapshots for ALL Strict Candidates
-    # (not just Top 5) — every candidate gets an immutable record.
-    # ================================================================
-    print("[Main] Saving V5.0.6 T0 snapshots for ALL strict candidates...")
-    snapshot_saved = 0
-    snapshot_failed = 0
-
-    for candidate in candidates:
+        # V5.0.6 FIX: save snapshot for THIS candidate (same dict, correct score)
         try:
             sid = save_snapshot(candidate, scan_id, now_et)
             if sid is not None:
                 snapshot_saved += 1
-            else:
-                snapshot_failed += 1
+                saved_tickers.add(candidate.get("ticker"))
         except Exception as e:
             snapshot_failed += 1
             print(f"[Main] ⚠️ Snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+
+    # ================================================================
+    # V5.0.6: Save snapshots for remaining strict candidates (not in top5)
+    # ================================================================
+    print("[Main] Saving snapshots for remaining strict candidates...")
+    for candidate in candidates:
+        ticker = candidate.get("ticker")
+        if ticker in saved_tickers:
+            continue
+        try:
+            sid = save_snapshot(candidate, scan_id, now_et)
+            if sid is not None:
+                snapshot_saved += 1
+                saved_tickers.add(ticker)
+        except Exception as e:
+            snapshot_failed += 1
+            print(f"[Main] ⚠️ Snapshot error {ticker}: {type(e).__name__}: {e}")
 
     print(f"[Main] V5.0.6 snapshots saved: {snapshot_saved} (failed/skipped: {snapshot_failed})")
 
