@@ -1,89 +1,49 @@
-name: DAYS-BOT V5.0.5.1 Trading Scanner
+name: DAYS-BOT V5.0.5.2 Trading Scanner
 
 on:
   schedule:
-    # ============================================================
-    # 10 runs during Premarket window (04:00-09:30 ET)
-    # ============================================================
-    # IMPORTANT: GitHub Actions cron is in UTC.
-    # During EDT (summer): ET = UTC - 4
-    # During EST (winter): ET = UTC - 5
-    # These crons are calibrated for EDT (summer).
-    # In winter, adjust by +1 hour UTC if precision matters.
-    # ============================================================
-    #
-    # 05:00 ET → 09:00 UTC
-    - cron: "0 9 * * 1-5"
-    #
-    # 06:00 ET → 10:00 UTC
-    - cron: "0 10 * * 1-5"
-    #
-    # 07:00 ET → 11:00 UTC
-    - cron: "0 11 * * 1-5"
-    #
-    # 07:30 ET → 11:30 UTC
-    - cron: "30 11 * * 1-5"
-    #
-    # 08:00 ET → 12:00 UTC
-    - cron: "0 12 * * 1-5"
-    #
-    # 08:15 ET → 12:15 UTC
-    - cron: "15 12 * * 1-5"
-    #
-    # 08:30 ET → 12:30 UTC
-    - cron: "30 12 * * 1-5"
-    #
-    # 08:45 ET → 12:45 UTC
-    - cron: "45 12 * * 1-5"
-    #
-    # 09:00 ET → 13:00 UTC
-    - cron: "0 13 * * 1-5"
-    #
-    # 09:15 ET → 13:15 UTC
-    - cron: "15 13 * * 1-5"
+    # 10 runs during Premarket (EDT)
+    - cron: "0 9 * * 1-5"     # 05:00 ET
+    - cron: "0 10 * * 1-5"    # 06:00 ET
+    - cron: "0 11 * * 1-5"    # 07:00 ET
+    - cron: "30 11 * * 1-5"   # 07:30 ET
+    - cron: "0 12 * * 1-5"    # 08:00 ET
+    - cron: "15 12 * * 1-5"   # 08:15 ET
+    - cron: "30 12 * * 1-5"   # 08:30 ET
+    - cron: "45 12 * * 1-5"   # 08:45 ET
+    - cron: "0 13 * * 1-5"    # 09:00 ET
+    - cron: "15 13 * * 1-5"   # 09:15 ET
 
-  # Manual trigger from GitHub UI
   workflow_dispatch:
 
-  # Push trigger keeps workflow "alive" (prevents 60-day auto-disable)
   push:
     branches:
       - main
       - master
 
-# Prevent overlapping runs (if one is still running when next fires)
 concurrency:
   group: days-bot-scan
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
 
     steps:
-      # ----------------------------------------------------------
-      # CHECKOUT
-      # ----------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ----------------------------------------------------------
-      # PYTHON SETUP
-      # ----------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # ----------------------------------------------------------
-      # RUNTIME INFO (for debugging)
-      # ----------------------------------------------------------
       - name: Show runtime information
         run: |
           echo "=============================================="
-          echo "DAYS-BOT V5.0.5.1"
+          echo "DAYS-BOT V5.0.5.2"
           echo "Research Scanner"
           echo "=============================================="
           echo "UTC time:  $(date -u)"
@@ -93,28 +53,19 @@ jobs:
           echo "Run #:     ${{ github.run_number }}"
           echo "=============================================="
 
-      # ----------------------------------------------------------
-      # DEPENDENCIES
-      # ----------------------------------------------------------
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ----------------------------------------------------------
-      # DATA DIRECTORY
-      # ----------------------------------------------------------
-      - name: Create Data Directory
+      - name: Create Data Directories
         run: |
           mkdir -p data
           mkdir -p data/logs
           mkdir -p data/replay
           mkdir -p data/learning
 
-      # ----------------------------------------------------------
-      # RUN SCANNER
-      # ----------------------------------------------------------
-      - name: Run DAYS-BOT V5.0.5.1
+      - name: Run DAYS-BOT V5.0.5.2
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -132,18 +83,14 @@ jobs:
             python main.py fullscan_v34
           fi
 
-      # ----------------------------------------------------------
-      # UPLOAD ARTIFACTS (DB + Replay + Logs)
-      # ----------------------------------------------------------
-      - name: Upload Database & Replay Artifacts
+      - name: Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: days-bot-v5051-${{ github.run_number }}
+          name: days-bot-v5052-${{ github.run_number }}
           path: |
             data/alerts.db
             data/replay/
             data/learning/
-            data/logs/
           if-no-files-found: warn
           retention-days: 30
