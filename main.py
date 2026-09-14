@@ -1,14 +1,19 @@
 """
-DAYS-BOT V5.0.5.2.6 – RESEARCH ENGINE WITH LEARNING + REPLAY INTEGRITY
+DAYS-BOT V5.0.6-prep – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
 
 Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
 
-V5.0.5.2.6 FINAL:
-- Diagnostics removed (bug fixed in #545: DB == RAW JSON, 5/5 MATCH)
+V5.0.6-prep changes:
+- Added snapshot_schema integration (V5.0.6 Measurement Engine)
+- Save T0 immutable snapshot for EVERY Strict Candidate in EVERY scan
+- scan_id format: YYYY-MM-DD_HHMM (ET)
+- No changes to gates, scores, or trade logic
+
+Previous (V5.0.5.2.6):
 - _normalize_discovery_stats passes through all float fields
-- Ready for FREEZE data collection
+- Diagnostics removed (bug fixed: DB == RAW JSON verified)
 """
 import sys
 from pathlib import Path
@@ -25,6 +30,7 @@ from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 from scanner.full_scan_v34 import full_scan_v34
 from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
+from database.snapshot_schema import init_snapshot_schema, save_snapshot
 from telegram_v3 import send_message, format_research_report
 from telegram_v3 import format_lesson_for_telegram
 
@@ -145,12 +151,14 @@ def _run_replay_integrity_check(replay_count, strict_count):
 
 def run_fullscan_v34(manual=False):
     init_db()
+    init_snapshot_schema()  # V5.0.6-prep: ensure snapshot tables exist
     now_et = datetime.now(ET)
     scan_date = now_et.strftime("%Y-%m-%d")
+    scan_id = now_et.strftime("%Y-%m-%d_%H%M")  # V5.0.6-prep: unique per scan
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.5.2.6 – RESEARCH ENGINE (Hardening)")
-    print(f"Date: {scan_date} | Mode: {'MANUAL' if manual else 'LIVE'}")
+    print("DAYS-BOT V5.0.6-prep – RESEARCH ENGINE (Snapshot Schema)")
+    print(f"Date: {scan_date} | Scan ID: {scan_id} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
     # DISCOVERY
@@ -228,6 +236,27 @@ def run_fullscan_v34(manual=False):
         except Exception as e:
             print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
+    # ================================================================
+    # V5.0.6-prep: Save T0 snapshots for ALL Strict Candidates
+    # (not just Top 5) — every candidate gets an immutable record.
+    # ================================================================
+    print("[Main] Saving V5.0.6 T0 snapshots for ALL strict candidates...")
+    snapshot_saved = 0
+    snapshot_failed = 0
+
+    for candidate in candidates:
+        try:
+            sid = save_snapshot(candidate, scan_id, now_et)
+            if sid is not None:
+                snapshot_saved += 1
+            else:
+                snapshot_failed += 1
+        except Exception as e:
+            snapshot_failed += 1
+            print(f"[Main] ⚠️ Snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+
+    print(f"[Main] V5.0.6 snapshots saved: {snapshot_saved} (failed/skipped: {snapshot_failed})")
+
     # REPLAY INTEGRITY CHECK
     strict_count = discovery_stats.get("strict_candidates", 0)
     integrity_ok = _run_replay_integrity_check(replay_saved, strict_count)
@@ -270,6 +299,7 @@ def run_fullscan_v34(manual=False):
     print(f"  Strict candidates:         {discovery_stats['strict_candidates']}")
     print(f"  Analyzed (FullScan):       {len(candidates)}")
     print(f"  In Top 5:                  {len(top5)}")
+    print(f"  V5.0.6 Snapshots saved:    {snapshot_saved}")
     print("=" * 74)
 
     # TOP 5 SUMMARY
@@ -299,6 +329,7 @@ def run_fullscan_v34(manual=False):
     print(f"Valid snapshots:      {discovery_stats['snapshots_received']}")
     print(f"Strict candidates:    {strict_count}")
     print(f"Replay records:       {replay_saved}")
+    print(f"V5.0.6 snapshots:     {snapshot_saved}")
     print(f"Top 5:                {len(top5)}")
     print()
     print(f"Replay integrity:     {'✅ PASS' if integrity_ok else '❌ FAIL'}")
