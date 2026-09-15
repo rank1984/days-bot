@@ -12,12 +12,9 @@ on:
       - 'risk/**'
       - 'utils/**'
       - 'main.py'
-      - 'evaluate_snapshots.py'
       - 'requirements.txt'
   schedule:
-    # 10 runs during premarket (times in UTC)
-    # 05:00, 05:30, 06:00, 06:30, 07:00, 07:30, 08:00, 08:30, 09:00, 09:15 ET
-    # ET = UTC-4 (EDT) → UTC = ET + 4
+    # 10 runs during premarket ET (UTC = ET + 4 during EDT)
     - cron: '0 9 * * 1-5'    # 05:00 ET
     - cron: '30 9 * * 1-5'   # 05:30 ET
     - cron: '0 10 * * 1-5'   # 06:00 ET
@@ -35,38 +32,23 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ============================================================
-      # 1. Checkout
-      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 2. Python setup
-      # ============================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ============================================================
-      # 3. Install dependencies
-      # ============================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ============================================================
-      # 4. Prepare data directory
-      # ============================================================
       - name: Prepare data directory
         run: mkdir -p data
 
-      # ============================================================
-      # 5. Run scanner
-      # ============================================================
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -78,264 +60,134 @@ jobs:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "[Workflow] Manual execution"
             python main.py fullscan_v34 --manual
           else
-            echo "[Workflow] Scheduled execution"
             python main.py fullscan_v34
           fi
 
-      # ============================================================
-      # 6. DB Integrity Check (V5.0.5.2.6)
-      # ============================================================
       - name: DB Integrity Check
         if: always()
         run: |
           python3 << 'PYEOF'
-          import sqlite3
-          import json
-          import sys
-          import os
-
+          import sqlite3, json, sys, os
           db_path = 'data/alerts.db'
           if not os.path.exists(db_path):
               print(f"DB not found at {db_path}")
               sys.exit(1)
-
           conn = sqlite3.connect(db_path)
           conn.row_factory = sqlite3.Row
           cur = conn.cursor()
-
           print()
           print("=" * 74)
           print("DB INTEGRITY CHECK (V5.0.5.2.6)")
           print("=" * 74)
-
-          cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1")
-          row = cur.fetchone()
-          if not row:
-              print("  No rows in alerts table - skipping integrity check")
-              print("=" * 74)
-              sys.exit(0)
-
-          latest_scan_date = row["scan_date"]
-          print(f"  Checking scan_date = {latest_scan_date}")
-
-          mismatches = 0
-          checked = 0
-          missing_raw = 0
-          null_db = 0
-
-          print()
-          print(f"  {'ticker':8s} | {'DB_comp':>8s} | {'RAW_comp':>9s} | "
-                f"{'DB_swing':>8s} | {'RAW_swing':>9s} | {'MATCH':>7s}")
-          print("  " + "-" * 72)
-
-          for r in cur.execute(
-              """SELECT ticker, composite_score, swing_score, raw_candidate_json
-                 FROM alerts WHERE scan_date = ?
-                 ORDER BY id DESC""",
-              (latest_scan_date,)
-          ):
-              ticker = r["ticker"]
-              db_c = r["composite_score"]
-              db_s = r["swing_score"]
-              raw_json = r["raw_candidate_json"]
-
-              checked += 1
-
-              if not raw_json:
-                  missing_raw += 1
-                  print(f"  {ticker:8s} | {str(db_c):>8s} | {'<no-raw>':>9s} | "
-                        f"{str(db_s):>8s} | {'<no-raw>':>9s} | {'SKIP':>7s}")
-                  continue
-
-              try:
-                  raw = json.loads(raw_json)
-              except Exception as e:
-                  print(f"  {ticker:8s} | JSON PARSE ERROR: {e}")
-                  mismatches += 1
-                  continue
-
-              raw_c = raw.get("composite_score")
-              raw_s = raw.get("swing_score")
-
-              if db_c is None:
-                  null_db += 1
-
-              comp_match = "?"
-              if db_c is not None and raw_c is not None:
-                  if abs(float(db_c) - float(raw_c)) < 0.01:
-                      comp_match = "OK"
-                  else:
-                      comp_match = "MISMATCH"
-                      mismatches += 1
-              elif db_c is None and raw_c is None:
-                  comp_match = "both-null"
-
-              print(f"  {ticker:8s} | {str(db_c):>8s} | {str(raw_c):>9s} | "
-                    f"{str(db_s):>8s} | {str(raw_s):>9s} | {comp_match:>7s}")
-
-          print("  " + "-" * 72)
-          print(f"  Rows checked:      {checked}")
-          print(f"  Missing RAW JSON:  {missing_raw}")
-          print(f"  NULL DB value:     {null_db}")
-          print(f"  MISMATCHES:        {mismatches}")
-          print("=" * 74)
-
-          if mismatches > 0:
-              print()
-              print(f"FAIL: {mismatches} composite_score mismatch(es) detected")
-              print("   DB column does NOT match RAW JSON.")
-              print("   Do NOT trust this run's data - investigate before proceeding.")
-              sys.exit(1)
-
-          print()
-          print("PASS: All DB composite_score values match RAW JSON")
-          sys.exit(0)
-          PYEOF
-
-      # ============================================================
-      # 7. V5.0.6 Snapshots - verify pm_bars_json
-      # ============================================================
-      - name: Verify PM bars JSON
-        if: always()
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3
-          import json
-          import os
-          import sys
-
-          db_path = 'data/alerts.db'
-          if not os.path.exists(db_path):
-              print("DB not found - skipping")
-              sys.exit(0)
-
-          conn = sqlite3.connect(db_path)
-          conn.row_factory = sqlite3.Row
-          cur = conn.cursor()
-
-          print()
-          print("=" * 74)
-          print("PM BARS JSON VERIFICATION (V5.0.5.2.6)")
-          print("=" * 74)
-
           cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1")
           row = cur.fetchone()
           if not row:
               print("  No rows - skipping")
               sys.exit(0)
-
-          scan_date = row["scan_date"]
-          print(f"  Checking scan_date = {scan_date}")
+          latest_scan_date = row["scan_date"]
+          print(f"  Checking scan_date = {latest_scan_date}")
+          mismatches = 0
+          checked = 0
           print()
+          print(f"  {'ticker':8s} | {'DB_comp':>8s} | {'RAW_comp':>9s} | {'MATCH':>7s}")
+          print("  " + "-" * 50)
+          for r in cur.execute(
+              """SELECT ticker, composite_score, raw_candidate_json
+                 FROM alerts WHERE scan_date = ? ORDER BY id DESC""",
+              (latest_scan_date,)
+          ):
+              ticker = r["ticker"]
+              db_c = r["composite_score"]
+              raw_json = r["raw_candidate_json"]
+              checked += 1
+              if not raw_json:
+                  print(f"  {ticker:8s} | {str(db_c):>8s} | {'<no-raw>':>9s} | {'SKIP':>7s}")
+                  continue
+              try:
+                  raw = json.loads(raw_json)
+              except Exception:
+                  mismatches += 1
+                  continue
+              raw_c = raw.get("composite_score")
+              match = "?"
+              if db_c is not None and raw_c is not None:
+                  match = "OK" if abs(float(db_c) - float(raw_c)) < 0.01 else "MISMATCH"
+                  if match == "MISMATCH": mismatches += 1
+              elif db_c is None and raw_c is None:
+                  match = "both-null"
+              print(f"  {ticker:8s} | {str(db_c):>8s} | {str(raw_c):>9s} | {match:>7s}")
+          print("  " + "-" * 50)
+          print(f"  Rows checked: {checked} | MISMATCHES: {mismatches}")
+          print("=" * 74)
+          if mismatches > 0:
+              print(f"FAIL: {mismatches} mismatch(es)")
+              sys.exit(1)
+          print("PASS: All DB composite_score values match RAW JSON")
+          PYEOF
 
+      - name: Verify PM bars JSON
+        if: always()
+        run: |
+          python3 << 'PYEOF'
+          import sqlite3, json, os, sys
+          db_path = 'data/alerts.db'
+          if not os.path.exists(db_path): sys.exit(0)
+          conn = sqlite3.connect(db_path)
+          conn.row_factory = sqlite3.Row
+          cur = conn.cursor()
+          cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1")
+          row = cur.fetchone()
+          if not row: sys.exit(0)
+          scan_date = row["scan_date"]
+          print()
+          print("=" * 74)
+          print(f"PM BARS JSON VERIFICATION — {scan_date}")
+          print("=" * 74)
           mismatch = 0
           for r in cur.execute(
-              """SELECT ticker, pm_bars, pm_bars_json
-                 FROM alerts WHERE scan_date = ?
-                 ORDER BY id DESC""",
+              """SELECT ticker, pm_bars, pm_bars_json FROM alerts
+                 WHERE scan_date = ? ORDER BY id DESC""",
               (scan_date,)
           ):
               ticker = r["ticker"]
               pm_bars = r["pm_bars"] or 0
               raw = r["pm_bars_json"]
-
-              if raw is None:
-                  json_count = 0
+              if raw is None: json_count = 0
               else:
-                  try:
-                      json_count = len(json.loads(raw))
-                  except Exception:
-                      json_count = -1
-
+                  try: json_count = len(json.loads(raw))
+                  except: json_count = -1
               status = "OK" if pm_bars == json_count else "MISMATCH"
-              if status == "MISMATCH":
-                  mismatch += 1
-
-              print(f"  {ticker:8s} | pm_bars={pm_bars:>3} | json_count={json_count:>3} | {status}")
-
-          print()
-          if mismatch > 0:
-              print(f"  WARNING: {mismatch} mismatch(es) in pm_bars_json")
-          else:
-              print("  All pm_bars counts match JSON array lengths")
+              if status == "MISMATCH": mismatch += 1
+              print(f"  {ticker:8s} | pm_bars={pm_bars:>3} | json={json_count:>3} | {status}")
           print("=" * 74)
           PYEOF
 
-      # ============================================================
-      # 8. V5.0.6 Schema Verification
-      # ============================================================
       - name: Verify V5.0.6 Schema
         if: always()
         run: |
           python3 << 'PYEOF'
-          import sqlite3
-          import os
-          import sys
-
+          import sqlite3, os, sys
           db_path = 'data/alerts.db'
-          if not os.path.exists(db_path):
-              print("DB not found - skipping")
-              sys.exit(0)
-
+          if not os.path.exists(db_path): sys.exit(0)
           conn = sqlite3.connect(db_path)
           cur = conn.cursor()
-
           print()
-          print("=" * 74)
           print("V5.0.6 SCHEMA VERIFICATION")
           print("=" * 74)
-
-          checks = [
-              ("snapshots", "pm_bars_json"),
-              ("trigger_results", "trigger_data_mode"),
-              ("outcomes", "trigger_result_id"),
-          ]
-
-          all_ok = True
-          for table, col in checks:
-              try:
-                  cur.execute(f"PRAGMA table_info({table})")
-                  cols = {row[1] for row in cur.fetchall()}
-                  ok = col in cols
-                  all_ok = all_ok and ok
-                  print(f"  {table:20s}.{col:25s} : {'present' if ok else 'MISSING'}")
-              except Exception as e:
-                  print(f"  {table:20s}.{col:25s} : ERROR ({e})")
-                  all_ok = False
-
-          print()
+          for table, col in [("snapshots","pm_bars_json"),
+                              ("trigger_results","trigger_data_mode"),
+                              ("outcomes","trigger_result_id")]:
+              cur.execute(f"PRAGMA table_info({table})")
+              cols = {row[1] for row in cur.fetchall()}
+              print(f"  {table:20s}.{col:25s} : {'present' if col in cols else 'MISSING'}")
           for table in ("snapshots", "trigger_results", "outcomes"):
-              try:
-                  n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                  print(f"  {table:20s} rows: {n}")
-              except Exception as e:
-                  print(f"  {table:20s} rows: ERROR ({e})")
-
+              n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+              print(f"  {table:20s} rows: {n}")
           print("=" * 74)
-          print(f"  Result: {'ALL COLUMNS PRESENT' if all_ok else 'SCHEMA INCOMPLETE'}")
-          print("=" * 74)
-
-          conn.close()
           PYEOF
 
-      # ============================================================
-      # 9. V5.0.6 Snapshot Evaluator — DRY RUN
-      #    ⚠️ TEMPORARY: no DB writes. Remove --dry-run after review.
-      # ============================================================
-      - name: Evaluate snapshots (V5.0.6) — DRY RUN
-        if: always()
-        run: |
-          echo "==================================================="
-          echo "V5.0.6 EVALUATOR — DRY RUN (no DB writes)"
-          echo "==================================================="
-          python evaluate_snapshots.py --dry-run || echo "Evaluator failed (exit $?)"
-
-      # ============================================================
-      # 10. Upload artifact
-      # ============================================================
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
