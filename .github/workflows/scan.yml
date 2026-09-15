@@ -2,28 +2,21 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - 'scanner/**'
-      - 'learning/**'
-      - 'database/**'
-      - 'risk/**'
-      - 'utils/**'
-      - 'main.py'
-      - 'requirements.txt'
+
+  # ============================================================
+  # 10 premarket runs — EDT (UTC-4)
+  # ============================================================
   schedule:
-    # 10 runs premarket — UTC = ET+4 (EDT) / ET+5 (EST)
-    - cron: '0 9 * * 1-5'    # 05:00 ET
-    - cron: '30 9 * * 1-5'   # 05:30 ET
-    - cron: '0 10 * * 1-5'   # 06:00 ET
-    - cron: '30 10 * * 1-5'  # 06:30 ET
-    - cron: '0 11 * * 1-5'   # 07:00 ET
-    - cron: '30 11 * * 1-5'  # 07:30 ET
-    - cron: '0 12 * * 1-5'   # 08:00 ET
-    - cron: '30 12 * * 1-5'  # 08:30 ET
-    - cron: '0 13 * * 1-5'   # 09:00 ET
-    - cron: '15 13 * * 1-5'  # 09:15 ET
+    - cron: '7 9 * * 1-5'     # 05:07 ET
+    - cron: '37 9 * * 1-5'    # 05:37 ET
+    - cron: '7 10 * * 1-5'    # 06:07 ET
+    - cron: '37 10 * * 1-5'   # 06:37 ET
+    - cron: '7 11 * * 1-5'    # 07:07 ET
+    - cron: '37 11 * * 1-5'   # 07:37 ET
+    - cron: '7 12 * * 1-5'    # 08:07 ET
+    - cron: '37 12 * * 1-5'   # 08:37 ET
+    - cron: '7 13 * * 1-5'    # 09:07 ET
+    - cron: '17 13 * * 1-5'   # 09:17 ET
 
 permissions:
   contents: read
@@ -68,7 +61,6 @@ jobs:
           echo "today=$TODAY" >> $GITHUB_OUTPUT
           echo "Scan date: $TODAY"
 
-          # Find most recent successful scan run before current
           PREV_RUN=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=30&status=success" \
@@ -81,7 +73,6 @@ jobs:
           fi
           echo "[restore] Previous run: $PREV_RUN"
 
-          # Verify it's from today (UTC comparison is close enough)
           PREV_DATE=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN" \
@@ -95,7 +86,6 @@ jobs:
             exit 0
           fi
 
-          # Get artifact name
           ARTIFACT_NAME=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts" \
@@ -135,9 +125,6 @@ jobs:
           fi
           ls -la data/
 
-      # ============================================================
-      # Run scanner (appends to restored DB)
-      # ============================================================
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -154,9 +141,6 @@ jobs:
             python main.py fullscan_v34
           fi
 
-      # ============================================================
-      # DB Integrity
-      # ============================================================
       - name: DB Integrity Check
         if: always()
         run: |
@@ -252,9 +236,6 @@ jobs:
           print("=" * 74)
           PYEOF
 
-      # ============================================================
-      # Upload artifact with date+run scoping
-      # ============================================================
       - name: Upload daily artifact
         if: always()
         uses: actions/upload-artifact@v4
