@@ -1,8 +1,14 @@
 """
-DAYS-BOT V5.0.4 – Premarket Engine (Alpaca IEX + yfinance Fallback)
+DAYS-BOT V5.0.5.2.6 – Premarket Engine (Alpaca IEX + yfinance Fallback)
 Fetches real 1-minute premarket bars.
 If Alpaca IEX fails / returns empty → falls back to yfinance (prepost=True).
+
+V5.0.5.2.6 changes:
+- Added `pm_bars_list` to output (Live Capture — saves raw PM bars)
+- Minimal bar format: {t, o, h, l, c, v}
+- No changes to existing PM calculation (pm_high, pm_vwap, etc.)
 """
+import json
 import pytz
 import requests
 from datetime import datetime, timedelta, time
@@ -24,6 +30,37 @@ def _headers() -> dict:
         "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
         "Accept": "application/json",
     }
+
+
+def _build_bars_list(df: pd.DataFrame) -> list:
+    """
+    V5.0.5.2.6 – Live Capture
+    Build minimal bar list: {t, o, h, l, c, v}
+    Handles both Alpaca (index from column 't') and yfinance (DatetimeIndex).
+    """
+    bars = []
+    has_open = "open" in df.columns
+    for idx, row in df.iterrows():
+        # Timestamp resolution
+        ts = None
+        if "t" in row and row["t"] is not None:
+            # Alpaca path — we injected 't' column
+            try:
+                ts = pd.Timestamp(row["t"])
+            except Exception:
+                ts = None
+        if ts is None and isinstance(idx, pd.Timestamp):
+            ts = idx
+
+        bars.append({
+            "t": ts.isoformat() if ts is not None else None,
+            "o": round(float(row["open"]), 4) if has_open else None,
+            "h": round(float(row["high"]), 4),
+            "l": round(float(row["low"]), 4),
+            "c": round(float(row["close"]), 4),
+            "v": int(row["volume"]),
+        })
+    return bars
 
 
 def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
@@ -53,6 +90,9 @@ def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     total_volume = df["volume"].sum()
     pm_vwap = float(total_value / total_volume) if total_volume > 0 else float(df["close"].iloc[-1])
 
+    # V5.0.5.2.6 – Live Capture: build raw bars list
+    pm_bars_list = _build_bars_list(df)
+
     return {
         "pm_high": round(pm_high, 4),
         "pm_low": round(pm_low, 4),
@@ -61,6 +101,7 @@ def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         "pm_bars_count": pm_bars_count,
         "pm_data_quality": "GOOD_DATA" if pm_bars_count >= 10 else "LOW_DATA",
         "pm_last": round(float(df["close"].iloc[-1]), 4),
+        "pm_bars_list": pm_bars_list,   # V5.0.5.2.6
     }
 
 
@@ -135,7 +176,7 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[
     # ---------- 1. Try Alpaca ----------
     if ALPACA_API_KEY and ALPACA_SECRET_KEY:
         try:
-            start = now_et - timedelta(days=3)  # מספיק 3 ימים
+            start = now_et - timedelta(days=3)
 
             response = requests.get(
                 BARS_URL,
@@ -178,13 +219,19 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[
                     print(f"[PM] {ticker} - PM bars (04:00-09:30, today): {len(pm_bars)}")
 
                     if pm_bars:
-                        # Convert to DataFrame for unified calculation
-                        df = pd.DataFrame([{
-                            "high": float(b["h"]),
-                            "low": float(b["l"]),
-                            "close": float(b["c"]),
-                            "volume": int(b["v"]),
-                        } for b in pm_bars])
+                        # V5.0.5.2.6 – include 't' for bar list + 'open'
+                        records = []
+                        for b in pm_bars:
+                            ts = datetime.fromisoformat(b["t"].replace("Z", "+00:00"))
+                            records.append({
+                                "t": pd.Timestamp(ts).tz_convert(ET),
+                                "open": float(b["o"]),
+                                "high": float(b["h"]),
+                                "low": float(b["l"]),
+                                "close": float(b["c"]),
+                                "volume": int(b["v"]),
+                            })
+                        df = pd.DataFrame(records)
 
                         metrics = _calculate_pm_metrics(df)
                         if metrics:
@@ -212,6 +259,7 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[
         "pm_bars_count": 0,
         "pm_data_quality": "NO_DATA",
         "pm_last": None,
+        "pm_bars_list": [],
         "source": "none",
         "error": "No PM data from Alpaca or yfinance",
     }
