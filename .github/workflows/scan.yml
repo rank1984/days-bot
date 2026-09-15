@@ -3,8 +3,7 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - 'scanner/**'
       - 'learning/**'
@@ -14,7 +13,7 @@ on:
       - 'main.py'
       - 'requirements.txt'
   schedule:
-    # 10 runs during premarket ET (UTC = ET + 4 during EDT)
+    # 10 runs premarket — UTC = ET+4 (EDT) / ET+5 (EST)
     - cron: '0 9 * * 1-5'    # 05:00 ET
     - cron: '30 9 * * 1-5'   # 05:30 ET
     - cron: '0 10 * * 1-5'   # 06:00 ET
@@ -26,13 +25,21 @@ on:
     - cron: '0 13 * * 1-5'   # 09:00 ET
     - cron: '15 13 * * 1-5'  # 09:15 ET
 
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: days-bot-scan
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python 3.11
@@ -49,6 +56,88 @@ jobs:
       - name: Prepare data directory
         run: mkdir -p data
 
+      # ============================================================
+      # Restore previous same-day DB (artifact chaining)
+      # ============================================================
+      - name: Find previous same-day artifact
+        id: restore
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TODAY=$(TZ=America/New_York date +%Y-%m-%d)
+          echo "today=$TODAY" >> $GITHUB_OUTPUT
+          echo "Scan date: $TODAY"
+
+          # Find most recent successful scan run before current
+          PREV_RUN=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=30&status=success" \
+            --jq "[.workflow_runs[] | select(.id < ${{ github.run_id }})] | .[0].id // empty")
+
+          if [ -z "$PREV_RUN" ]; then
+            echo "[restore] No previous run found — fresh DB"
+            echo "has_prev=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "[restore] Previous run: $PREV_RUN"
+
+          # Verify it's from today (UTC comparison is close enough)
+          PREV_DATE=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/runs/$PREV_RUN" \
+            --jq '.run_started_at' | cut -c1-10)
+          TODAY_UTC=$(date -u +%Y-%m-%d)
+          YESTERDAY_UTC=$(date -u -d 'yesterday' +%Y-%m-%d)
+
+          if [ "$PREV_DATE" != "$TODAY_UTC" ] && [ "$PREV_DATE" != "$YESTERDAY_UTC" ]; then
+            echo "[restore] Previous run from $PREV_DATE — too old, skipping"
+            echo "has_prev=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Get artifact name
+          ARTIFACT_NAME=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts" \
+            --jq '.artifacts[0].name // empty')
+
+          if [ -z "$ARTIFACT_NAME" ]; then
+            echo "[restore] No artifact in previous run"
+            echo "has_prev=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "[restore] Artifact: $ARTIFACT_NAME"
+          echo "has_prev=true" >> $GITHUB_OUTPUT
+          echo "prev_run=$PREV_RUN" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+
+      - name: Download previous artifact
+        if: steps.restore.outputs.has_prev == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.restore.outputs.artifact_name }}
+          run-id: ${{ steps.restore.outputs.prev_run }}
+          path: /tmp/prev/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Restore DB from previous artifact
+        if: steps.restore.outputs.has_prev == 'true'
+        run: |
+          if [ -f /tmp/prev/alerts.db ]; then
+            cp /tmp/prev/alerts.db data/alerts.db
+            echo "[restore] DB copied from /tmp/prev/alerts.db"
+          elif [ -f /tmp/prev/data/alerts.db ]; then
+            cp /tmp/prev/data/alerts.db data/alerts.db
+            echo "[restore] DB copied from /tmp/prev/data/alerts.db"
+          else
+            echo "[restore] No DB found in artifact — fresh start"
+          fi
+          ls -la data/
+
+      # ============================================================
+      # Run scanner (appends to restored DB)
+      # ============================================================
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -65,66 +154,47 @@ jobs:
             python main.py fullscan_v34
           fi
 
+      # ============================================================
+      # DB Integrity
+      # ============================================================
       - name: DB Integrity Check
         if: always()
         run: |
           python3 << 'PYEOF'
           import sqlite3, json, sys, os
-          db_path = 'data/alerts.db'
-          if not os.path.exists(db_path):
-              print(f"DB not found at {db_path}")
-              sys.exit(1)
-          conn = sqlite3.connect(db_path)
+          if not os.path.exists('data/alerts.db'):
+              print("ERROR: DB not found"); sys.exit(1)
+          conn = sqlite3.connect('data/alerts.db')
           conn.row_factory = sqlite3.Row
           cur = conn.cursor()
           print()
           print("=" * 74)
           print("DB INTEGRITY CHECK (V5.0.5.2.6)")
           print("=" * 74)
-          cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1")
-          row = cur.fetchone()
+          row = cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1").fetchone()
           if not row:
-              print("  No rows - skipping")
-              sys.exit(0)
-          latest_scan_date = row["scan_date"]
-          print(f"  Checking scan_date = {latest_scan_date}")
+              print("  No rows - skipping"); sys.exit(0)
+          scan_date = row["scan_date"]
+          print(f"  Checking scan_date = {scan_date}")
           mismatches = 0
-          checked = 0
-          print()
-          print(f"  {'ticker':8s} | {'DB_comp':>8s} | {'RAW_comp':>9s} | {'MATCH':>7s}")
-          print("  " + "-" * 50)
           for r in cur.execute(
-              """SELECT ticker, composite_score, raw_candidate_json
-                 FROM alerts WHERE scan_date = ? ORDER BY id DESC""",
-              (latest_scan_date,)
+              "SELECT ticker, composite_score, raw_candidate_json FROM alerts WHERE scan_date = ? ORDER BY id DESC",
+              (scan_date,)
           ):
-              ticker = r["ticker"]
-              db_c = r["composite_score"]
-              raw_json = r["raw_candidate_json"]
-              checked += 1
-              if not raw_json:
-                  print(f"  {ticker:8s} | {str(db_c):>8s} | {'<no-raw>':>9s} | {'SKIP':>7s}")
-                  continue
-              try:
-                  raw = json.loads(raw_json)
-              except Exception:
-                  mismatches += 1
-                  continue
+              ticker, db_c, raw_json = r["ticker"], r["composite_score"], r["raw_candidate_json"]
+              if not raw_json: continue
+              try: raw = json.loads(raw_json)
+              except: mismatches += 1; continue
               raw_c = raw.get("composite_score")
-              match = "?"
               if db_c is not None and raw_c is not None:
-                  match = "OK" if abs(float(db_c) - float(raw_c)) < 0.01 else "MISMATCH"
-                  if match == "MISMATCH": mismatches += 1
-              elif db_c is None and raw_c is None:
-                  match = "both-null"
-              print(f"  {ticker:8s} | {str(db_c):>8s} | {str(raw_c):>9s} | {match:>7s}")
-          print("  " + "-" * 50)
-          print(f"  Rows checked: {checked} | MISMATCHES: {mismatches}")
+                  if abs(float(db_c) - float(raw_c)) >= 0.01:
+                      print(f"  MISMATCH {ticker}: DB={db_c} RAW={raw_c}")
+                      mismatches += 1
+          print(f"  MISMATCHES: {mismatches}")
           print("=" * 74)
           if mismatches > 0:
-              print(f"FAIL: {mismatches} mismatch(es)")
-              sys.exit(1)
-          print("PASS: All DB composite_score values match RAW JSON")
+              print(f"FAIL: {mismatches} mismatch(es)"); sys.exit(1)
+          print("PASS: DB matches RAW JSON")
           PYEOF
 
       - name: Verify PM bars JSON
@@ -132,13 +202,11 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import sqlite3, json, os, sys
-          db_path = 'data/alerts.db'
-          if not os.path.exists(db_path): sys.exit(0)
-          conn = sqlite3.connect(db_path)
+          if not os.path.exists('data/alerts.db'): sys.exit(0)
+          conn = sqlite3.connect('data/alerts.db')
           conn.row_factory = sqlite3.Row
           cur = conn.cursor()
-          cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1")
-          row = cur.fetchone()
+          row = cur.execute("SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1").fetchone()
           if not row: sys.exit(0)
           scan_date = row["scan_date"]
           print()
@@ -147,13 +215,10 @@ jobs:
           print("=" * 74)
           mismatch = 0
           for r in cur.execute(
-              """SELECT ticker, pm_bars, pm_bars_json FROM alerts
-                 WHERE scan_date = ? ORDER BY id DESC""",
+              "SELECT ticker, pm_bars, pm_bars_json FROM alerts WHERE scan_date = ? ORDER BY id DESC",
               (scan_date,)
           ):
-              ticker = r["ticker"]
-              pm_bars = r["pm_bars"] or 0
-              raw = r["pm_bars_json"]
+              ticker, pm_bars, raw = r["ticker"], r["pm_bars"] or 0, r["pm_bars_json"]
               if raw is None: json_count = 0
               else:
                   try: json_count = len(json.loads(raw))
@@ -169,9 +234,8 @@ jobs:
         run: |
           python3 << 'PYEOF'
           import sqlite3, os, sys
-          db_path = 'data/alerts.db'
-          if not os.path.exists(db_path): sys.exit(0)
-          conn = sqlite3.connect(db_path)
+          if not os.path.exists('data/alerts.db'): sys.exit(0)
+          conn = sqlite3.connect('data/alerts.db')
           cur = conn.cursor()
           print()
           print("V5.0.6 SCHEMA VERIFICATION")
@@ -188,11 +252,14 @@ jobs:
           print("=" * 74)
           PYEOF
 
-      - name: Upload artifacts
+      # ============================================================
+      # Upload artifact with date+run scoping
+      # ============================================================
+      - name: Upload daily artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: days-bot-v506-${{ github.run_number }}
+          name: scan-${{ steps.restore.outputs.today }}-r${{ github.run_number }}
           path: data/
-          retention-days: 14
+          retention-days: 30
           if-no-files-found: warn
