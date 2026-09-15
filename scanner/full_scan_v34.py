@@ -1,4 +1,3 @@
-```python
 """
 DAYS-BOT V5.0.5.2.6 – Full Scan Engine
 FIXES:
@@ -508,4 +507,39 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             'rvol': c.get('rvol_status'),
             'catalyst': c.get('catalyst_type'),
             'sec': c.get('sec_risk_level'),
-            'sc
+            'score': c.get('score_status'),
+            'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
+            'float_source': c.get('float_source', 'unknown'),
+        }
+
+        c['analysis'] = analysis
+        scored.append(c)
+
+    print()
+    print("=" * 74)
+    print("FULLSCAN GATE SUMMARY")
+    print("=" * 74)
+    print(f"  Total analyzed:                {total_to_analyze}")
+    print(f"  Corporate Action rejects:      {corp_action_rejects}")
+    print(f"  Liquidity rejects:             {liquidity_rejects}")
+    print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
+    print(f"  Float cache hits (Discovery):  {float_cache_hits}")
+    print(f"  Float live fetches:            {float_live_fetches}")
+    print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
+    valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
+    print(f"  Top 5 returned:                {min(5, len(valid_scored))}")
+    print("=" * 74)
+
+    gate_summary = {
+        "corp_action_rejects": corp_action_rejects,
+        "liquidity_rejects": liquidity_rejects,
+        "float_rejects": float_rejects,
+        "float_cache_hits": float_cache_hits,
+        "float_live_fetches": float_live_fetches,
+    }
+    for c in scored:
+        c['_gate_summary'] = gate_summary
+
+    valid_scored.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+
+    return valid_scored[:5] if len(valid_scored) >= 5 else valid_scored
