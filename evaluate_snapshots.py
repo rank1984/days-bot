@@ -74,7 +74,7 @@ BLINK_MAX_FEE_PCT = 0.018
 
 # Constants
 TICK_SIZE = 0.01
-MIN_VALID_VOLUMES = 3     # minimum bars with volume > 0 in previous 5
+MIN_VALID_VOLUMES = 3
 VOLUME_CONFIRM_MULT = 1.20
 MOMENTUM_HORIZON_MIN = 90
 D_TIMEOUT_MIN = 60
@@ -112,14 +112,31 @@ def _safe_int(v, default=None):
         return default
 
 
+def _is_rth_complete(scan_date_str: str) -> bool:
+    """
+    Return True if RTH (09:30-16:00 ET) for scan_date has closed.
+    Used only as a warning gate — manual override via --scan-date still allowed.
+    """
+    try:
+        now_et = datetime.now(ET)
+        scan_d = datetime.strptime(scan_date_str, "%Y-%m-%d").date()
+        today = now_et.date()
+
+        if scan_d < today:
+            return True
+        if scan_d > today:
+            return False
+        # Same day: RTH closes at 16:00 ET
+        return now_et.hour >= 16
+    except Exception:
+        return False
+
+
 # ============================================================
 # SAFE SCHEMA MIGRATION — relax hit NOT NULL
 # ============================================================
 def _relax_hit_nullable():
-    """
-    trigger_results.hit must be nullable to represent UNKNOWN.
-    SQLite can't ALTER COLUMN. Drop+recreate — safe because table is empty.
-    """
+    """trigger_results.hit must be nullable to represent UNKNOWN."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
@@ -129,7 +146,6 @@ def _relax_hit_nullable():
     if not hit_col:
         conn.close()
         return
-    # col[3] = notnull flag. 0 = nullable.
     if hit_col[0][3] == 0:
         conn.close()
         return  # already nullable
@@ -166,7 +182,7 @@ def _relax_hit_nullable():
 
 
 # ============================================================
-# DATA RESOLUTION — PM bars + RTH bars
+# DATA RESOLUTION
 # ============================================================
 def parse_pm_bars(pm_bars_json):
     """Convert pm_bars_json text to DataFrame (or None)."""
@@ -193,7 +209,6 @@ def parse_pm_bars(pm_bars_json):
         df = pd.DataFrame(rows)
         df = df.set_index("time").sort_index()
 
-        # Ensure tz-aware
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         df.index = df.index.tz_convert(ET)
@@ -208,10 +223,8 @@ def is_pm_aware(pm_bars_df):
     """PM_AWARE if >=5 chronological, valid OHLC bars."""
     if pm_bars_df is None or len(pm_bars_df) < 5:
         return False
-    # Chronological
     if not pm_bars_df.index.is_monotonic_increasing:
         return False
-    # All OHLC present and finite
     for col in ("open", "high", "low", "close"):
         if pm_bars_df[col].isna().any():
             return False
@@ -288,10 +301,7 @@ def fetch_daily_bars(ticker, scan_date, n_days=6):
 # VOLUME RESOLVER
 # ============================================================
 def resolve_volume_median(prev_bars):
-    """
-    prev_bars: DataFrame of up to 5 previous bars.
-    Returns median of valid volumes (volume > 0), or None if <3 valid.
-    """
+    """Median of valid volumes (>0). None if <MIN_VALID_VOLUMES valid."""
     if prev_bars is None or len(prev_bars) < 5:
         return None
     vols = [float(v) for v in prev_bars["volume"] if _safe_float(v, 0) > 0]
@@ -304,11 +314,6 @@ def resolve_volume_median(prev_bars):
 # ============================================================
 # TRIGGER ENGINES
 # ============================================================
-# Each returns: (hit, trigger_idx, trigger_price, reason)
-#   hit ∈ {0, 1, None}
-#   idx, price set when hit=1
-#   reason set when hit≠1 (for metadata)
-
 def detect_A(bars_df, pm_high, atr):
     """Intrabar: high >= PMH + buffer."""
     if pm_high is None or atr is None:
@@ -396,7 +401,6 @@ def detect_D(bars_df, pm_high, atr):
             continue
 
         if state == "BREAKOUT_SEEN":
-            # Pullback must be on a LATER bar
             if i <= breakout_idx:
                 continue
             if float(bar["low"]) <= pullback_lo:
@@ -420,10 +424,7 @@ def detect_D(bars_df, pm_high, atr):
 # ENTRY EXECUTION
 # ============================================================
 def execute_entry(bars_df, trigger_idx):
-    """
-    Entry = next bar open × (1 + slippage) for Long.
-    Returns (entry_fill, entry_time, entry_idx) or (None, None, None).
-    """
+    """Entry = next bar open × (1 + slippage)."""
     next_idx = trigger_idx + 1
     if next_idx >= len(bars_df):
         return (None, None, None)
@@ -439,7 +440,7 @@ def execute_entry(bars_df, trigger_idx):
 # MFE / MAE
 # ============================================================
 def compute_mfe_mae(bars_slice, entry_fill):
-    """MFE/MAE over provided bars slice (after entry)."""
+    """MFE/MAE over provided bars slice."""
     if bars_slice is None or len(bars_slice) == 0:
         return (entry_fill, entry_fill, 0, 0)
     mfe = float(bars_slice["high"].max())
@@ -450,14 +451,10 @@ def compute_mfe_mae(bars_slice, entry_fill):
 
 
 # ============================================================
-# EXIT V1 (INTRADAY_EOD)
+# EXIT V1
 # ============================================================
 def run_exit_v1(bars_df, entry_idx, entry_fill, stop, t1, t2):
-    """
-    Full Exit V1 state machine.
-    Same-bar: Stop-first.
-    """
-    position_size = 1.0  # normalized; scaled later
+    """Full Exit V1 state machine. Same-bar: Stop-first."""
     t1_hit = False
     stop_level = stop
     exit_reason = "EOD_CLOSE"
@@ -469,31 +466,29 @@ def run_exit_v1(bars_df, entry_idx, entry_fill, stop, t1, t2):
         high = float(bar["high"])
         low = float(bar["low"])
 
-        # Stop-first (conservative)
+        # Stop-first
         if low <= stop_level:
             exit_reason = "STOP_HIT" if not t1_hit else "BE_HIT"
             exit_price_raw = stop_level
             exit_idx = i
             break
 
-        # T2 (full exit)
+        # T2
         if not t1_hit and high >= t2:
             exit_reason = "T2_HIT"
             exit_price_raw = t2
             exit_idx = i
             break
 
-        # T1 → move stop to BE
+        # T1 → BE
         if not t1_hit and high >= t1:
             t1_hit = True
-            stop_level = entry_fill  # BE
+            stop_level = entry_fill
 
-    # If no explicit exit
     if exit_price_raw is None:
         exit_price_raw = float(bars_df.iloc[-1]["close"])
         exit_idx = len(bars_df) - 1
 
-    # Apply slippage on exit
     exit_fill = exit_price_raw * (1 - SLIPPAGE_PCT)
     exit_time = bars_df.index[exit_idx]
     hold_min = int((exit_time - bars_df.index[entry_idx]).total_seconds() / 60)
@@ -510,19 +505,15 @@ def run_exit_v1(bars_df, entry_idx, entry_fill, stop, t1, t2):
 
 
 # ============================================================
-# HORIZON EXITS (MOM / SWING)
+# HORIZON EXITS
 # ============================================================
 def run_horizon_exit(bars_df, entry_idx, horizon_min):
-    """
-    Exit at close of bar <= entry_time + horizon_min.
-    Returns dict with exit details or None if no bars.
-    """
+    """Exit at close of bar <= entry_time + horizon_min."""
     if entry_idx >= len(bars_df):
         return None
     entry_time = bars_df.index[entry_idx]
     target_time = entry_time + timedelta(minutes=horizon_min)
 
-    # Find last bar <= target_time
     mask = bars_df.index <= target_time
     window = bars_df[mask]
     if len(window) == 0:
@@ -546,30 +537,22 @@ def run_horizon_exit(bars_df, entry_idx, horizon_min):
 # COST MODEL V1
 # ============================================================
 def blink_fee(value_abs):
-    per_share_est = BLINK_FEE_PER_SHARE  # per share
-    # We don't know shares here; use value-based approximation
     max_fee = abs(value_abs) * BLINK_MAX_FEE_PCT
-    return max(BLINK_MIN_FEE, max_fee)  # conservative min
+    return max(BLINK_MIN_FEE, max_fee)
 
 
 def compute_costs(entry_fill, exit_fill, position_size, spread_pct):
-    """
-    All costs computed separately. Fills are RAW (no slippage adjustment).
-    """
+    """All costs computed separately. Fills are RAW."""
     entry_value = entry_fill * position_size
     exit_value = exit_fill * position_size
 
-    # Slippage: 15 bps each side
     cost_slippage = SLIPPAGE_PCT * (entry_value + exit_value)
 
-    # Spread: half-spread each side (observed)
     half_spread = (spread_pct or 0) / 100.0 / 2.0
     cost_spread = half_spread * (entry_value + exit_value)
 
-    # Commission: Blink, both sides
     cost_commission = blink_fee(entry_value) + blink_fee(exit_value)
 
-    # Tax: NULL by default (configurable later)
     cost_tax = 0.0
 
     return {
@@ -584,9 +567,8 @@ def compute_costs(entry_fill, exit_fill, position_size, spread_pct):
 # ============================================================
 # DB WRITES
 # ============================================================
-def write_trigger_result(cur, snapshot_id, method, hit, trigger_time, 
+def write_trigger_result(cur, snapshot_id, method, hit, trigger_time,
                           trigger_price, window, data_mode, reason, elapsed_sec):
-    """Insert trigger_results row. Returns trigger_result_id."""
     meta = json.dumps({"reason": reason}) if reason else None
 
     tt_utc = None
@@ -615,7 +597,6 @@ def write_outcome(cur, snapshot_id, trigger_result_id, method, horizon,
                    gross_r, gross_pct, net_r, net_pct, outcome_label,
                    costs, entry_slippage_pct, entry_efficiency,
                    abs_before_trigger, rel_before_trigger):
-    """Insert outcomes row."""
     cur.execute("""
         INSERT INTO outcomes
         (snapshot_id, trigger_result_id, trigger_method, trigger_version,
@@ -655,180 +636,10 @@ def write_outcome(cur, snapshot_id, trigger_result_id, method, horizon,
 
 
 # ============================================================
-# SINGLE SNAPSHOT EVALUATION
+# GROSS/NET COMPUTATION
 # ============================================================
-def evaluate_snapshot(snapshot, cur, dry_run=False):
-    """Evaluate one snapshot. Returns dict of stats."""
-    ticker = snapshot["ticker"]
-    snap_id = snapshot["snapshot_id"]
-    scan_date = snapshot["scan_date"]
-
-    # ---- Load data ----
-    pm_bars_df = parse_pm_bars(snapshot["pm_bars_json"])
-    pm_aware = is_pm_aware(pm_bars_df)
-
-    rth_df = fetch_rth_bars(ticker, scan_date)
-    if rth_df.empty:
-        print(f"  [{ticker}] RTH data unavailable — skipping")
-        if not dry_run:
-            for method in (TRIGGER_A, TRIGGER_B, TRIGGER_C, TRIGGER_D):
-                write_trigger_result(cur, snap_id, method, None, None, None,
-                                      None, "RTH_ONLY", "FETCH_FAILED", None)
-        return {"ticker": ticker, "status": "no_data"}
-
-    # Combined bars for PM_AWARE
-    if pm_aware:
-        combined = pd.concat([pm_bars_df, rth_df])
-        combined = combined[~combined.index.duplicated(keep="first")]
-        combined = combined.sort_index()
-        data_mode = "PM_AWARE"
-    else:
-        combined = rth_df
-        data_mode = "RTH_ONLY"
-
-    # ---- Values from snapshot ----
-    pm_high = _safe_float(snapshot["pm_high"])
-    pm_low = _safe_float(snapshot["pm_low"])
-    pm_vwap = _safe_float(snapshot["pm_vwap"])
-    pm_volume = _safe_int(snapshot["pm_volume"])
-    atr = _safe_float(snapshot["atr"]) or 0.10  # fallback small ATR
-    position_size = _safe_int(snapshot["position_size"]) or 0
-    spread_pct = _safe_float(snapshot["spread_pct"]) or 0.0
-    stop_ref = _safe_float(snapshot["stop"])
-    s0_price = _safe_float(snapshot["price"])
-
-    if not pm_high or pm_high <= 0:
-        print(f"  [{ticker}] No PMH — cannot trigger")
-        if not dry_run:
-            for method in (TRIGGER_A, TRIGGER_B, TRIGGER_C, TRIGGER_D):
-                write_trigger_result(cur, snap_id, method, None, None, None,
-                                      None, data_mode, "NO_PMH", None)
-        return {"ticker": ticker, "status": "no_pmh"}
-
-    # ---- Run 4 triggers (independent) ----
-    results = {
-        TRIGGER_A: detect_A(combined, pm_high, atr),
-        TRIGGER_B: detect_B(combined, pm_high, atr),
-        TRIGGER_C: detect_C(combined, pm_vwap, pm_low, pm_volume),
-        TRIGGER_D: detect_D(combined, pm_high, atr),
-    }
-
-    stats = {"ticker": ticker, "triggered": 0, "missed": 0, "unknown": 0,
-             "wins": 0, "losses": 0, "be": 0, "sum_net_r": 0.0}
-
-    print(f"\n  ── {ticker} (snap_id={snap_id}, mode={data_mode}) ──")
-    print(f"    PMH={pm_high} ATR={atr:.4f} VWAP={pm_vwap} PM_vol={pm_volume}")
-
-    for method, (hit, idx, price, reason) in results.items():
-        # ---- Determine window label ----
-        window = None
-        trig_time = None
-        elapsed_sec = None
-        if hit == 1 and idx is not None:
-            trig_time = combined.index[idx]
-            elapsed_sec = int((trig_time - combined.index[0]).total_seconds())
-            trig_hour = trig_time.hour + trig_time.minute / 60
-            window = "PM" if trig_hour < 9.5 else "RTH"
-
-        # ---- Dry-run log ----
-        hit_label = "HIT" if hit == 1 else ("MISS" if hit == 0 else "UNKNOWN")
-        print(f"    {method:22s} → {hit_label:8s} "
-              f"{'@ ' + str(round(price, 2)) if price else ''} "
-              f"{'[' + (reason or '') + ']' if reason else ''}")
-
-        if hit == 1:
-            stats["triggered"] += 1
-        elif hit == 0:
-            stats["missed"] += 1
-        else:
-            stats["unknown"] += 1
-
-        # ---- DB write: trigger_result ----
-        trig_id = None
-        if not dry_run:
-            trig_id = write_trigger_result(cur, snap_id, method, hit,
-                                            trig_time, price,
-                                            window, data_mode, reason,
-                                            elapsed_sec)
-
-        # ---- Skip outcomes for non-HIT ----
-        if hit != 1:
-            continue
-
-        # ---- Entry execution ----
-        entry_fill, entry_time, entry_idx = execute_entry(combined, idx)
-        if entry_fill is None:
-            print(f"      └─ NOT_EXECUTABLE (no next bar)")
-            if not dry_run and trig_id:
-                # Write a NOT_EXECUTABLE outcome
-                for hz in (HORIZON_MOM, HORIZON_INTRA, HORIZON_SWING):
-                    write_outcome(
-                        cur, snap_id, trig_id, method, hz,
-                        price, None, None, None, None,
-                        "NOT_EXECUTABLE", None, None, None,
-                        0, 0, 0, 0, "NOT_EXECUTABLE",
-                        {"cost_spread": 0, "cost_slippage": 0,
-                         "cost_commission": 0, "cost_tax": 0, "cost_total": 0},
-                        None, None, None, None,
-                    )
-            continue
-
-        # ---- Risk computation ----
-        if stop_ref is None or stop_ref >= entry_fill:
-            # Fallback: 1.5% stop (MIN_STOP_PCT)
-            stop_final = entry_fill * 0.985
-        else:
-            stop_final = stop_ref
-
-        r = entry_fill - stop_final
-        if r <= 0:
-            print(f"      └─ Invalid risk (r={r})")
-            continue
-        t1 = entry_fill + T1_R * r
-        t2 = entry_fill + T2_R * r
-
-        print(f"      └─ entry={entry_fill:.4f} stop={stop_final:.4f} "
-              f"T1={t1:.4f} T2={t2:.4f} R={r:.4f}")
-
-        # ---- Pre-entry metrics ----
-        if price and s0_price:
-            abs_before = (price - s0_price) / s0_price * 100
-        else:
-            abs_before = None
-        rel_before = None  # not available from snapshot alone
-
-        # ---- Run 3 horizons ----
-        # === INTRADAY_EOD (Exit V1) ===
-        intra = run_exit_v1(combined, entry_idx, entry_fill, stop_final, t1, t2)
-        _write_horizon(cur, dry_run, snap_id, trig_id, method, HORIZON_INTRA,
-                       combined, entry_idx, entry_fill, r, price, s0_price,
-                       position_size, spread_pct,
-                       intra["exit_fill"], intra["exit_time"],
-                       intra["exit_reason"], intra["hold_min"],
-                       abs_before, rel_before, stats)
-
-        # === MOMENTUM_90M ===
-        mom = run_horizon_exit(combined, entry_idx, MOMENTUM_HORIZON_MIN)
-        if mom:
-            _write_horizon(cur, dry_run, snap_id, trig_id, method, HORIZON_MOM,
-                           combined, entry_idx, entry_fill, r, price, s0_price,
-                           position_size, spread_pct,
-                           mom["exit_fill"], mom["exit_time"],
-                           mom["exit_reason"], mom["hold_min"],
-                           abs_before, rel_before, stats)
-
-        # === SWING_3D ===
-        _write_swing_horizon(cur, dry_run, snap_id, trig_id, method,
-                             ticker, scan_date, entry_time, entry_fill,
-                             r, price, s0_price, position_size, spread_pct,
-                             abs_before, rel_before, stats)
-
-    return stats
-
-
 def _compute_gross_net(entry_fill, exit_fill, risk_per_share,
                        position_size, spread_pct):
-    """Compute gross/net R for a single horizon."""
     gross_per_share = exit_fill - entry_fill
     gross_r = gross_per_share / risk_per_share if risk_per_share > 0 else 0
     gross_pct = (gross_per_share / entry_fill) * 100 if entry_fill > 0 else 0
@@ -855,13 +666,14 @@ def _compute_gross_net(entry_fill, exit_fill, risk_per_share,
     }
 
 
+# ============================================================
+# HORIZON WRITERS
+# ============================================================
 def _write_horizon(cur, dry_run, snap_id, trig_id, method, horizon,
                    bars_df, entry_idx, entry_fill, r, t0_price, s0_price,
                    position_size, spread_pct,
                    exit_fill, exit_time, exit_reason, hold_min,
                    abs_before, rel_before, stats):
-    """Write one outcome row for non-swing horizons."""
-    # MFE/MAE from entry to exit
     if exit_time is not None:
         mask = (bars_df.index >= bars_df.index[entry_idx]) & (bars_df.index <= exit_time)
         window = bars_df[mask]
@@ -871,7 +683,6 @@ def _write_horizon(cur, dry_run, snap_id, trig_id, method, horizon,
     mfe_pct = (mfe - entry_fill) / entry_fill * 100 if entry_fill > 0 else 0
     mae_pct = (mae - entry_fill) / entry_fill * 100 if entry_fill > 0 else 0
 
-    # Entry quality
     entry_slippage_pct = (entry_fill - t0_price) / t0_price * 100 if t0_price else 0
     if mfe > t0_price and mfe > entry_fill:
         entry_eff = (mfe - entry_fill) / (mfe - t0_price)
@@ -906,19 +717,15 @@ def _write_swing_horizon(cur, dry_run, snap_id, trig_id, method,
                          ticker, scan_date, entry_time, entry_fill,
                          r, t0_price, s0_price, position_size, spread_pct,
                          abs_before, rel_before, stats):
-    """Swing 3D outcome using daily bars."""
     daily = fetch_daily_bars(ticker, scan_date, n_days=6)
     if daily.empty:
         return
 
-    # Find trading days after entry date
     entry_date = entry_time.date() if entry_time else None
     if entry_date is None:
         return
 
-    # Find the entry day bar (if intraday) or next trading day
     daily_idx = daily.index
-    # Get index of first trading day >= entry_date
     entry_pos = None
     for i, d in enumerate(daily_idx):
         if d.date() >= entry_date:
@@ -927,12 +734,10 @@ def _write_swing_horizon(cur, dry_run, snap_id, trig_id, method,
     if entry_pos is None:
         return
 
-    # Exit day = entry + 3 trading days
     exit_pos = entry_pos + 3
     if exit_pos >= len(daily):
-        exit_pos = len(daily) - 1  # use last available
+        exit_pos = len(daily) - 1
 
-    # MFE/MAE over entry day → exit day (using daily high/low)
     window = daily.iloc[entry_pos:exit_pos + 1]
     mfe = float(window["high"].max())
     mae = float(window["low"].min())
@@ -943,7 +748,6 @@ def _write_swing_horizon(cur, dry_run, snap_id, trig_id, method,
     exit_fill = exit_close * (1 - SLIPPAGE_PCT)
     exit_date = daily.index[exit_pos]
 
-    # Hold minutes (approx: trading days * 390 min)
     days_held = exit_pos - entry_pos + 1
     hold_min = days_held * 390
 
@@ -978,6 +782,163 @@ def _write_swing_horizon(cur, dry_run, snap_id, trig_id, method,
 
 
 # ============================================================
+# SINGLE SNAPSHOT
+# ============================================================
+def evaluate_snapshot(snapshot, cur, dry_run=False):
+    ticker = snapshot["ticker"]
+    snap_id = snapshot["snapshot_id"]
+    scan_date = snapshot["scan_date"]
+
+    pm_bars_df = parse_pm_bars(snapshot["pm_bars_json"])
+    pm_aware = is_pm_aware(pm_bars_df)
+
+    rth_df = fetch_rth_bars(ticker, scan_date)
+    if rth_df.empty:
+        print(f"  [{ticker}] RTH data unavailable — skipping")
+        if not dry_run:
+            for method in (TRIGGER_A, TRIGGER_B, TRIGGER_C, TRIGGER_D):
+                write_trigger_result(cur, snap_id, method, None, None, None,
+                                      None, "RTH_ONLY", "FETCH_FAILED", None)
+        return {"ticker": ticker, "status": "no_data"}
+
+    if pm_aware:
+        combined = pd.concat([pm_bars_df, rth_df])
+        combined = combined[~combined.index.duplicated(keep="first")]
+        combined = combined.sort_index()
+        data_mode = "PM_AWARE"
+    else:
+        combined = rth_df
+        data_mode = "RTH_ONLY"
+
+    pm_high = _safe_float(snapshot["pm_high"])
+    pm_low = _safe_float(snapshot["pm_low"])
+    pm_vwap = _safe_float(snapshot["pm_vwap"])
+    pm_volume = _safe_int(snapshot["pm_volume"])
+    atr = _safe_float(snapshot["atr"]) or 0.10
+    position_size = _safe_int(snapshot["position_size"]) or 0
+    spread_pct = _safe_float(snapshot["spread_pct"]) or 0.0
+    stop_ref = _safe_float(snapshot["stop"])
+    s0_price = _safe_float(snapshot["price"])
+
+    if not pm_high or pm_high <= 0:
+        print(f"  [{ticker}] No PMH — cannot trigger")
+        if not dry_run:
+            for method in (TRIGGER_A, TRIGGER_B, TRIGGER_C, TRIGGER_D):
+                write_trigger_result(cur, snap_id, method, None, None, None,
+                                      None, data_mode, "NO_PMH", None)
+        return {"ticker": ticker, "status": "no_pmh"}
+
+    results = {
+        TRIGGER_A: detect_A(combined, pm_high, atr),
+        TRIGGER_B: detect_B(combined, pm_high, atr),
+        TRIGGER_C: detect_C(combined, pm_vwap, pm_low, pm_volume),
+        TRIGGER_D: detect_D(combined, pm_high, atr),
+    }
+
+    stats = {"ticker": ticker, "triggered": 0, "missed": 0, "unknown": 0,
+             "wins": 0, "losses": 0, "be": 0, "sum_net_r": 0.0}
+
+    print(f"\n  ── {ticker} (snap_id={snap_id}, mode={data_mode}) ──")
+    print(f"    PMH={pm_high} ATR={atr:.4f} VWAP={pm_vwap} PM_vol={pm_volume}")
+
+    for method, (hit, idx, price, reason) in results.items():
+        window = None
+        trig_time = None
+        elapsed_sec = None
+        if hit == 1 and idx is not None:
+            trig_time = combined.index[idx]
+            elapsed_sec = int((trig_time - combined.index[0]).total_seconds())
+            trig_hour = trig_time.hour + trig_time.minute / 60
+            window = "PM" if trig_hour < 9.5 else "RTH"
+
+        hit_label = "HIT" if hit == 1 else ("MISS" if hit == 0 else "UNKNOWN")
+        print(f"    {method:22s} → {hit_label:8s} "
+              f"{'@ ' + str(round(price, 2)) if price else ''} "
+              f"{'[' + (reason or '') + ']' if reason else ''}")
+
+        if hit == 1:
+            stats["triggered"] += 1
+        elif hit == 0:
+            stats["missed"] += 1
+        else:
+            stats["unknown"] += 1
+
+        trig_id = None
+        if not dry_run:
+            trig_id = write_trigger_result(cur, snap_id, method, hit,
+                                            trig_time, price,
+                                            window, data_mode, reason,
+                                            elapsed_sec)
+
+        if hit != 1:
+            continue
+
+        entry_fill, entry_time, entry_idx = execute_entry(combined, idx)
+        if entry_fill is None:
+            print(f"      └─ NOT_EXECUTABLE (no next bar)")
+            if not dry_run and trig_id:
+                for hz in (HORIZON_MOM, HORIZON_INTRA, HORIZON_SWING):
+                    write_outcome(
+                        cur, snap_id, trig_id, method, hz,
+                        price, None, None, None, None,
+                        "NOT_EXECUTABLE", None, None, None,
+                        0, 0, 0, 0, "NOT_EXECUTABLE",
+                        {"cost_spread": 0, "cost_slippage": 0,
+                         "cost_commission": 0, "cost_tax": 0, "cost_total": 0},
+                        None, None, None, None,
+                    )
+            continue
+
+        if stop_ref is None or stop_ref >= entry_fill:
+            stop_final = entry_fill * 0.985
+        else:
+            stop_final = stop_ref
+
+        r = entry_fill - stop_final
+        if r <= 0:
+            print(f"      └─ Invalid risk (r={r})")
+            continue
+        t1 = entry_fill + T1_R * r
+        t2 = entry_fill + T2_R * r
+
+        print(f"      └─ entry={entry_fill:.4f} stop={stop_final:.4f} "
+              f"T1={t1:.4f} T2={t2:.4f} R={r:.4f}")
+
+        if price and s0_price:
+            abs_before = (price - s0_price) / s0_price * 100
+        else:
+            abs_before = None
+        rel_before = None
+
+        # INTRADAY_EOD
+        intra = run_exit_v1(combined, entry_idx, entry_fill, stop_final, t1, t2)
+        _write_horizon(cur, dry_run, snap_id, trig_id, method, HORIZON_INTRA,
+                       combined, entry_idx, entry_fill, r, price, s0_price,
+                       position_size, spread_pct,
+                       intra["exit_fill"], intra["exit_time"],
+                       intra["exit_reason"], intra["hold_min"],
+                       abs_before, rel_before, stats)
+
+        # MOMENTUM_90M
+        mom = run_horizon_exit(combined, entry_idx, MOMENTUM_HORIZON_MIN)
+        if mom:
+            _write_horizon(cur, dry_run, snap_id, trig_id, method, HORIZON_MOM,
+                           combined, entry_idx, entry_fill, r, price, s0_price,
+                           position_size, spread_pct,
+                           mom["exit_fill"], mom["exit_time"],
+                           mom["exit_reason"], mom["hold_min"],
+                           abs_before, rel_before, stats)
+
+        # SWING_3D
+        _write_swing_horizon(cur, dry_run, snap_id, trig_id, method,
+                             ticker, scan_date, entry_time, entry_fill,
+                             r, price, s0_price, position_size, spread_pct,
+                             abs_before, rel_before, stats)
+
+    return stats
+
+
+# ============================================================
 # MAIN
 # ============================================================
 def evaluate_all(scan_date=None, force=False, dry_run=False, ticker=None):
@@ -989,28 +950,44 @@ def evaluate_all(scan_date=None, force=False, dry_run=False, ticker=None):
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # Ensure schema
     from database.snapshot_schema import init_snapshot_schema
     init_snapshot_schema()
 
-    # Relax hit NOT NULL (safe if empty)
     _relax_hit_nullable()
 
     # Determine scan_date
     if scan_date is None:
-        row = cur.execute("SELECT MAX(scan_date) FROM snapshots").fetchone()
-        if not row or not row[0]:
+        rows = cur.execute(
+            "SELECT DISTINCT scan_date FROM snapshots ORDER BY scan_date DESC"
+        ).fetchall()
+        if not rows:
             print("No snapshots in DB.")
             conn.close()
             return
-        scan_date = row[0]
+
+        scan_date = None
+        for r in rows:
+            if _is_rth_complete(r[0]):
+                scan_date = r[0]
+                break
+
+        if scan_date is None:
+            scan_date = rows[0][0]
+            print(f"  ⚠️ No scan_date with complete RTH found.")
+            print(f"     Using latest: {scan_date} (data will be partial).")
+
+    # Warning for explicitly-requested incomplete RTH
+    if not _is_rth_complete(scan_date):
+        now_et = datetime.now(ET)
+        print(f"  ⚠️ WARNING: RTH for {scan_date} not complete yet.")
+        print(f"     Now: {now_et.strftime('%Y-%m-%d %H:%M ET')} | RTH closes 16:00 ET.")
+        print(f"     RTH bars will be missing or partial.")
 
     print(f"\n{'=' * 74}")
     print(f"SNAPSHOT EVALUATOR — scan_date={scan_date}")
     print(f"  mode: {'DRY-RUN' if dry_run else 'WRITE'}, force={force}, ticker={ticker}")
     print(f"{'=' * 74}")
 
-    # Force: delete existing rows for scan_date
     if force and not dry_run:
         cur.execute("""
             DELETE FROM outcomes WHERE snapshot_id IN
@@ -1023,14 +1000,12 @@ def evaluate_all(scan_date=None, force=False, dry_run=False, ticker=None):
         conn.commit()
         print(f"  [force] deleted existing trigger_results + outcomes for {scan_date}")
 
-    # Fetch snapshots
     sql = "SELECT * FROM snapshots WHERE scan_date = ?"
     params = [scan_date]
     if ticker:
         sql += " AND ticker = ?"
         params.append(ticker)
     if not force and not dry_run:
-        # Only snapshots without trigger_results yet
         sql += """ AND snapshot_id NOT IN
                    (SELECT DISTINCT snapshot_id FROM trigger_results)"""
     sql += " ORDER BY snapshot_id"
@@ -1065,7 +1040,6 @@ def evaluate_all(scan_date=None, force=False, dry_run=False, ticker=None):
             conn.rollback()
             continue
 
-    # Summary
     print(f"\n{'=' * 74}")
     print(f"SUMMARY — {scan_date}")
     print(f"{'=' * 74}")
@@ -1093,7 +1067,7 @@ def evaluate_all(scan_date=None, force=False, dry_run=False, ticker=None):
 if __name__ == "__main__":
     parser = ArgumentParser(description="DAYS-BOT V5.0.6 Snapshot Evaluator")
     parser.add_argument("--scan-date", type=str, default=None,
-                        help="Scan date (YYYY-MM-DD). Default: latest.")
+                        help="Scan date (YYYY-MM-DD). Default: latest with complete RTH.")
     parser.add_argument("--force", action="store_true",
                         help="Delete + recompute all results for scan_date.")
     parser.add_argument("--dry-run", action="store_true",
