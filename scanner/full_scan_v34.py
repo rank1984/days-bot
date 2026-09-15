@@ -1,3 +1,4 @@
+```python
 """
 DAYS-BOT V5.0.5.2.6 – Full Scan Engine
 FIXES:
@@ -507,4 +508,4 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             'rvol': c.get('rvol_status'),
             'catalyst': c.get('catalyst_type'),
             'sec': c.get('sec_risk_level'),
-            'score': c.ge
+            'sc
