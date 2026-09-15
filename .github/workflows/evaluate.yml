@@ -1,221 +1,195 @@
 name: DAYS-BOT V5.0.6 Evaluator
 
 on:
-  # ============================================================
-  # Manual run — allows override (with defaults for convenience)
-  # ============================================================
   workflow_dispatch:
     inputs:
       artifact_name:
-        description: 'Artifact name (leave empty for auto)'
+        description: 'Artifact name (empty = auto-detect latest for scan_date)'
         required: false
         default: ''
       artifact_run_id:
-        description: 'Run ID (leave empty for auto)'
+        description: 'Run ID (empty = auto)'
         required: false
         default: ''
       scan_date:
-        description: 'Scan date YYYY-MM-DD (leave empty for auto)'
+        description: 'Scan date YYYY-MM-DD (empty = latest with complete RTH)'
         required: false
         default: ''
-
-  # ============================================================
-  # Scheduled run — 22:00 UTC = 18:00 EDT / 17:00 EST
-  # After US market close (16:00 ET) — plenty of buffer for yfinance
-  # Mon-Fri only (US trading days)
-  # ============================================================
   schedule:
-    - cron: '0 22 * * 1-5'   # 22:00 UTC, Mon-Fri
+    # 22:00 UTC = 18:00 ET (EDT) / 17:00 ET (EST)
+    # After US market close (16:00 ET)
+    - cron: '0 22 * * 1-5'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: days-bot-evaluate
+  cancel-in-progress: false
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
-      # ============================================================
-      # 1. Checkout
-      # ============================================================
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 2. Determine mode (auto vs manual)
-      # ============================================================
       - name: Determine mode
         id: mode
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "mode=auto" >> $GITHUB_OUTPUT
-            echo "[mode] SCHEDULED run — auto mode"
           elif [ -z "${{ inputs.artifact_run_id }}" ]; then
             echo "mode=auto" >> $GITHUB_OUTPUT
-            echo "[mode] MANUAL run with no run_id — auto mode"
           else
             echo "mode=manual" >> $GITHUB_OUTPUT
-            echo "[mode] MANUAL run with explicit run_id — manual mode"
           fi
 
-      # ============================================================
-      # 3. Setup Python
-      # ============================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ============================================================
-      # 4. Install dependencies
-      # ============================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ============================================================
-      # 5. Auto-find latest scan artifact
-      # ============================================================
-      - name: Find latest scan run (auto mode)
-        if: steps.mode.outputs.mode == 'auto'
-        id: find_run
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "[auto] Finding latest successful scan run..."
-
-          # Latest successful run of scan.yml
-          LATEST_RUN=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=30&status=success" \
-            --jq '.workflow_runs[0].id')
-
-          if [ -z "$LATEST_RUN" ] || [ "$LATEST_RUN" = "null" ]; then
-            echo "ERROR: no scan run found"
-            exit 1
-          fi
-          echo "[auto] Latest scan run_id: $LATEST_RUN"
-          echo "run_id=$LATEST_RUN" >> $GITHUB_OUTPUT
-
-          # Latest artifact from that run
-          ARTIFACT_NAME=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/runs/$LATEST_RUN/artifacts" \
-            --jq '.artifacts[0].name')
-
-          if [ -z "$ARTIFACT_NAME" ] || [ "$ARTIFACT_NAME" = "null" ]; then
-            echo "ERROR: no artifact found for run $LATEST_RUN"
-            exit 1
-          fi
-          echo "[auto] Latest artifact name: $ARTIFACT_NAME"
-          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-
-          # Run start time (for diagnostics)
-          RUN_STARTED=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/runs/$LATEST_RUN" \
-            --jq '.run_started_at')
-          echo "[auto] Run started at: $RUN_STARTED"
-
-      # ============================================================
-      # 6. Resolve parameters
-      # ============================================================
-      - name: Resolve parameters
-        id: params
-        run: |
-          if [ "${{ steps.mode.outputs.mode }}" = "auto" ]; then
-            echo "artifact_name=${{ steps.find_run.outputs.artifact_name }}" >> $GITHUB_OUTPUT
-            echo "run_id=${{ steps.find_run.outputs.run_id }}" >> $GITHUB_OUTPUT
-            echo "scan_date=" >> $GITHUB_OUTPUT
-          else
-            echo "artifact_name=${{ inputs.artifact_name }}" >> $GITHUB_OUTPUT
-            echo "run_id=${{ inputs.artifact_run_id }}" >> $GITHUB_OUTPUT
-            echo "scan_date=${{ inputs.scan_date }}" >> $GITHUB_OUTPUT
-          fi
-
-      # ============================================================
-      # 7. Prepare directories
-      # ============================================================
       - name: Prepare directories
         run: |
           mkdir -p data
           mkdir -p /tmp/artifact
 
       # ============================================================
-      # 8. Download artifact
+      # Resolve target scan_date + artifact
       # ============================================================
-      - name: Download artifact
+      - name: Resolve target scan_date
+        id: target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ steps.mode.outputs.mode }}" = "manual" ]; then
+            TARGET_DATE="${{ inputs.scan_date }}"
+            ARTIFACT_NAME="${{ inputs.artifact_name }}"
+            RUN_ID="${{ inputs.artifact_run_id }}"
+          else
+            # Auto mode
+            NOW_HOUR_ET=$(TZ=America/New_York date +%H)
+            TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
+            YESTERDAY_ET=$(TZ=America/New_York date -d 'yesterday' +%Y-%m-%d)
+
+            if [ "$NOW_HOUR_ET" -lt "16" ]; then
+              TARGET_DATE="$YESTERDAY_ET"
+            else
+              TARGET_DATE="$TODAY_ET"
+            fi
+
+            # Find most recent artifact matching scan-${TARGET_DATE}-r*
+            FOUND=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+              --jq "[.artifacts[] | select(.name | startswith(\"scan-${TARGET_DATE}-\"))] | .[0] // empty")
+
+            if [ -z "$FOUND" ]; then
+              echo "[evaluate] No artifact found for $TARGET_DATE"
+              echo "has_target=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            ARTIFACT_NAME=$(echo "$FOUND" | jq -r '.name')
+            RUN_ID=$(echo "$FOUND" | jq -r '.workflow_run.id')
+            echo "[evaluate] Found: $ARTIFACT_NAME (run $RUN_ID)"
+          fi
+
+          if [ -z "$TARGET_DATE" ] || [ -z "$ARTIFACT_NAME" ] || [ -z "$RUN_ID" ]; then
+            echo "[evaluate] Incomplete target — aborting"
+            echo "has_target=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "scan_date=$TARGET_DATE" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+          echo "has_target=true" >> $GITHUB_OUTPUT
+
+      - name: Exit early if no target
+        if: steps.target.outputs.has_target != 'true'
+        run: |
+          echo "No target artifact for evaluation — exiting cleanly."
+          echo "This is expected if no scan ran today."
+
+      - name: Download target artifact
+        if: steps.target.outputs.has_target == 'true'
         uses: actions/download-artifact@v4
         with:
-          name: ${{ steps.params.outputs.artifact_name }}
-          run-id: ${{ steps.params.outputs.run_id }}
+          name: ${{ steps.target.outputs.artifact_name }}
+          run-id: ${{ steps.target.outputs.run_id }}
           path: /tmp/artifact/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ============================================================
-      # 9. Locate alerts.db
-      # ============================================================
       - name: Locate alerts.db
+        if: steps.target.outputs.has_target == 'true'
         run: |
           echo "=== Artifact contents ==="
           find /tmp/artifact -type f
-
-          DB_PATH=$(find /tmp/artifact -name "alerts.db" -type f | head -1)
-          if [ -z "$DB_PATH" ]; then
-            echo "ERROR: alerts.db not found in artifact"
+          DB=$(find /tmp/artifact -name "alerts.db" -type f | head -1)
+          if [ -z "$DB" ]; then
+            echo "ERROR: alerts.db not found"
             exit 1
           fi
-          echo "Found DB: $DB_PATH"
-          cp "$DB_PATH" data/alerts.db
+          cp "$DB" data/alerts.db
           ls -la data/
 
-      # ============================================================
-      # 10. Verify snapshots
-      # ============================================================
       - name: Verify snapshots
+        if: steps.target.outputs.has_target == 'true'
         run: |
           python3 << 'PYEOF'
-          import sqlite3, os
-          if not os.path.exists('data/alerts.db'):
-              print("ERROR: DB missing")
-              exit(1)
+          import sqlite3
           conn = sqlite3.connect('data/alerts.db')
           cur = conn.cursor()
           rows = cur.execute(
               "SELECT scan_date, COUNT(*) FROM snapshots "
-              "GROUP BY scan_date ORDER BY scan_date DESC LIMIT 10"
+              "GROUP BY scan_date ORDER BY scan_date DESC LIMIT 5"
           ).fetchall()
           print("Snapshots by scan_date:")
-          for r in rows:
-              print(f"  {r[0]}: {r[1]}")
+          for r in rows: print(f"  {r[0]}: {r[1]}")
           conn.close()
           PYEOF
 
       # ============================================================
-      # 11. Run evaluator
+      # Run evaluator
       # ============================================================
       - name: Run evaluator
+        if: steps.target.outputs.has_target == 'true'
         run: |
           echo "==================================================="
-          echo "V5.0.6 EVALUATOR"
+          echo "V5.0.6 EVALUATOR — scan_date=${{ steps.target.outputs.scan_date }}"
           echo "==================================================="
-
-          SCAN_DATE_ARG=""
-          if [ -n "${{ steps.params.outputs.scan_date }}" ]; then
-            SCAN_DATE_ARG="--scan-date ${{ steps.params.outputs.scan_date }}"
-          fi
-
-          echo "Args: $SCAN_DATE_ARG"
-          python evaluate_snapshots.py $SCAN_DATE_ARG
+          python evaluate_snapshots.py --scan-date ${{ steps.target.outputs.scan_date }}
 
       # ============================================================
-      # 12. Upload evaluated DB
+      # Generate EOD report
       # ============================================================
-      - name: Upload evaluated DB
-        if: always()
+      - name: Generate EOD report
+        if: steps.target.outputs.has_target == 'true'
+        run: |
+          python report/generate_eod_report.py \
+            --scan-date ${{ steps.target.outputs.scan_date }} \
+            --output /tmp/eod_report.md
+          echo "=== REPORT ==="
+          cat /tmp/eod_report.md
+
+      - name: Upload evaluator output + report
+        if: always() && steps.target.outputs.has_target == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: evaluator-output-${{ github.run_number }}
-          path: data/
-          retention-days: 14
+          name: evaluator-${{ steps.target.outputs.scan_date }}-r${{ github.run_number }}
+          path: |
+            data/
+            /tmp/eod_report.md
+          retention-days: 90
           if-no-files-found: warn
