@@ -1,16 +1,18 @@
 """
-DAYS-BOT V5.0.6-prep.1 – Snapshot Schema
+DAYS-BOT V5.0.6 – Snapshot Schema
 
-FIXES (prep.1):
-- HARD LOCK of composite_score / swing_score at function entry
-- Debug print at entry (shows exactly what the candidate contains)
-- Post-write DB verification (reads back after INSERT)
-- Defense in depth: guarantees we never silently write the wrong field
+V5.0.6 changes:
+- snapshots.pm_bars_json TEXT        (immutable PM Evidence per S0)
+- trigger_results.trigger_data_mode  (PM_AWARE | RTH_ONLY)
+- outcomes.trigger_result_id INTEGER (explicit FK to trigger_results)
+
+Safe migration: ALTER TABLE ADD COLUMN for existing DBs.
+Existing 8 snapshots are unaffected (new columns default to NULL).
 
 Three tables:
     snapshots          — T0 immutable record
-    trigger_results    — one row per (snapshot, trigger_method)
-    outcomes           — one row per (snapshot, trigger_method, horizon)
+    trigger_results    — one row per (snapshot, trigger_method, trigger_version)
+    outcomes           — one row per (snapshot, trigger_method, trigger_version, outcome_horizon)
 
 DO NOT UPDATE snapshots. Ever.
 """
@@ -44,6 +46,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     pm_vwap               REAL,
     pm_volume             INTEGER,
     pm_bars               INTEGER,
+    pm_bars_json          TEXT,                          -- V5.0.6
     pm_source             TEXT,
     pm_data_quality       TEXT,
     pm_volume_status      TEXT,
@@ -91,7 +94,8 @@ CREATE TABLE IF NOT EXISTS trigger_results (
     trigger_time_et       TEXT,
     trigger_price         REAL,
     elapsed_sec_from_t0   INTEGER,
-    window                TEXT,
+    window                TEXT,                          -- PM | RTH
+    trigger_data_mode     TEXT,                          -- V5.0.6: PM_AWARE | RTH_ONLY
     metadata_json         TEXT,
     created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (snapshot_id) REFERENCES snapshots(snapshot_id),
@@ -103,6 +107,7 @@ OUTCOMES_DDL = """
 CREATE TABLE IF NOT EXISTS outcomes (
     outcome_id                INTEGER PRIMARY KEY AUTOINCREMENT,
     snapshot_id               INTEGER NOT NULL,
+    trigger_result_id         INTEGER,                   -- V5.0.6: explicit FK
     trigger_method            TEXT,
     trigger_version           TEXT,
     outcome_horizon           TEXT    NOT NULL,
@@ -136,6 +141,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     created_at                DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at                DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (snapshot_id) REFERENCES snapshots(snapshot_id),
+    FOREIGN KEY (trigger_result_id) REFERENCES trigger_results(trigger_result_id),
     UNIQUE(snapshot_id, trigger_method, trigger_version, outcome_horizon)
 );
 """
@@ -149,16 +155,42 @@ INDEXES_DDL = [
     "CREATE INDEX IF NOT EXISTS idx_outcomes_snapshot ON outcomes(snapshot_id);",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_trigger ON outcomes(trigger_method, outcome_horizon);",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON outcomes(outcome);",
+    # V5.0.6
+    "CREATE INDEX IF NOT EXISTS idx_outcomes_trigger_result_id ON outcomes(trigger_result_id);",
+    "CREATE INDEX IF NOT EXISTS idx_trigger_data_mode ON trigger_results(trigger_data_mode);",
+]
+
+# =====================================================================
+# SAFE MIGRATIONS (V5.0.6)
+# =====================================================================
+# For existing DBs that were created before V5.0.6, ALTER TABLE ADD COLUMN.
+# CREATE TABLE IF NOT EXISTS won't update existing tables.
+
+MIGRATIONS_V506 = [
+    ("snapshots",        "pm_bars_json",      "TEXT"),
+    ("trigger_results",  "trigger_data_mode", "TEXT"),
+    ("outcomes",         "trigger_result_id", "INTEGER"),
 ]
 
 
+def _apply_migrations(cur):
+    """Add V5.0.6 columns to existing tables. Safe to call repeatedly."""
+    for table, col_name, col_type in MIGRATIONS_V506:
+        cur.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cur.fetchall()}
+        if col_name not in existing:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+            print(f"[migrate] Added {table}.{col_name} ({col_type})")
+
+
 def init_snapshot_schema():
-    """Create tables + indexes. Safe to call repeatedly."""
+    """Create tables + indexes + apply safe migrations. Idempotent."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(SNAPSHOTS_DDL)
     cur.execute(TRIGGER_RESULTS_DDL)
     cur.execute(OUTCOMES_DDL)
+    _apply_migrations(cur)         # V5.0.6
     for idx_sql in INDEXES_DDL:
         cur.execute(idx_sql)
     conn.commit()
@@ -173,10 +205,10 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
     """
     Save an immutable T0 snapshot for one candidate.
 
-    V5.0.6-prep.1:
-    - HARD LOCK composite_score / swing_score at entry
-    - Debug print so we can verify what was passed
-    - Post-write verification (read back from DB and compare)
+    V5.0.6:
+    - Captures pm_bars_json directly into snapshots (self-contained Evidence)
+    - HARD LOCK composite_score / swing_score
+    - Post-write verification
 
     Returns snapshot_id (int) on success, None on failure/skip.
     """
@@ -187,10 +219,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
     if not ticker:
         return None
 
-    # ================================================================
-    # HARD LOCK (V5.0.6-prep.1)
-    # Force explicit read — do NOT rely on candidate.get() inside params.
-    # ================================================================
+    # HARD LOCK — explicit read before params construction
     _composite = candidate.get("composite_score")
     _swing = candidate.get("swing_score")
     _event = candidate.get("event_score")
@@ -208,6 +237,14 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
     snapshot_time_et = now_et.strftime("%Y-%m-%d %H:%M:%S")
     snapshot_time_utc = now_et.astimezone(tz=None).strftime("%Y-%m-%d %H:%M:%S")
     scan_date = now_et.strftime("%Y-%m-%d")
+
+    # V5.0.6 — ensure pm_bars_json is stored as-is (string) or None
+    _pm_bars_json = candidate.get("pm_bars_json")
+    if _pm_bars_json is not None and not isinstance(_pm_bars_json, str):
+        try:
+            _pm_bars_json = json.dumps(_pm_bars_json, default=str)
+        except Exception:
+            _pm_bars_json = None
 
     params = {
         "scan_id": scan_id,
@@ -228,6 +265,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
         "pm_vwap": candidate.get("pm_vwap"),
         "pm_volume": candidate.get("pm_volume"),
         "pm_bars": candidate.get("pm_bars"),
+        "pm_bars_json": _pm_bars_json,                    # V5.0.6
         "pm_source": candidate.get("pm_source"),
         "pm_data_quality": candidate.get("pm_data_quality"),
         "pm_volume_status": candidate.get("pm_volume_status"),
@@ -246,9 +284,8 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
         "catalyst_score": candidate.get("catalyst_score"),
         "catalyst_summary": candidate.get("catalyst_summary"),
 
-        # === HARD-LOCKED VALUES ===
-        "composite_score": _composite,
-        "swing_score": _swing,
+        "composite_score": _composite,                    # HARD LOCKED
+        "swing_score": _swing,                            # HARD LOCKED
         "early_score": candidate.get("early_score"),
 
         "entry": candidate.get("entry"),
@@ -263,7 +300,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
         "data_status": candidate.get("data_status"),
         "trade_type": candidate.get("trade_type"),
 
-        "strategy_version": candidate.get("strategy_version", "V5.0.5.2.6"),
+        "strategy_version": candidate.get("strategy_version", "V5.0.6"),
         "filter_version": "F1",
         "score_version": "S1",
         "plan_version": "P1",
@@ -276,7 +313,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
             INSERT INTO snapshots (
                 scan_id, ticker, snapshot_time_utc, snapshot_time_et, scan_date,
                 price, prev_close, gap_pct, gap_sign, gap_bucket, is_extreme_gap,
-                pm_high, pm_low, pm_vwap, pm_volume, pm_bars,
+                pm_high, pm_low, pm_vwap, pm_volume, pm_bars, pm_bars_json,
                 pm_source, pm_data_quality, pm_volume_status,
                 float, float_source, short_interest, short_ratio,
                 spread_pct, atr, rs_score, regime,
@@ -289,7 +326,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
             ) VALUES (
                 :scan_id, :ticker, :snapshot_time_utc, :snapshot_time_et, :scan_date,
                 :price, :prev_close, :gap_pct, :gap_sign, :gap_bucket, :is_extreme_gap,
-                :pm_high, :pm_low, :pm_vwap, :pm_volume, :pm_bars,
+                :pm_high, :pm_low, :pm_vwap, :pm_volume, :pm_bars, :pm_bars_json,
                 :pm_source, :pm_data_quality, :pm_volume_status,
                 :float, :float_source, :short_interest, :short_ratio,
                 :spread_pct, :atr, :rs_score, :regime,
@@ -304,21 +341,22 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
         conn.commit()
         snap_id = cur.lastrowid
 
-        # ================================================================
-        # POST-WRITE VERIFICATION
-        # ================================================================
+        # Post-write verification
         row = cur.execute(
-            "SELECT composite_score, swing_score FROM snapshots WHERE snapshot_id = ?",
+            "SELECT composite_score, swing_score, "
+            "CASE WHEN pm_bars_json IS NULL THEN 0 ELSE 1 END "
+            "FROM snapshots WHERE snapshot_id = ?",
             (snap_id,)
         ).fetchone()
         if row:
-            db_comp, db_swing = row
+            db_comp, db_swing, has_pm_json = row
             if db_comp != _composite or db_swing != _swing:
                 print(f"[save_snapshot] ❌ MISMATCH for {ticker}! "
                       f"sent=({_composite},{_swing}) | got=({db_comp},{db_swing})")
             else:
                 print(f"[save_snapshot] ✅ {ticker} | snapshot_id={snap_id} | "
-                      f"composite={db_comp} | swing={db_swing}")
+                      f"composite={db_comp} | swing={db_swing} | "
+                      f"pm_bars_json={'present' if has_pm_json else 'NULL'}")
 
         return snap_id
 
@@ -337,10 +375,7 @@ def save_snapshot(candidate: dict, scan_id: str, now_et: datetime):
 # =====================================================================
 
 def verify_snapshot_integrity(scan_date: str = None):
-    """
-    Read back all snapshots and compare against their originating alerts.
-    Run after a scan to confirm no event_score leakage.
-    """
+    """Read back all snapshots and compare against originating alerts."""
     if scan_date is None:
         scan_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -353,12 +388,13 @@ def verify_snapshot_integrity(scan_date: str = None):
     print(f"SNAPSHOT INTEGRITY CHECK — scan_date={scan_date}")
     print("=" * 74)
     print(f"  {'ticker':8s} | {'snap_comp':>10s} | {'alerts_comp':>11s} | "
-          f"{'snap_swing':>10s} | {'alerts_swing':>12s} | {'MATCH':>7s}")
-    print("  " + "-" * 72)
+          f"{'snap_swing':>10s} | {'alerts_swing':>12s} | {'pm_json':>7s} | {'MATCH':>7s}")
+    print("  " + "-" * 84)
 
     mismatches = 0
     for snap_row in cur.execute(
-        """SELECT s.snapshot_id, s.ticker, s.composite_score, s.swing_score
+        """SELECT s.snapshot_id, s.ticker, s.composite_score, s.swing_score,
+                  s.pm_bars_json
            FROM snapshots s
            WHERE s.scan_date = ?
            ORDER BY s.snapshot_id""",
@@ -367,9 +403,10 @@ def verify_snapshot_integrity(scan_date: str = None):
         ticker = snap_row["ticker"]
         snap_comp = snap_row["composite_score"]
         snap_swing = snap_row["swing_score"]
+        pm_json = "yes" if snap_row["pm_bars_json"] else "no"
 
         alert_row = cur.execute(
-            """SELECT composite_score, swing_score, raw_candidate_json
+            """SELECT composite_score, swing_score
                FROM alerts
                WHERE ticker = ? AND scan_date = ?
                ORDER BY id DESC LIMIT 1""",
@@ -388,9 +425,9 @@ def verify_snapshot_integrity(scan_date: str = None):
             match = "both-null"
 
         print(f"  {ticker:8s} | {str(snap_comp):>10s} | {str(alert_comp):>11s} | "
-              f"{str(snap_swing):>10s} | {str(alert_swing):>12s} | {match:>7s}")
+              f"{str(snap_swing):>10s} | {str(alert_swing):>12s} | {pm_json:>7s} | {match:>7s}")
 
-    print("  " + "-" * 72)
+    print("  " + "-" * 84)
     print(f"  Total mismatches: {mismatches}")
     print("=" * 74)
 
@@ -398,13 +435,46 @@ def verify_snapshot_integrity(scan_date: str = None):
     return mismatches
 
 
+def verify_v506_schema():
+    """Diagnostic: confirm 3 V5.0.6 columns exist."""
+    print()
+    print("=" * 74)
+    print("V5.0.6 SCHEMA VERIFICATION")
+    print("=" * 74)
+
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+
+    checks = [
+        ("snapshots", "pm_bars_json"),
+        ("trigger_results", "trigger_data_mode"),
+        ("outcomes", "trigger_result_id"),
+    ]
+
+    all_ok = True
+    for table, col in checks:
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = {row[1] for row in cur.fetchall()}
+        ok = col in cols
+        all_ok = all_ok and ok
+        print(f"  {table:20s}.{col:25s} : {'✅ present' if ok else '❌ MISSING'}")
+
+    # Row counts
+    print()
+    for table in ("snapshots", "trigger_results", "outcomes"):
+        n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        print(f"  {table:20s} rows: {n}")
+
+    print("=" * 74)
+    print(f"  Result: {'✅ ALL COLUMNS PRESENT' if all_ok else '❌ SCHEMA INCOMPLETE'}")
+    print("=" * 74)
+
+    conn.close()
+    return all_ok
+
+
 if __name__ == "__main__":
     init_snapshot_schema()
-    print("✅ snapshot_schema initialized")
-    conn = sqlite3.connect(DB_PATH)
-    for table in ("snapshots", "trigger_results", "outcomes"):
-        cur = conn.execute(f"PRAGMA table_info({table})")
-        cols = [row[1] for row in cur.fetchall()]
-        print(f"\n{table}: {len(cols)} columns")
-    conn.close()
+    print("✅ snapshot_schema initialized (V5.0.6)")
+    verify_v506_schema()
     verify_snapshot_integrity()
