@@ -1,10 +1,12 @@
 """
-DAYS-BOT V5.0.5.2.5 – Database (Fixed)
+DAYS-BOT V5.0.5.2.6 – Database (Fixed)
 Uses named placeholders to prevent column count mismatches.
 
 V5.0.5.2.5 changes:
 - Added 3 tag-only columns: gap_sign, gap_bucket, is_extreme_gap
-- These support post-hoc analysis (V5.1) without affecting any logic
+
+V5.0.5.2.6 changes:
+- Added pm_bars_json TEXT (Live Capture — raw PM bars list as JSON)
 """
 import os
 import sqlite3
@@ -38,6 +40,7 @@ def init_db():
             spread_pct REAL,
             pm_volume INTEGER,
             pm_bars INTEGER,
+            pm_bars_json TEXT,
             pm_high REAL,
             pm_low REAL,
             pm_vwap REAL,
@@ -145,6 +148,8 @@ def init_db():
         ("gap_sign", "TEXT"),
         ("gap_bucket", "TEXT"),
         ("is_extreme_gap", "INTEGER"),
+        # V5.0.5.2.6 – Live Capture: raw PM bars list as JSON
+        ("pm_bars_json", "TEXT"),
     ]
 
     for col_name, col_type in columns_to_add:
@@ -209,6 +214,7 @@ def save_alert(**kwargs):
         "spread_pct": _safe("spread_pct"),
         "pm_volume": _safe("pm_volume"),
         "pm_bars": _safe("pm_bars"),
+        "pm_bars_json": _safe("pm_bars_json"),
         "pm_high": _safe("pm_high"),
         "pm_low": _safe("pm_low"),
         "pm_vwap": _safe("pm_vwap"),
@@ -276,7 +282,8 @@ def save_alert(**kwargs):
             ticker, price, gap_pct,
             gap_sign, gap_bucket, is_extreme_gap,
             spread_pct,
-            pm_volume, pm_bars, pm_high, pm_low, pm_vwap,
+            pm_volume, pm_bars, pm_bars_json,
+            pm_high, pm_low, pm_vwap,
             pm_dist_signed, pm_high_dist, pm_data_quality,
             pm_volume_status, pm_source,
             rvol, rvol_status, rvol_method,
@@ -301,7 +308,8 @@ def save_alert(**kwargs):
             :ticker, :price, :gap_pct,
             :gap_sign, :gap_bucket, :is_extreme_gap,
             :spread_pct,
-            :pm_volume, :pm_bars, :pm_high, :pm_low, :pm_vwap,
+            :pm_volume, :pm_bars, :pm_bars_json,
+            :pm_high, :pm_low, :pm_vwap,
             :pm_dist_signed, :pm_high_dist, :pm_data_quality,
             :pm_volume_status, :pm_source,
             :rvol, :rvol_status, :rvol_method,
