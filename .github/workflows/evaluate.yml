@@ -1,0 +1,125 @@
+name: DAYS-BOT V5.0.6 Evaluator
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: 'Artifact name (e.g., days-bot-v506-585)'
+        required: true
+        default: 'days-bot-v506-585'
+      artifact_run_id:
+        description: 'Run ID where artifact lives (e.g., 34955603965)'
+        required: true
+        default: '34955603965'
+      scan_date:
+        description: 'Scan date (YYYY-MM-DD)'
+        required: true
+        default: '2026-09-15'
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # 1. Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Python
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # 3. Dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. Prepare dirs
+      - name: Prepare directories
+        run: |
+          mkdir -p data
+          mkdir -p /tmp/artifact
+
+      # 5. Download artifact from previous run
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.artifact_run_id }}
+          path: /tmp/artifact/
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6. Locate alerts.db inside artifact
+      - name: Locate alerts.db
+        run: |
+          echo "=== Artifact contents ==="
+          find /tmp/artifact -type f | head -20
+          echo ""
+          DB_PATH=$(find /tmp/artifact -name "alerts.db" -type f | head -1)
+          if [ -z "$DB_PATH" ]; then
+            echo "ERROR: alerts.db not found in artifact"
+            exit 1
+          fi
+          echo "Found DB: $DB_PATH"
+          cp "$DB_PATH" data/alerts.db
+          ls -la data/
+
+      # 7. Verify DB has snapshots
+      - name: Verify snapshots exist
+        run: |
+          python3 << 'PYEOF'
+          import sqlite3
+          conn = sqlite3.connect('data/alerts.db')
+          cur = conn.cursor()
+          cur.execute("SELECT COUNT(*) FROM snapshots WHERE scan_date = ?",
+                      ('${{ inputs.scan_date }}',))
+          n = cur.fetchone()[0]
+          print(f"Snapshots for ${{ inputs.scan_date }}: {n}")
+          if n == 0:
+              print("WARNING: no snapshots found")
+          conn.close()
+          PYEOF
+
+      # 8. Schema verification
+      - name: Verify V5.0.6 Schema
+        run: |
+          python3 << 'PYEOF'
+          import sqlite3
+          conn = sqlite3.connect('data/alerts.db')
+          cur = conn.cursor()
+          checks = [
+              ("snapshots", "pm_bars_json"),
+              ("trigger_results", "trigger_data_mode"),
+              ("outcomes", "trigger_result_id"),
+          ]
+          for table, col in checks:
+              cur.execute(f"PRAGMA table_info({table})")
+              cols = {row[1] for row in cur.fetchall()}
+              ok = col in cols
+              print(f"  {table:20s}.{col:25s} : {'OK' if ok else 'MISSING'}")
+          conn.close()
+          PYEOF
+
+      # 9. DRY RUN — evaluator (no DB writes)
+      - name: Evaluator — DRY RUN
+        run: |
+          echo "==================================================="
+          echo "V5.0.6 EVALUATOR — DRY RUN"
+          echo "==================================================="
+          python evaluate_snapshots.py \
+            --scan-date ${{ inputs.scan_date }} \
+            --dry-run
+
+      # 10. Upload evaluated DB
+      - name: Upload DB (post-DRY-RUN)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluator-output-${{ github.run_number }}
+          path: data/
+          retention-days: 7
