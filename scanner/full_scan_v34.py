@@ -1,14 +1,12 @@
 """
-DAYS-BOT V5.0.5.2.5 – Full Scan Engine
+DAYS-BOT V5.0.5.2.6 – Full Scan Engine
 FIXES:
-- Liquidity: SPREAD_UNKNOWN → WATCH (not reject)
-- Removed average_daily_volume check (not populated)
-- Gate counters propagated to candidate
-- V5.0.5.2.1: Float Hard Gate (<=20M) enforced locally; UNKNOWN → WATCH (not Strict)
-- V5.0.5.2.2: Reuse float from Discovery when injected (avoids double fetch)
-- V5.0.5.2.5: Added 3 tag-only fields (gap_bucket, is_extreme_gap, gap_sign)
-              — NO gate/score changes; tags for future analysis only
+- V5.0.5.2.1: Float Hard Gate (<=20M); UNKNOWN → WATCH (not Strict)
+- V5.0.5.2.2: Reuse float from Discovery (avoids double fetch)
+- V5.0.5.2.5: Tag-only gap fields (gap_sign, gap_bucket, is_extreme_gap)
+- V5.0.5.2.6: Live Capture — save pm_bars_json (raw PM bars list)
 """
+import json
 from datetime import datetime
 from typing import List, Dict, Any
 import pytz
@@ -35,7 +33,6 @@ ET = pytz.timezone("America/New_York")
 LIQUIDITY_MAX_SPREAD_PCT = 8.0
 LIQUIDITY_MIN_PRICE = 1.0
 
-# V5.0.5.2.1 – Float Hard Gate (local, deterministic)
 FLOAT_MAX_HARD_GATE = 20_000_000
 
 
@@ -62,12 +59,6 @@ def _safe_float(value, default=0.0):
 
 
 def _check_liquidity_gate(candidate: dict) -> dict:
-    """
-    V5.0.5.2 – Softened:
-    - PRICE_TOO_LOW → reject
-    - SPREAD_TOO_WIDE (>8%) → reject
-    - SPREAD_UNKNOWN → soft (not reject, WATCH)
-    """
     hard_reasons = []
     soft_reasons = []
 
@@ -147,10 +138,6 @@ def _check_data_completeness(candidate: dict) -> dict:
 
 def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
                       float_gate_reason=None):
-    """
-    V5.0.5.2.1 – Uniform reject/WATCH helper.
-    Sets consistent fields so DB + Replay can identify the gate outcome.
-    """
     c['float_gate_passed'] = (gate_name != 'FLOAT_OVER_20M' and gate_name != 'FLOAT_UNAVAILABLE')
     c['float_gate_reason'] = float_gate_reason if float_gate_reason is not None else gate_name
     c['qualified'] = False
@@ -182,22 +169,9 @@ def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
 
 
 def _classify_gap(gap_pct: float) -> dict:
-    """
-    V5.0.5.2.5 – Tag-only gap classification.
-    NO influence on gates, scoring, or trade decisions.
-    Purpose: enable post-hoc analysis after 50-100 setups.
-
-    Returns:
-        {
-            "gap_sign": "POS" | "NEG" | "FLAT",
-            "gap_bucket": "<3" | "3-5" | "5-10" | "10-25" | "25-40" | "40+",
-            "is_extreme_gap": bool   # True if gap >= 40% (or <= -40%)
-        }
-    """
     gap = _safe_float(gap_pct, 0.0)
     abs_gap = abs(gap)
 
-    # Sign
     if gap > 0.05:
         sign = "POS"
     elif gap < -0.05:
@@ -205,7 +179,6 @@ def _classify_gap(gap_pct: float) -> dict:
     else:
         sign = "FLAT"
 
-    # Bucket (based on absolute gap %)
     if abs_gap < 3:
         bucket = "<3"
     elif abs_gap < 5:
@@ -247,10 +220,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         analysis = {}
 
-        # ================================================================
-        # V5.0.5.2.5 – Tag-only gap classification (NO gates, NO scoring)
-        # Computed early so it's set on EVERY candidate (even rejected)
-        # ================================================================
+        # V5.0.5.2.5 – gap tags
         gap_tags = _classify_gap(c.get('gap_pct', 0))
         c['gap_sign'] = gap_tags['gap_sign']
         c['gap_bucket'] = gap_tags['gap_bucket']
@@ -277,7 +247,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             scored.append(c)
             continue
 
-        # GATE 2: Liquidity (softened)
+        # GATE 2: Liquidity
         liquidity = _check_liquidity_gate(c)
         c['liquidity_gate'] = liquidity
 
@@ -295,7 +265,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             scored.append(c)
             continue
 
-        # Soft spread warning
         if liquidity.get('soft_reasons'):
             c['liquidity_soft_flags'] = liquidity.get('soft_reasons')
 
@@ -324,6 +293,12 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
             )
 
+            # V5.0.5.2.6 – Live Capture: raw PM bars JSON
+            c['pm_bars_json'] = json.dumps(
+                pm_data.get('pm_bars_list', []),
+                default=str,
+            )
+
             if c['pm_volume'] == 0:
                 if pm_source == 'yfinance':
                     c['pm_volume_status'] = "VOLUME_UNAVAILABLE"
@@ -335,6 +310,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c.update({
                 "pm_high": None, "pm_low": None, "pm_vwap": None,
                 "pm_volume": 0, "pm_bars": 0,
+                "pm_bars_json": None,
                 "pm_data_quality": "UNAVAILABLE", "pm_source": pm_source,
                 "pm_dist_signed": None, "pm_volume_status": "UNAVAILABLE",
             })
@@ -402,9 +378,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sec_has_offering'] = sec_risk.get('has_offering', False)
         analysis['sec_risk'] = sec_risk
 
-        # ================================================================
-        # FLOAT: reuse from Discovery if injected (V5.0.5.2.2)
-        # ================================================================
+        # FLOAT: reuse from Discovery if injected
         float_from_discovery = c.get('float')
         float_source_from_discovery = c.get('float_source')
 
@@ -431,12 +405,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             analysis['float'] = c['float']
             analysis['short_interest'] = c['short_interest']
 
-        # ================================================================
-        # GATE 3 (V5.0.5.2.1): FLOAT HARD GATE
-        #   known > 20M          → NO_TRADE  (skip scoring)
-        #   known <= 20M         → PASS
-        #   unknown              → WATCH     (skip scoring, NOT Strict)
-        # ================================================================
+        # FLOAT HARD GATE
         raw_float = c.get('float')
         float_num = None
         if raw_float is not None:
@@ -473,8 +442,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['float_gate_reason'] = 'PASS'
             c['qualified'] = True
             analysis['float_gate'] = {'passed': True, 'reason': 'PASS'}
-
-        # ===== END FLOAT HARD GATE =====
 
         personality = _safe_call(get_stock_personality,
             {"personality": "UNKNOWN", "failure_rate": 0, "sample_size": 0},
@@ -540,40 +507,4 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             'rvol': c.get('rvol_status'),
             'catalyst': c.get('catalyst_type'),
             'sec': c.get('sec_risk_level'),
-            'score': c.get('score_status'),
-            'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
-            'float_source': c.get('float_source', 'unknown'),
-        }
-
-        c['analysis'] = analysis
-        scored.append(c)
-
-    print()
-    print("=" * 74)
-    print("FULLSCAN GATE SUMMARY")
-    print("=" * 74)
-    print(f"  Total analyzed:                {total_to_analyze}")
-    print(f"  Corporate Action rejects:      {corp_action_rejects}")
-    print(f"  Liquidity rejects:             {liquidity_rejects}")
-    print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
-    print(f"  Float cache hits (Discovery):  {float_cache_hits}")
-    print(f"  Float live fetches:            {float_live_fetches}")
-    print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
-    valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
-    print(f"  Top 5 returned:                {min(5, len(valid_scored))}")
-    print("=" * 74)
-
-    # Attach gate counters to candidates for Lesson
-    gate_summary = {
-        "corp_action_rejects": corp_action_rejects,
-        "liquidity_rejects": liquidity_rejects,
-        "float_rejects": float_rejects,
-        "float_cache_hits": float_cache_hits,
-        "float_live_fetches": float_live_fetches,
-    }
-    for c in scored:
-        c['_gate_summary'] = gate_summary
-
-    valid_scored.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
-
-    return valid_scored[:5] if len(valid_scored) >= 5 else valid_scored
+            'score': c.ge
