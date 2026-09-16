@@ -78,11 +78,12 @@ jobs:
             RUN_ID="${{ inputs.artifact_run_id }}"
           else
             # Auto mode
-            NOW_HOUR_ET=$(TZ=America/New_York date +%H)
+            NOW_HOUR_RAW=$(TZ=America/New_York date +%H)
+            NOW_HOUR_ET=$((10#$NOW_HOUR_RAW))
             TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
             YESTERDAY_ET=$(TZ=America/New_York date -d 'yesterday' +%Y-%m-%d)
 
-            if [ "10#$NOW_HOUR_ET" -lt "16" ]; then
+            if [ "$NOW_HOUR_ET" -lt 16 ]; then
               TARGET_DATE="$YESTERDAY_ET"
             else
               TARGET_DATE="$TODAY_ET"
