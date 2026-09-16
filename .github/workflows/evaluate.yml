@@ -7,17 +7,24 @@ on:
         description: 'Artifact name (empty = auto-detect latest for scan_date)'
         required: false
         default: ''
+
       artifact_run_id:
         description: 'Run ID (empty = auto)'
         required: false
         default: ''
+
       scan_date:
-        description: 'Scan date YYYY-MM-DD (empty = latest with complete RTH)'
+        description: 'Scan date YYYY-MM-DD (empty = auto)'
         required: false
         default: ''
+
+  # ============================================================
+  # 22:00 UTC = 18:00 ET during EDT
+  # 22:00 UTC = 17:00 ET during EST
+  #
+  # In both cases this is AFTER 16:00 ET market close.
+  # ============================================================
   schedule:
-    # 22:00 UTC = 18:00 ET (EDT) / 17:00 ET (EST)
-    # After US market close (16:00 ET)
     - cron: '0 22 * * 1-5'
 
 permissions:
@@ -34,97 +41,192 @@ jobs:
     timeout-minutes: 20
 
     steps:
+
+      # ============================================================
+      # Checkout
+      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ============================================================
+      # Determine mode
+      # ============================================================
       - name: Determine mode
         id: mode
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "mode=auto" >> $GITHUB_OUTPUT
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
           elif [ -z "${{ inputs.artifact_run_id }}" ]; then
-            echo "mode=auto" >> $GITHUB_OUTPUT
+            echo "mode=auto" >> "$GITHUB_OUTPUT"
           else
-            echo "mode=manual" >> $GITHUB_OUTPUT
+            echo "mode=manual" >> "$GITHUB_OUTPUT"
           fi
 
+          echo "Evaluation mode determined."
+
+      # ============================================================
+      # Python
+      # ============================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
+      # ============================================================
+      # Dependencies
+      # ============================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ============================================================
+      # Prepare directories
+      # ============================================================
       - name: Prepare directories
         run: |
           mkdir -p data
           mkdir -p /tmp/artifact
 
       # ============================================================
-      # Resolve target scan_date + artifact
+      # Resolve target scan date + artifact
       # ============================================================
       - name: Resolve target scan_date
         id: target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "V5.0.6 EVALUATOR TARGET RESOLUTION"
+          echo "=================================================="
+
           if [ "${{ steps.mode.outputs.mode }}" = "manual" ]; then
+
             TARGET_DATE="${{ inputs.scan_date }}"
             ARTIFACT_NAME="${{ inputs.artifact_name }}"
             RUN_ID="${{ inputs.artifact_run_id }}"
-          else
-            # Auto mode
-            NOW_HOUR_RAW=$(TZ=America/New_York date +%H)
-            NOW_HOUR_ET=$((10#$NOW_HOUR_RAW))
-            TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
-            YESTERDAY_ET=$(TZ=America/New_York date -d 'yesterday' +%Y-%m-%d)
 
-            if [ "$NOW_HOUR_ET" -lt 16 ]; then
-              TARGET_DATE="$YESTERDAY_ET"
+            if [ -z "$TARGET_DATE" ]; then
+              echo "ERROR: manual mode requires scan_date"
+              exit 1
+            fi
+
+            if [ -z "$RUN_ID" ]; then
+              echo "ERROR: manual mode requires artifact_run_id"
+              exit 1
+            fi
+
+            if [ -z "$ARTIFACT_NAME" ]; then
+              echo "ERROR: manual mode requires artifact_name"
+              exit 1
+            fi
+
+            echo "[evaluate] Manual target:"
+            echo "  scan_date=$TARGET_DATE"
+            echo "  artifact=$ARTIFACT_NAME"
+            echo "  run_id=$RUN_ID"
+
+          else
+
+            # ========================================================
+            # AUTO MODE
+            #
+            # Evaluator is intended to run after market close.
+            # If manually dispatched before 16:00 ET, evaluate the
+            # latest previous weekday instead of today's incomplete
+            # RTH data.
+            # ========================================================
+
+            NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z')
+            NOW_HOUR_RAW=$(TZ=America/New_York date +%H)
+            NOW_HOUR=$((10#$NOW_HOUR_RAW))
+
+            TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
+
+            if [ "$NOW_HOUR" -lt 16 ]; then
+              TARGET_DATE=$(TZ=America/New_York date -d 'yesterday' +%Y-%m-%d)
+              echo "[evaluate] Before 16:00 ET."
+              echo "[evaluate] Targeting previous calendar day: $TARGET_DATE"
             else
               TARGET_DATE="$TODAY_ET"
             fi
 
-            echo "[evaluate] Auto mode: now=${NOW_HOUR_ET} ET, target=${TARGET_DATE}"
+            echo "[evaluate] Current ET time: $NOW_ET"
+            echo "[evaluate] Target scan_date: $TARGET_DATE"
 
-            # Find most recent artifact matching scan-${TARGET_DATE}-r*
-            FOUND=$(gh api \
-              -H "Accept: application/vnd.github+json" \
-              "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
-              --jq "[.artifacts[] | select(.name | startswith(\"scan-${TARGET_DATE}-\"))] | .[0] // empty")
+            # ========================================================
+            # Find latest non-expired scan artifact for TARGET_DATE.
+            #
+            # We explicitly sort by created_at descending and select
+            # the newest matching artifact.
+            # ========================================================
+
+            FOUND=$(
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+                --jq "
+                  [
+                    .artifacts[]
+                    | select(.expired == false)
+                    | select(.name | startswith(\"scan-${TARGET_DATE}-r\"))
+                  ]
+                  | sort_by(.created_at)
+                  | reverse
+                  | .[0] // empty
+                "
+            )
 
             if [ -z "$FOUND" ]; then
-              echo "[evaluate] No artifact found for $TARGET_DATE"
-              echo "has_target=false" >> $GITHUB_OUTPUT
+              echo "[evaluate] No non-expired scan artifact found for $TARGET_DATE"
+
+              echo "has_target=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
 
             ARTIFACT_NAME=$(echo "$FOUND" | jq -r '.name')
             RUN_ID=$(echo "$FOUND" | jq -r '.workflow_run.id')
-            echo "[evaluate] Found: $ARTIFACT_NAME (run $RUN_ID)"
+
+            echo "[evaluate] Latest artifact:"
+            echo "  scan_date=$TARGET_DATE"
+            echo "  artifact=$ARTIFACT_NAME"
+            echo "  run_id=$RUN_ID"
+
           fi
 
-          if [ -z "$TARGET_DATE" ] || [ -z "$ARTIFACT_NAME" ] || [ -z "$RUN_ID" ]; then
-            echo "[evaluate] Incomplete target — aborting"
-            echo "has_target=false" >> $GITHUB_OUTPUT
-            exit 0
+          if [ -z "$TARGET_DATE" ] || \
+             [ -z "$ARTIFACT_NAME" ] || \
+             [ -z "$RUN_ID" ]; then
+
+            echo "[evaluate] ERROR: incomplete evaluation target"
+            echo "has_target=false" >> "$GITHUB_OUTPUT"
+            exit 1
           fi
 
-          echo "scan_date=$TARGET_DATE" >> $GITHUB_OUTPUT
-          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-          echo "has_target=true" >> $GITHUB_OUTPUT
+          echo "scan_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "has_target=true" >> "$GITHUB_OUTPUT"
 
+      # ============================================================
+      # No target
+      # ============================================================
       - name: Exit early if no target
         if: steps.target.outputs.has_target != 'true'
         run: |
-          echo "No target artifact for evaluation — exiting cleanly."
-          echo "This is expected if no scan ran today."
+          echo "=================================================="
+          echo "NO EVALUATION TARGET"
+          echo "=================================================="
+          echo "No scan artifact exists for the requested date."
+          echo "No fabricated evaluation will be performed."
+          echo "Workflow ends without evaluating anything."
 
+      # ============================================================
+      # Download target artifact
+      # ============================================================
       - name: Download target artifact
         if: steps.target.outputs.has_target == 'true'
         uses: actions/download-artifact@v4
@@ -134,33 +236,164 @@ jobs:
           path: /tmp/artifact/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # ============================================================
+      # Locate DB
+      # ============================================================
       - name: Locate alerts.db
         if: steps.target.outputs.has_target == 'true'
         run: |
+          set -euo pipefail
+
           echo "=== Artifact contents ==="
-          find /tmp/artifact -type f
+          find /tmp/artifact -type f -print
+
           DB=$(find /tmp/artifact -name "alerts.db" -type f | head -1)
+
           if [ -z "$DB" ]; then
-            echo "ERROR: alerts.db not found"
+            echo "ERROR: alerts.db not found in target artifact"
             exit 1
           fi
-          cp "$DB" data/alerts.db
-          ls -la data/
 
-      - name: Verify snapshots
+          cp "$DB" data/alerts.db
+
+          echo "Target DB:"
+          ls -lh data/alerts.db
+
+      # ============================================================
+      # Verify DB belongs to target scan date
+      # ============================================================
+      - name: Verify target DB
         if: steps.target.outputs.has_target == 'true'
         run: |
           python3 << 'PYEOF'
           import sqlite3
-          conn = sqlite3.connect('data/alerts.db')
+          import sys
+
+          expected = "${{ steps.target.outputs.scan_date }}"
+
+          conn = sqlite3.connect("data/alerts.db")
           cur = conn.cursor()
-          rows = cur.execute(
-              "SELECT scan_date, COUNT(*) FROM snapshots "
-              "GROUP BY scan_date ORDER BY scan_date DESC LIMIT 5"
-          ).fetchall()
-          print("Snapshots by scan_date:")
-          for r in rows: print(f"  {r[0]}: {r[1]}")
+
+          print("=" * 74)
+          print("TARGET DB VERIFICATION")
+          print("=" * 74)
+          print(f"Expected scan_date: {expected}")
+
+          # --------------------------------------------------------
+          # Verify alerts table when available.
+          # --------------------------------------------------------
+          try:
+              alert_dates = cur.execute(
+                  """
+                  SELECT DISTINCT scan_date
+                  FROM alerts
+                  ORDER BY scan_date DESC
+                  """
+              ).fetchall()
+          except Exception:
+              alert_dates = []
+
+          print("alerts.scan_date values:")
+          for row in alert_dates[:10]:
+              print(f"  {row[0]}")
+
+          # --------------------------------------------------------
+          # Verify snapshots table.
+          # --------------------------------------------------------
+          try:
+              snapshot_dates = cur.execute(
+                  """
+                  SELECT DISTINCT scan_date
+                  FROM snapshots
+                  ORDER BY scan_date DESC
+                  """
+              ).fetchall()
+          except Exception as exc:
+              print(f"ERROR: snapshots table unavailable: {exc}")
+              conn.close()
+              sys.exit(1)
+
+          print("snapshots.scan_date values:")
+          for row in snapshot_dates[:10]:
+              print(f"  {row[0]}")
+
+          target_count = cur.execute(
+              """
+              SELECT COUNT(*)
+              FROM snapshots
+              WHERE scan_date = ?
+              """,
+              (expected,)
+          ).fetchone()[0]
+
+          print(f"Snapshots for target date: {target_count}")
+
+          if target_count == 0:
+              print()
+              print("ERROR: target date has zero snapshots.")
+              print("Evaluator will NOT run.")
+              conn.close()
+              sys.exit(1)
+
           conn.close()
+
+          print()
+          print("PASS: Target DB contains snapshots for requested scan_date.")
+          PYEOF
+
+      # ============================================================
+      # Verify RTH completeness
+      #
+      # This is a safety gate only.
+      # The evaluator itself remains responsible for its detailed
+      # outcome logic.
+      # ============================================================
+      - name: Verify RTH completion window
+        if: steps.target.outputs.has_target == 'true'
+        run: |
+          python3 << 'PYEOF'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import sys
+
+          ET = ZoneInfo("America/New_York")
+
+          now = datetime.now(ET)
+
+          target_date = "${{ steps.target.outputs.scan_date }}"
+
+          target_day = datetime.strptime(
+              target_date,
+              "%Y-%m-%d"
+          ).date()
+
+          today = now.date()
+
+          print("=" * 74)
+          print("RTH COMPLETENESS CHECK")
+          print("=" * 74)
+          print(f"Current ET: {now}")
+          print(f"Target date: {target_date}")
+          print(f"Today ET: {today}")
+
+          # A historical day is complete.
+          if target_day < today:
+              print("PASS: target is a previous trading/calendar day.")
+              sys.exit(0)
+
+          # For today's date, require >= 16:00 ET.
+          if target_day == today:
+              if now.hour < 16:
+                  print("ERROR: RTH is not complete yet.")
+                  print("Evaluator must not run before 16:00 ET.")
+                  sys.exit(1)
+
+              print("PASS: current ET time is after 16:00.")
+              sys.exit(0)
+
+          # Future date must never be evaluated.
+          print("ERROR: target date is in the future.")
+          sys.exit(1)
           PYEOF
 
       # ============================================================
@@ -169,10 +402,85 @@ jobs:
       - name: Run evaluator
         if: steps.target.outputs.has_target == 'true'
         run: |
+          set -euo pipefail
+
           echo "==================================================="
-          echo "V5.0.6 EVALUATOR — scan_date=${{ steps.target.outputs.scan_date }}"
+          echo "V5.0.6 EVALUATOR"
+          echo "scan_date=${{ steps.target.outputs.scan_date }}"
+          echo "artifact=${{ steps.target.outputs.artifact_name }}"
+          echo "run_id=${{ steps.target.outputs.run_id }}"
           echo "==================================================="
-          python evaluate_snapshots.py --scan-date ${{ steps.target.outputs.scan_date }}
+
+          python evaluate_snapshots.py \
+            --scan-date "${{ steps.target.outputs.scan_date }}"
+
+      # ============================================================
+      # Verify evaluator produced evidence
+      # ============================================================
+      - name: Verify evaluation evidence
+        if: steps.target.outputs.has_target == 'true'
+        run: |
+          python3 << 'PYEOF'
+          import sqlite3
+          import sys
+
+          conn = sqlite3.connect("data/alerts.db")
+          cur = conn.cursor()
+
+          target = "${{ steps.target.outputs.scan_date }}"
+
+          print("=" * 74)
+          print("POST-EVALUATION EVIDENCE CHECK")
+          print("=" * 74)
+
+          snapshot_count = cur.execute(
+              """
+              SELECT COUNT(*)
+              FROM snapshots
+              WHERE scan_date = ?
+              """,
+              (target,)
+          ).fetchone()[0]
+
+          trigger_count = cur.execute(
+              """
+              SELECT COUNT(*)
+              FROM trigger_results tr
+              JOIN snapshots s
+                ON s.snapshot_id = tr.snapshot_id
+              WHERE s.scan_date = ?
+              """,
+              (target,)
+          ).fetchone()[0]
+
+          outcome_count = cur.execute(
+              """
+              SELECT COUNT(*)
+              FROM outcomes o
+              JOIN snapshots s
+                ON s.snapshot_id = o.snapshot_id
+              WHERE s.scan_date = ?
+              """,
+              (target,)
+          ).fetchone()[0]
+
+          print(f"Snapshots:       {snapshot_count}")
+          print(f"Trigger results: {trigger_count}")
+          print(f"Outcomes:        {outcome_count}")
+
+          if snapshot_count == 0:
+              print("ERROR: zero snapshots after evaluation")
+              conn.close()
+              sys.exit(1)
+
+          # Zero trigger results can be legitimate if no trigger was
+          # available/hit. Therefore do NOT fail merely because it is 0.
+
+          conn.close()
+
+          print()
+          print("PASS: Evaluation evidence database is readable.")
+          PYEOF
 
       # ============================================================
       # Generate EOD report
@@ -180,12 +488,28 @@ jobs:
       - name: Generate EOD report
         if: steps.target.outputs.has_target == 'true'
         run: |
-          python eod_report/generate_eod_report.py \
-            --scan-date ${{ steps.target.outputs.scan_date }} \
-            --output /tmp/eod_report.md
-          echo "=== REPORT ==="
-          cat /tmp/eod_report.md
+          set -euo pipefail
 
+          mkdir -p /tmp/eod
+
+          python eod_report/generate_eod_report.py \
+            --scan-date "${{ steps.target.outputs.scan_date }}" \
+            --output "/tmp/eod/eod_report.md"
+
+          if [ ! -f "/tmp/eod/eod_report.md" ]; then
+            echo "ERROR: EOD report was not created"
+            exit 1
+          fi
+
+          echo "=================================================="
+          echo "EOD REPORT"
+          echo "=================================================="
+
+          cat /tmp/eod/eod_report.md
+
+      # ============================================================
+      # Upload evaluator output + report
+      # ============================================================
       - name: Upload evaluator output + report
         if: always() && steps.target.outputs.has_target == 'true'
         uses: actions/upload-artifact@v4
@@ -193,6 +517,6 @@ jobs:
           name: evaluator-${{ steps.target.outputs.scan_date }}-r${{ github.run_number }}
           path: |
             data/
-            /tmp/eod_report.md
+            /tmp/eod/eod_report.md
           retention-days: 90
           if-no-files-found: warn
