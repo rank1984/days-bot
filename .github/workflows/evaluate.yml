@@ -82,11 +82,13 @@ jobs:
             TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
             YESTERDAY_ET=$(TZ=America/New_York date -d 'yesterday' +%Y-%m-%d)
 
-            if [ "$NOW_HOUR_ET" -lt "16" ]; then
+            if [ "10#$NOW_HOUR_ET" -lt "16" ]; then
               TARGET_DATE="$YESTERDAY_ET"
             else
               TARGET_DATE="$TODAY_ET"
             fi
+
+            echo "[evaluate] Auto mode: now=${NOW_HOUR_ET} ET, target=${TARGET_DATE}"
 
             # Find most recent artifact matching scan-${TARGET_DATE}-r*
             FOUND=$(gh api \
@@ -177,7 +179,7 @@ jobs:
       - name: Generate EOD report
         if: steps.target.outputs.has_target == 'true'
         run: |
-          python report/generate_eod_report.py \
+          python eod_report/generate_eod_report.py \
             --scan-date ${{ steps.target.outputs.scan_date }} \
             --output /tmp/eod_report.md
           echo "=== REPORT ==="
