@@ -5,28 +5,32 @@ on:
 
   # ============================================================
   # 10 premarket runs
-  # Israel: 15:00-16:25 IDT
-  # UTC:    12:00-13:25
-  # ET:     08:00-09:25 EDT
+  # Fixed ET timezone — GitHub handles EDT/EST automatically
   #
-  # NOTE:
-  # - GitHub Actions cron is ALWAYS UTC.
-  # - Israel is UTC+3 in summer (IDT), UTC+2 in winter (IST).
-  # - These times are for EDT/IDT (summer).
-  # - In winter (EST/IST), runs will shift by 1h earlier in ET,
-  #   still safely within premarket.
+  # ET:      08:02-09:25
+  # Israel:  15:02-16:25 IDT (summer)
   # ============================================================
   schedule:
-    - cron: '2 12 * * 1-5'    # 15:02 IDT | 08:02 ET
-    - cron: '12 12 * * 1-5'   # 15:12 IDT | 08:12 ET
-    - cron: '22 12 * * 1-5'   # 15:22 IDT | 08:22 ET
-    - cron: '32 12 * * 1-5'   # 15:32 IDT | 08:32 ET
-    - cron: '42 12 * * 1-5'   # 15:42 IDT | 08:42 ET
-    - cron: '52 12 * * 1-5'   # 15:52 IDT | 08:52 ET
-    - cron: '2 13 * * 1-5'    # 16:02 IDT | 09:02 ET
-    - cron: '12 13 * * 1-5'   # 16:12 IDT | 09:12 ET
-    - cron: '22 13 * * 1-5'   # 16:22 IDT | 09:22 ET
-    - cron: '25 13 * * 1-5'   # 16:25 IDT | 09:25 ET (last one, 5 min before open)
+    - cron: '2 8 * * 1-5'
+      timezone: "America/New_York"   # 08:02 ET
+    - cron: '12 8 * * 1-5'
+      timezone: "America/New_York"   # 08:12 ET
+    - cron: '22 8 * * 1-5'
+      timezone: "America/New_York"   # 08:22 ET
+    - cron: '32 8 * * 1-5'
+      timezone: "America/New_York"   # 08:32 ET
+    - cron: '42 8 * * 1-5'
+      timezone: "America/New_York"   # 08:42 ET
+    - cron: '52 8 * * 1-5'
+      timezone: "America/New_York"   # 08:52 ET
+    - cron: '2 9 * * 1-5'
+      timezone: "America/New_York"   # 09:02 ET
+    - cron: '12 9 * * 1-5'
+      timezone: "America/New_York"   # 09:12 ET
+    - cron: '22 9 * * 1-5'
+      timezone: "America/New_York"   # 09:22 ET
+    - cron: '25 9 * * 1-5'
+      timezone: "America/New_York"   # 09:25 ET (last one, 5 min before open)
 
 permissions:
   contents: read
