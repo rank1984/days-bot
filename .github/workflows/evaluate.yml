@@ -19,13 +19,20 @@ on:
         default: ''
 
   # ============================================================
-  # 22:00 UTC = 18:00 ET during EDT
-  # 22:00 UTC = 17:00 ET during EST
+  # EOD EVALUATOR
   #
-  # In both cases this is AFTER 16:00 ET market close.
+  # Fixed New York timezone.
+  # GitHub handles EDT / EST automatically.
+  #
+  # 17:15 ET = 00:15 Israel during IDT
+  # 17:15 ET = 00:15 Israel during IST
+  #
+  # Market closes at 16:00 ET.
+  # Evaluator starts 75 minutes later.
   # ============================================================
   schedule:
-    - cron: '0 22 * * 1-5'
+    - cron: '15 17 * * 1-5'
+      timezone: "America/New_York"
 
 permissions:
   contents: read
@@ -88,6 +95,7 @@ jobs:
         run: |
           mkdir -p data
           mkdir -p /tmp/artifact
+          mkdir -p /tmp/eod
 
       # ============================================================
       # Resolve target scan date + artifact
@@ -131,15 +139,6 @@ jobs:
 
           else
 
-            # ========================================================
-            # AUTO MODE
-            #
-            # Evaluator is intended to run after market close.
-            # If manually dispatched before 16:00 ET, evaluate the
-            # latest previous weekday instead of today's incomplete
-            # RTH data.
-            # ========================================================
-
             NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z')
             NOW_HOUR_RAW=$(TZ=America/New_York date +%H)
             NOW_HOUR=$((10#$NOW_HOUR_RAW))
@@ -148,6 +147,7 @@ jobs:
 
             if [ "$NOW_HOUR" -lt 16 ]; then
               TARGET_DATE=$(TZ=America/New_York date -d 'yesterday' +%Y-%m-%d)
+
               echo "[evaluate] Before 16:00 ET."
               echo "[evaluate] Targeting previous calendar day: $TARGET_DATE"
             else
@@ -156,13 +156,6 @@ jobs:
 
             echo "[evaluate] Current ET time: $NOW_ET"
             echo "[evaluate] Target scan_date: $TARGET_DATE"
-
-            # ========================================================
-            # Find latest non-expired scan artifact for TARGET_DATE.
-            #
-            # We explicitly sort by created_at descending and select
-            # the newest matching artifact.
-            # ========================================================
 
             FOUND=$(
               gh api \
@@ -279,9 +272,6 @@ jobs:
           print("=" * 74)
           print(f"Expected scan_date: {expected}")
 
-          # --------------------------------------------------------
-          # Verify alerts table when available.
-          # --------------------------------------------------------
           try:
               alert_dates = cur.execute(
                   """
@@ -297,9 +287,6 @@ jobs:
           for row in alert_dates[:10]:
               print(f"  {row[0]}")
 
-          # --------------------------------------------------------
-          # Verify snapshots table.
-          # --------------------------------------------------------
           try:
               snapshot_dates = cur.execute(
                   """
@@ -342,11 +329,7 @@ jobs:
           PYEOF
 
       # ============================================================
-      # Verify RTH completeness
-      #
-      # This is a safety gate only.
-      # The evaluator itself remains responsible for its detailed
-      # outcome logic.
+      # Verify RTH completion window
       # ============================================================
       - name: Verify RTH completion window
         if: steps.target.outputs.has_target == 'true'
@@ -376,12 +359,10 @@ jobs:
           print(f"Target date: {target_date}")
           print(f"Today ET: {today}")
 
-          # A historical day is complete.
           if target_day < today:
               print("PASS: target is a previous trading/calendar day.")
               sys.exit(0)
 
-          # For today's date, require >= 16:00 ET.
           if target_day == today:
               if now.hour < 16:
                   print("ERROR: RTH is not complete yet.")
@@ -391,7 +372,6 @@ jobs:
               print("PASS: current ET time is after 16:00.")
               sys.exit(0)
 
-          # Future date must never be evaluated.
           print("ERROR: target date is in the future.")
           sys.exit(1)
           PYEOF
@@ -473,9 +453,6 @@ jobs:
               conn.close()
               sys.exit(1)
 
-          # Zero trigger results can be legitimate if no trigger was
-          # available/hit. Therefore do NOT fail merely because it is 0.
-
           conn.close()
 
           print()
@@ -489,8 +466,6 @@ jobs:
         if: steps.target.outputs.has_target == 'true'
         run: |
           set -euo pipefail
-
-          mkdir -p /tmp/eod
 
           python eod_report/generate_eod_report.py \
             --scan-date "${{ steps.target.outputs.scan_date }}" \
@@ -506,6 +481,110 @@ jobs:
           echo "=================================================="
 
           cat /tmp/eod/eod_report.md
+
+      # ============================================================
+      # Send EOD report to Telegram
+      #
+      # Telegram limit: 4096 characters/message.
+      # We send plain text in chunks.
+      # ============================================================
+      - name: Send EOD report to Telegram
+        if: steps.target.outputs.has_target == 'true'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPORT_FILE: /tmp/eod/eod_report.md
+          SCAN_DATE: ${{ steps.target.outputs.scan_date }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TELEGRAM_TOKEN:-}" ]; then
+            echo "ERROR: TELEGRAM_TOKEN secret is missing"
+            exit 1
+          fi
+
+          if [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+            echo "ERROR: TELEGRAM_CHAT_ID secret is missing"
+            exit 1
+          fi
+
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "ERROR: EOD report file not found"
+            exit 1
+          fi
+
+          python3 << 'PYEOF'
+          import os
+          import sys
+          import urllib.request
+          import urllib.parse
+
+          token = os.environ["TELEGRAM_TOKEN"]
+          chat_id = os.environ["TELEGRAM_CHAT_ID"]
+          report_file = os.environ["REPORT_FILE"]
+          scan_date = os.environ["SCAN_DATE"]
+
+          with open(report_file, "r", encoding="utf-8") as f:
+              text = f.read().strip()
+
+          if not text:
+              text = f"DAYS-BOT V5.0.6\nEOD Report {scan_date}\n\nNo report content."
+
+          header = f"DAYS-BOT V5.0.6 — EOD {scan_date}\n\n"
+
+          # Telegram sendMessage limit is 4096 chars.
+          max_len = 4000
+
+          chunks = []
+
+          while len(text) > max_len:
+              split_at = text.rfind("\n", 0, max_len)
+
+              if split_at < 500:
+                  split_at = max_len
+
+              chunks.append(text[:split_at].strip())
+              text = text[split_at:].strip()
+
+          if text:
+              chunks.append(text)
+
+          print(f"Telegram messages to send: {len(chunks)}")
+
+          for i, chunk in enumerate(chunks, start=1):
+
+              prefix = header if i == 1 else f"DAYS-BOT V5.0.6 — EOD {scan_date} ({i})\n\n"
+
+              payload = urllib.parse.urlencode({
+                  "chat_id": chat_id,
+                  "text": prefix + chunk
+              }).encode("utf-8")
+
+              url = f"https://api.telegram.org/bot{token}/sendMessage"
+
+              request = urllib.request.Request(
+                  url,
+                  data=payload,
+                  method="POST"
+              )
+
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      body = response.read().decode("utf-8")
+
+                  if '"ok":true' not in body:
+                      print("Telegram API returned unexpected response:")
+                      print(body)
+                      sys.exit(1)
+
+                  print(f"Telegram message {i}/{len(chunks)} sent.")
+
+              except Exception as exc:
+                  print(f"ERROR sending Telegram message {i}: {exc}")
+                  sys.exit(1)
+
+          print("PASS: EOD report sent to Telegram.")
+          PYEOF
 
       # ============================================================
       # Upload evaluator output + report
