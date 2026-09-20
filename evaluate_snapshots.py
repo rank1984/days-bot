@@ -1104,4 +1104,2027 @@ def evaluate_horizon(
         }
 
     mfe = entry_fill
-    mae = entry_f
+    mae = entry_fill
+
+    mfe_idx = entry_idx
+    mae_idx = entry_idx
+
+    # -------------------------------------------------------------
+    # Walk forward
+    # -------------------------------------------------------------
+
+    for idx in range(
+        entry_idx,
+        end_idx + 1,
+    ):
+
+        row = df.iloc[idx]
+
+        high = _safe_float(
+            row["High"]
+        )
+
+        low = _safe_float(
+            row["Low"]
+        )
+
+        if (
+            high is None
+            or low is None
+        ):
+            continue
+
+        if high > mfe:
+            mfe = high
+            mfe_idx = idx
+
+        if low < mae:
+            mae = low
+            mae_idx = idx
+
+        # ---------------------------------------------------------
+        # STOP FIRST
+        # ---------------------------------------------------------
+
+        if low <= current_stop:
+
+            exit_reason = (
+                "STOP_HIT"
+            )
+
+            exit_idx = idx
+
+            exit_price = (
+                current_stop
+                * (
+                    1
+                    - SLIPPAGE_PCT
+                    / 100.0
+                )
+            )
+
+            if half_exited:
+
+                # Remaining 50% exits here.
+                exit_fill = exit_price
+
+            else:
+
+                # Full position exits.
+                exit_fill = exit_price
+
+            break
+
+        # ---------------------------------------------------------
+        # T1
+        # ---------------------------------------------------------
+
+        if (
+            not half_exited
+            and high >= t1
+        ):
+
+            half_exited = True
+
+            # Stop moves to BE.
+            current_stop = (
+                entry_fill
+            )
+
+            # Continue searching T2.
+            continue
+
+        # ---------------------------------------------------------
+        # T2
+        # ---------------------------------------------------------
+
+        if (
+            half_exited
+            and high >= t2
+        ):
+
+            exit_reason = (
+                "T2_HIT"
+            )
+
+            exit_idx = idx
+
+            t1_fill = (
+                t1
+                * (
+                    1
+                    - SLIPPAGE_PCT
+                    / 100.0
+                )
+            )
+
+            t2_fill = (
+                t2
+                * (
+                    1
+                    - SLIPPAGE_PCT
+                    / 100.0
+                )
+            )
+
+            # Weighted average exit.
+            exit_fill = (
+                0.5 * t1_fill
+                + 0.5 * t2_fill
+            )
+
+            break
+
+    else:
+
+        # Horizon close.
+        exit_idx = end_idx
+
+        close = _safe_float(
+            df.iloc[end_idx][
+                "Close"
+            ]
+        )
+
+        if close is None:
+            return {
+                "status":
+                    NET_R_STATUS_INCOMPLETE,
+
+                "entry_fill":
+                    entry_fill,
+
+                "exit_fill":
+                    None,
+
+                "exit_reason":
+                    "INCOMPLETE_DATA",
+
+                "exit_idx":
+                    end_idx,
+            }
+
+        exit_fill = (
+            close
+            * (
+                1
+                - SLIPPAGE_PCT
+                / 100.0
+            )
+        )
+
+        exit_reason = (
+            "HORIZON_END"
+        )
+
+    hold_minutes = int(
+        (
+            df.index[exit_idx]
+            - entry_time
+        ).total_seconds()
+        / 60
+    )
+
+    time_to_mfe = int(
+        (
+            df.index[mfe_idx]
+            - entry_time
+        ).total_seconds()
+    )
+
+    time_to_mae = int(
+        (
+            df.index[mae_idx]
+            - entry_time
+        ).total_seconds()
+    )
+
+    mfe_pct = (
+        (
+            mfe
+            - entry_fill
+        )
+        / entry_fill
+        * 100
+    )
+
+    mae_pct = (
+        (
+            mae
+            - entry_fill
+        )
+        / entry_fill
+        * 100
+    )
+
+    gross_pct = (
+        (
+            exit_fill
+            - entry_fill
+        )
+        / entry_fill
+        * 100
+    )
+
+    return {
+        "status":
+            NET_R_STATUS_VALID,
+
+        "entry_fill":
+            entry_fill,
+
+        "exit_fill":
+            exit_fill,
+
+        "exit_reason":
+            exit_reason,
+
+        "exit_idx":
+            exit_idx,
+
+        "mfe":
+            mfe,
+
+        "mae":
+            mae,
+
+        "mfe_pct":
+            mfe_pct,
+
+        "mae_pct":
+            mae_pct,
+
+        "time_to_mfe_sec":
+            time_to_mfe,
+
+        "time_to_mae_sec":
+            time_to_mae,
+
+        "hold_minutes":
+            hold_minutes,
+
+        "gross_pct":
+            gross_pct,
+    }
+
+
+# =====================================================================
+# NET / GROSS
+# =====================================================================
+
+def compute_gross_net(
+    entry_fill,
+    exit_fill,
+    risk_per_share,
+    position_size,
+):
+    """
+    Calculate Gross R and Net R.
+
+    Critical rule:
+        invalid/non-executable = NULL Net R
+        valid 0R = real 0R
+    """
+
+    entry_fill = _safe_float(
+        entry_fill
+    )
+
+    exit_fill = _safe_float(
+        exit_fill
+    )
+
+    risk_per_share = _safe_float(
+        risk_per_share
+    )
+
+    position_size = _safe_int(
+        position_size
+    )
+
+    if (
+        entry_fill is None
+        or exit_fill is None
+        or risk_per_share is None
+        or risk_per_share <= 0
+        or position_size is None
+        or position_size <= 0
+    ):
+
+        return {
+            "gross_r":
+                None,
+
+            "gross_pct":
+                None,
+
+            "net_r":
+                None,
+
+            "net_pct":
+                None,
+
+            "costs":
+                {
+                    "gross_pnl":
+                        None,
+
+                    "commission":
+                        0.0,
+
+                    "tax":
+                        0.0,
+
+                    "total":
+                        0.0,
+                },
+
+            "outcome":
+                "NON_EXECUTABLE",
+
+            "net_r_status":
+                NET_R_STATUS_NON_EXECUTABLE,
+        }
+
+    gross_per_share = (
+        exit_fill
+        - entry_fill
+    )
+
+    gross_r = (
+        gross_per_share
+        / risk_per_share
+    )
+
+    gross_pct = (
+        gross_per_share
+        / entry_fill
+        * 100
+    )
+
+    costs = compute_costs(
+        entry_fill,
+        exit_fill,
+        position_size,
+    )
+
+    net_pnl = (
+        costs["gross_pnl"]
+        - costs["total"]
+    )
+
+    net_per_share = (
+        net_pnl
+        / position_size
+    )
+
+    net_r = (
+        net_per_share
+        / risk_per_share
+    )
+
+    net_pct = (
+        net_pnl
+        / (
+            entry_fill
+            * position_size
+        )
+        * 100
+    )
+
+    if net_r > 0.05:
+        label = "WIN"
+
+    elif net_r < -0.05:
+        label = "LOSS"
+
+    else:
+        label = "BREAKEVEN"
+
+    return {
+        "gross_r":
+            gross_r,
+
+        "gross_pct":
+            gross_pct,
+
+        "net_r":
+            net_r,
+
+        "net_pct":
+            net_pct,
+
+        "costs":
+            costs,
+
+        "outcome":
+            label,
+
+        "net_r_status":
+            NET_R_STATUS_VALID,
+    }
+
+
+# =====================================================================
+# DB WRITE — TRIGGER
+# =====================================================================
+
+def write_trigger(
+    cur,
+    snapshot_id,
+    method,
+    hit,
+    trig_time,
+    trig_price,
+    elapsed_sec,
+    window,
+    extra=None,
+):
+    cur.execute(
+        """
+        INSERT OR REPLACE INTO trigger_results
+        (
+            snapshot_id,
+            trigger_method,
+            trigger_version,
+            hit,
+            trigger_time_utc,
+            trigger_time_et,
+            trigger_price,
+            elapsed_sec_from_t0,
+            window,
+            metadata_json
+        )
+        VALUES (
+            ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            snapshot_id,
+            method,
+            TRIGGER_VERSION,
+            1 if hit else 0,
+            _utc_string(
+                trig_time
+            ),
+            _et_string(
+                trig_time
+            ),
+            trig_price,
+            elapsed_sec,
+            window,
+            _json(extra),
+        ),
+    )
+
+
+# =====================================================================
+# DB WRITE — OUTCOME
+# =====================================================================
+
+def write_outcome(
+    cur,
+    snapshot,
+    trigger,
+    horizon,
+    outcome_data,
+):
+    snapshot_id = (
+        snapshot["snapshot_id"]
+    )
+
+    entry_fill = (
+        outcome_data.get(
+            "entry_fill"
+        )
+    )
+
+    exit_fill = (
+        outcome_data.get(
+            "exit_fill"
+        )
+    )
+
+    risk_per_share = (
+        _safe_float(
+            snapshot[
+                "risk_per_share"
+            ]
+        )
+    )
+
+    position_size = (
+        _safe_int(
+            snapshot[
+                "position_size"
+            ]
+        )
+    )
+
+    result = compute_gross_net(
+        entry_fill,
+        exit_fill,
+        risk_per_share,
+        position_size,
+    )
+
+    # -------------------------------------------------------------
+    # Trigger-relative movement
+    # -------------------------------------------------------------
+
+    t0_price = _safe_float(
+        snapshot["price"]
+    )
+
+    trigger_price = _safe_float(
+        trigger.get(
+            "trigger_price"
+        )
+    )
+
+    absolute_move = None
+    relative_move = None
+
+    if (
+        t0_price is not None
+        and t0_price > 0
+        and trigger_price is not None
+    ):
+        absolute_move = (
+            (
+                trigger_price
+                - t0_price
+            )
+            / t0_price
+            * 100
+        )
+
+    planned_entry = _safe_float(
+        snapshot["entry"]
+    )
+
+    if (
+        planned_entry is not None
+        and planned_entry > 0
+        and trigger_price is not None
+    ):
+        relative_move = (
+            (
+                trigger_price
+                - planned_entry
+            )
+            / planned_entry
+            * 100
+        )
+
+    entry_efficiency = None
+
+    if (
+        planned_entry is not None
+        and planned_entry > 0
+        and entry_fill is not None
+    ):
+        entry_efficiency = (
+            (
+                entry_fill
+                - planned_entry
+            )
+            / planned_entry
+            * 100
+        )
+
+    costs = result["costs"]
+
+    cur.execute(
+        """
+        INSERT OR REPLACE INTO outcomes
+        (
+            snapshot_id,
+            trigger_method,
+            trigger_version,
+            outcome_horizon,
+
+            t0_price,
+
+            mfe,
+            mae,
+            mfe_pct,
+            mae_pct,
+
+            time_to_mfe_sec,
+            time_to_mae_sec,
+
+            absolute_move_before_trigger_pct,
+            relative_move_before_trigger_pct,
+
+            entry_slippage_pct,
+            entry_efficiency,
+
+            exit_reason,
+            exit_price,
+            exit_time_utc,
+            hold_minutes,
+
+            gross_r,
+            gross_pct,
+
+            cost_spread,
+            cost_slippage,
+            cost_commission,
+            cost_tax,
+            cost_total,
+
+            net_r,
+            net_pct,
+            outcome,
+            net_r_status,
+
+            exit_rules_version,
+            cost_model_version
+        )
+        VALUES (
+            ?, ?, ?, ?,
+
+            ?,
+
+            ?, ?, ?, ?,
+
+            ?, ?,
+
+            ?, ?,
+
+            ?, ?,
+
+            ?, ?, ?, ?,
+
+            ?, ?,
+
+            ?, ?, ?, ?, ?,
+
+            ?, ?, ?, ?,
+
+            ?, ?
+        )
+        """,
+        (
+            snapshot_id,
+            trigger["method"],
+            TRIGGER_VERSION,
+            horizon,
+
+            t0_price,
+
+            outcome_data.get(
+                "mfe"
+            ),
+            outcome_data.get(
+                "mae"
+            ),
+            outcome_data.get(
+                "mfe_pct"
+            ),
+            outcome_data.get(
+                "mae_pct"
+            ),
+
+            outcome_data.get(
+                "time_to_mfe_sec"
+            ),
+            outcome_data.get(
+                "time_to_mae_sec"
+            ),
+
+            absolute_move,
+            relative_move,
+
+            SLIPPAGE_PCT,
+            entry_efficiency,
+
+            outcome_data.get(
+                "exit_reason"
+            ),
+
+            exit_fill,
+
+            _utc_string(
+                (
+                    outcome_data.get(
+                        "exit_time"
+                    )
+                    if outcome_data.get(
+                        "exit_time"
+                    )
+                    else None
+                )
+            ),
+
+            outcome_data.get(
+                "hold_minutes"
+            ),
+
+            result["gross_r"],
+            result["gross_pct"],
+
+            0.0,
+            0.0,
+
+            costs[
+                "commission"
+            ],
+
+            costs["tax"],
+
+            costs["total"],
+
+            result["net_r"],
+            result["net_pct"],
+
+            result["outcome"],
+            result[
+                "net_r_status"
+            ],
+
+            EXIT_RULES_VERSION,
+            COST_MODEL_VERSION,
+        ),
+    )
+
+    return result
+
+
+# =====================================================================
+# HORIZON HELPERS
+# =====================================================================
+
+def _index_at_or_before(
+    df,
+    target_time,
+):
+    indices = (
+        df.index
+        <= target_time
+    )
+
+    positions = (
+        indices.nonzero()[0]
+        if hasattr(
+            indices,
+            "nonzero",
+        )
+        else []
+    )
+
+    if len(positions) == 0:
+        return None
+
+    return int(
+        positions[-1]
+    )
+
+
+def evaluate_momentum(
+    df,
+    trigger,
+    snapshot,
+):
+    trigger_idx = trigger["idx"]
+
+    trigger_time = (
+        df.index[
+            trigger_idx
+        ]
+    )
+
+    end_time = (
+        trigger_time
+        + timedelta(
+            minutes=
+            MOMENTUM_WINDOW_MIN
+        )
+    )
+
+    end_idx = (
+        df.index
+        <= end_time
+    )
+
+    positions = (
+        end_idx.nonzero()[0]
+    )
+
+    if len(positions) == 0:
+        return None
+
+    horizon_idx = int(
+        positions[-1]
+    )
+
+    entry_fill = (
+        _entry_fill_from_next_bar(
+            df,
+            trigger_idx,
+        )
+    )
+
+    return evaluate_horizon(
+        df,
+        trigger_idx,
+        entry_fill,
+        _safe_float(
+            snapshot["stop"]
+        ),
+        _safe_float(
+            snapshot["target_1"]
+        ),
+        _safe_float(
+            snapshot["target_2"]
+        ),
+        horizon_idx,
+    )
+
+
+def evaluate_intraday(
+    df,
+    trigger,
+    snapshot,
+):
+    trigger_idx = trigger["idx"]
+
+    entry_fill = (
+        _entry_fill_from_next_bar(
+            df,
+            trigger_idx,
+        )
+    )
+
+    return evaluate_horizon(
+        df,
+        trigger_idx,
+        entry_fill,
+        _safe_float(
+            snapshot["stop"]
+        ),
+        _safe_float(
+            snapshot["target_1"]
+        ),
+        _safe_float(
+            snapshot["target_2"]
+        ),
+        len(df) - 1,
+    )
+
+
+def fetch_daily_bars(
+    ticker,
+    scan_date,
+):
+    """
+    Daily data for SWING_3D.
+
+    This is deliberately separate from RTH 1m evaluation.
+    """
+
+    try:
+
+        start = datetime.strptime(
+            scan_date,
+            "%Y-%m-%d",
+        )
+
+        end = (
+            start
+            + timedelta(days=7)
+        )
+
+        df = yf.download(
+            ticker,
+            start=start.strftime(
+                "%Y-%m-%d"
+            ),
+            end=end.strftime(
+                "%Y-%m-%d"
+            ),
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False,
+        )
+
+        if (
+            df is None
+            or df.empty
+        ):
+            return pd.DataFrame()
+
+        if isinstance(
+            df.columns,
+            pd.MultiIndex,
+        ):
+            df.columns = (
+                df.columns
+                .get_level_values(0)
+            )
+
+        return df
+
+    except Exception as exc:
+
+        print(
+            f"[swing] "
+            f"{ticker} daily error: "
+            f"{type(exc).__name__}: "
+            f"{exc}"
+        )
+
+        return pd.DataFrame()
+
+
+def evaluate_swing(
+    ticker,
+    scan_date,
+    trigger,
+    snapshot,
+):
+    """
+    SWING_3D.
+
+    Entry is still based on the actual RTH trigger.
+    Exit is evaluated over the following daily window.
+    """
+
+    daily = fetch_daily_bars(
+        ticker,
+        scan_date,
+    )
+
+    if daily.empty:
+        return {
+            "status":
+                NET_R_STATUS_INCOMPLETE,
+
+            "entry_fill":
+                None,
+
+            "exit_fill":
+                None,
+
+            "exit_reason":
+                "INCOMPLETE_DATA",
+        }
+
+    trigger_time = (
+        trigger["time"]
+    )
+
+    trigger_date = (
+        trigger_time.date()
+    )
+
+    future = daily[
+        daily.index.date
+        >= trigger_date
+    ].head(4)
+
+    if future.empty:
+        return {
+            "status":
+                NET_R_STATUS_INCOMPLETE,
+
+            "entry_fill":
+                None,
+
+            "exit_fill":
+                None,
+
+            "exit_reason":
+                "HORIZON_END_NULL",
+        }
+
+    # We cannot reconstruct the actual
+    # next-session execution from daily bars.
+    # Therefore use the RTH trigger execution
+    # already calculated separately.
+    entry_fill = (
+        _safe_float(
+            snapshot["entry"]
+        )
+    )
+
+    if (
+        entry_fill is None
+        or entry_fill <= 0
+    ):
+        return {
+            "status":
+                NET_R_STATUS_NON_EXECUTABLE,
+
+            "entry_fill":
+                None,
+
+            "exit_fill":
+                None,
+
+            "exit_reason":
+                "NOT_EXECUTABLE",
+        }
+
+    stop = _safe_float(
+        snapshot["stop"]
+    )
+
+    risk = _safe_float(
+        snapshot[
+            "risk_per_share"
+        ]
+    )
+
+    if (
+        stop is None
+        or risk is None
+        or risk <= 0
+    ):
+        return {
+            "status":
+                NET_R_STATUS_INVALID,
+
+            "entry_fill":
+                None,
+
+            "exit_fill":
+                None,
+
+            "exit_reason":
+                "INVALID_RISK",
+        }
+
+    t1 = _safe_float(
+        snapshot["target_1"]
+    )
+
+    t2 = _safe_float(
+        snapshot["target_2"]
+    )
+
+    mfe = entry_fill
+    mae = entry_fill
+
+    exit_price = None
+    exit_reason = (
+        "HORIZON_END"
+    )
+
+    half_exited = False
+
+    for _, row in future.iterrows():
+
+        high = _safe_float(
+            row["High"]
+        )
+
+        low = _safe_float(
+            row["Low"]
+        )
+
+        close = _safe_float(
+            row["Close"]
+        )
+
+        if (
+            high is None
+            or low is None
+        ):
+            continue
+
+        mfe = max(
+            mfe,
+            high,
+        )
+
+        mae = min(
+            mae,
+            low,
+        )
+
+        current_stop = (
+            entry_fill
+            if half_exited
+            else stop
+        )
+
+        # Conservative:
+        # stop before target.
+        if low <= current_stop:
+
+            exit_price = (
+                current_stop
+                * (
+                    1
+                    - SLIPPAGE_PCT
+                    / 100
+                )
+            )
+
+            exit_reason = (
+                "STOP_HIT"
+            )
+
+            break
+
+        if (
+            not half_exited
+            and high >= t1
+        ):
+            half_exited = True
+
+        if (
+            half_exited
+            and high >= t2
+        ):
+
+            t1_fill = (
+                t1
+                * (
+                    1
+                    - SLIPPAGE_PCT
+                    / 100
+                )
+            )
+
+            t2_fill = (
+                t2
+                * (
+                    1
+                    - SLIPPAGE_PCT
+                    / 100
+                )
+            )
+
+            exit_price = (
+                0.5 * t1_fill
+                + 0.5 * t2_fill
+            )
+
+            exit_reason = (
+                "T2_HIT"
+            )
+
+            break
+
+    if exit_price is None:
+
+        closes = future[
+            "Close"
+        ].dropna()
+
+        if closes.empty:
+            return {
+                "status":
+                    NET_R_STATUS_INCOMPLETE,
+
+                "entry_fill":
+                    None,
+
+                "exit_fill":
+                    None,
+
+                "exit_reason":
+                    "HORIZON_END_NULL",
+            }
+
+        close = float(
+            closes.iloc[-1]
+        )
+
+        exit_price = (
+            close
+            * (
+                1
+                - SLIPPAGE_PCT
+                / 100
+            )
+        )
+
+    mfe_pct = (
+        (
+            mfe
+            - entry_fill
+        )
+        / entry_fill
+        * 100
+    )
+
+    mae_pct = (
+        (
+            mae
+            - entry_fill
+        )
+        / entry_fill
+        * 100
+    )
+
+    return {
+        "status":
+            NET_R_STATUS_VALID,
+
+        "entry_fill":
+            entry_fill,
+
+        "exit_fill":
+            exit_price,
+
+        "exit_reason":
+            exit_reason,
+
+        "mfe":
+            mfe,
+
+        "mae":
+            mae,
+
+        "mfe_pct":
+            mfe_pct,
+
+        "mae_pct":
+            mae_pct,
+
+        "time_to_mfe_sec":
+            None,
+
+        "time_to_mae_sec":
+            None,
+
+        "hold_minutes":
+            None,
+
+    }
+
+
+# =====================================================================
+# SNAPSHOT EVALUATION
+# =====================================================================
+
+def evaluate_snapshot(
+    cur,
+    snapshot,
+):
+    snapshot_id = (
+        snapshot["snapshot_id"]
+    )
+
+    ticker = (
+        snapshot["ticker"]
+    )
+
+    scan_date = (
+        snapshot["scan_date"]
+    )
+
+    entry = _safe_float(
+        snapshot["entry"]
+    )
+
+    stop = _safe_float(
+        snapshot["stop"]
+    )
+
+    t1 = _safe_float(
+        snapshot["target_1"]
+    )
+
+    t2 = _safe_float(
+        snapshot["target_2"]
+    )
+
+    # -------------------------------------------------------------
+    # No valid plan
+    # -------------------------------------------------------------
+
+    if (
+        entry is None
+        or stop is None
+        or t1 is None
+        or t2 is None
+    ):
+
+        print(
+            f"[evaluate] "
+            f"{ticker}: "
+            f"NO_TRADE / missing plan"
+        )
+
+        # Preserve research status.
+        write_trigger(
+            cur,
+            snapshot_id,
+            "PMH_BREAKOUT_V1",
+            False,
+            None,
+            None,
+            None,
+            "RTH",
+            {
+                "reason":
+                    "NO_VALID_PLAN"
+            },
+        )
+
+        return
+
+    # -------------------------------------------------------------
+    # RTH data
+    # -------------------------------------------------------------
+
+    df = fetch_rth_bars(
+        ticker,
+        scan_date,
+    )
+
+    if df.empty:
+
+        print(
+            f"[evaluate] "
+            f"{ticker}: "
+            f"NO_RTH_DATA"
+        )
+
+        for method in (
+            "PMH_BREAKOUT_V1",
+            "BREAKOUT_VOLUME_V1",
+            "VWAP_RECLAIM_V1",
+            "PULLBACK_RETEST_V1",
+        ):
+
+            write_trigger(
+                cur,
+                snapshot_id,
+                method,
+                False,
+                None,
+                None,
+                None,
+                "RTH",
+                {
+                    "reason":
+                        "NO_RTH_DATA"
+                },
+            )
+
+        return
+
+    # -------------------------------------------------------------
+    # PM values
+    # -------------------------------------------------------------
+
+    pm_high = _safe_float(
+        snapshot["pm_high"]
+    )
+
+    pm_vwap = _safe_float(
+        snapshot["pm_vwap"]
+    )
+
+    # -------------------------------------------------------------
+    # Breakout buffer
+    # -------------------------------------------------------------
+
+    atr = _safe_float(
+        snapshot["atr"]
+    )
+
+    if (
+        atr is not None
+        and atr > 0
+    ):
+        buffer = max(
+            0.01,
+            0.05 * atr,
+        )
+    else:
+        buffer = max(
+            0.01,
+            entry * 0.005,
+        )
+
+    # -------------------------------------------------------------
+    # Four trigger methods
+    # -------------------------------------------------------------
+
+    triggers = []
+
+    candidates = [
+        detect_pmh_breakout(
+            df,
+            pm_high,
+            buffer,
+        ),
+
+        detect_volume_breakout(
+            df,
+            pm_high,
+            buffer,
+        ),
+
+        detect_vwap_reclaim(
+            df,
+            pm_vwap,
+        ),
+
+        detect_pullback_retest(
+            df,
+            pm_high,
+            buffer,
+        ),
+    ]
+
+    method_names = [
+        "PMH_BREAKOUT_V1",
+        "BREAKOUT_VOLUME_V1",
+        "VWAP_RECLAIM_V1",
+        "PULLBACK_RETEST_V1",
+    ]
+
+    # -------------------------------------------------------------
+    # Write every trigger result.
+    # -------------------------------------------------------------
+
+    for method, trigger in zip(
+        method_names,
+        candidates,
+    ):
+
+        if trigger is None:
+
+            write_trigger(
+                cur,
+                snapshot_id,
+                method,
+                False,
+                None,
+                None,
+                None,
+                "RTH",
+            )
+
+            continue
+
+        trigger["method"] = method
+
+        trigger_time = (
+            trigger["time"]
+        )
+
+        t0_time = pd.Timestamp(
+            snapshot[
+                "snapshot_time_et"
+            ]
+        )
+
+        if t0_time.tzinfo is None:
+            t0_time = ET.localize(
+                t0_time.to_pydatetime()
+            )
+        else:
+            t0_time = (
+                t0_time
+                .tz_convert(ET)
+            )
+
+        elapsed_sec = int(
+            (
+                trigger_time
+                - t0_time
+            ).total_seconds()
+        )
+
+        write_trigger(
+            cur,
+            snapshot_id,
+            method,
+            True,
+            trigger_time,
+            trigger[
+                "trigger_price"
+            ],
+            elapsed_sec,
+            "RTH",
+            trigger,
+        )
+
+        triggers.append(
+            trigger
+        )
+
+    # -------------------------------------------------------------
+    # Evaluate outcomes for each trigger.
+    # -------------------------------------------------------------
+
+    for trigger in triggers:
+
+        # ---------------------------------------------------------
+        # Actual execution
+        # ---------------------------------------------------------
+
+        entry_fill = (
+            _entry_fill_from_next_bar(
+                df,
+                trigger["idx"],
+            )
+        )
+
+        if entry_fill is None:
+
+            outcome_data = {
+                "status":
+                    NET_R_STATUS_NON_EXECUTABLE,
+
+                "entry_fill":
+                    None,
+
+                "exit_fill":
+                    None,
+
+                "exit_reason":
+                    "NOT_EXECUTABLE",
+            }
+
+            for horizon in (
+                "MOMENTUM_90M",
+                "INTRADAY_EOD",
+            ):
+
+                write_outcome(
+                    cur,
+                    snapshot,
+                    trigger,
+                    horizon,
+                    outcome_data,
+                )
+
+            swing = {
+                "status":
+                    NET_R_STATUS_NON_EXECUTABLE,
+
+                "entry_fill":
+                    None,
+
+                "exit_fill":
+                    None,
+
+                "exit_reason":
+                    "NOT_EXECUTABLE",
+            }
+
+            write_outcome(
+                cur,
+                snapshot,
+                trigger,
+                "SWING_3D",
+                swing,
+            )
+
+            continue
+
+        # ---------------------------------------------------------
+        # Momentum
+        # ---------------------------------------------------------
+
+        momentum = evaluate_momentum(
+            df,
+            trigger,
+            snapshot,
+        )
+
+        if momentum is not None:
+
+            momentum["entry_fill"] = (
+                entry_fill
+            )
+
+            write_outcome(
+                cur,
+                snapshot,
+                trigger,
+                "MOMENTUM_90M",
+                momentum,
+            )
+
+        # ---------------------------------------------------------
+        # Intraday
+        # ---------------------------------------------------------
+
+        intraday = evaluate_horizon(
+            df,
+            trigger["idx"],
+            entry_fill,
+            stop,
+            t1,
+            t2,
+            len(df) - 1,
+        )
+
+        write_outcome(
+            cur,
+            snapshot,
+            trigger,
+            "INTRADAY_EOD",
+            intraday,
+        )
+
+        # ---------------------------------------------------------
+        # Swing
+        # ---------------------------------------------------------
+
+        swing = evaluate_swing(
+            ticker,
+            scan_date,
+            trigger,
+            snapshot,
+        )
+
+        # If Swing could not establish an executable
+        # plan, keep it NULL instead of creating 0R.
+        write_outcome(
+            cur,
+            snapshot,
+            trigger,
+            "SWING_3D",
+            swing,
+        )
+
+
+# =====================================================================
+# PERFORMANCE STATS
+# =====================================================================
+
+def update_stats(
+    stats,
+    result,
+):
+    status = result.get(
+        "net_r_status"
+    )
+
+    net_r = result.get(
+        "net_r"
+    )
+
+    if (
+        status
+        == NET_R_STATUS_VALID
+        and net_r is not None
+    ):
+
+        net_r = float(
+            net_r
+        )
+
+        stats[
+            "valid_net_r"
+        ] += 1
+
+        stats[
+            "sum_net_r"
+        ] += net_r
+
+        if net_r > 0.05:
+            stats[
+                "wins"
+            ] += 1
+
+        elif net_r < -0.05:
+            stats[
+                "losses"
+            ] += 1
+
+        else:
+            stats[
+                "breakeven"
+            ] += 1
+
+    else:
+
+        stats[
+            "excluded_net_r"
+        ] += 1
+
+
+def calculate_db_stats(
+    cur,
+    scan_date,
+):
+    rows = cur.execute(
+        """
+        SELECT
+            outcome_horizon,
+            net_r,
+            net_r_status,
+            outcome
+        FROM outcomes o
+        JOIN snapshots s
+          ON s.snapshot_id =
+             o.snapshot_id
+        WHERE s.scan_date = ?
+        """,
+        (scan_date,),
+    ).fetchall()
+
+    stats = {
+        "total_outcomes":
+            len(rows),
+
+        "valid_net_r":
+            0,
+
+        "excluded_net_r":
+            0,
+
+        "wins":
+            0,
+
+        "losses":
+            0,
+
+        "breakeven":
+            0,
+
+        "sum_net_r":
+            0.0,
+    }
+
+    for row in rows:
+
+        update_stats(
+            stats,
+            {
+                "net_r":
+                    row["net_r"],
+
+                "net_r_status":
+                    row["net_r_status"],
+            },
+        )
+
+    return stats
+
+
+# =====================================================================
+# MAIN
+# =====================================================================
+
+def evaluate_all(
+    scan_date=None,
+    force=False,
+):
+    if not DB_PATH.exists():
+
+        print(
+            f"❌ DB not found: "
+            f"{DB_PATH}"
+        )
+
+        return
+
+    ensure_schema()
+
+    conn = sqlite3.connect(
+        str(DB_PATH)
+    )
+
+    conn.row_factory = sqlite3.Row
+
+    cur = conn.cursor()
+
+    try:
+
+        if scan_date is None:
+
+            row = cur.execute(
+                """
+                SELECT MAX(scan_date)
+                FROM snapshots
+                """
+            ).fetchone()
+
+            if (
+                not row
+                or not row[0]
+            ):
+
+                print(
+                    "No snapshots."
+                )
+
+                return
+
+            scan_date = row[0]
+
+        print()
+        print("=" * 80)
+        print(
+            "DAYS-BOT V5.0.6 "
+            "SNAPSHOT EVALUATOR"
+        )
+        print(
+            f"scan_date={scan_date}"
+        )
+        print("=" * 80)
+
+        if force:
+
+            # Remove only derived evaluation data.
+            # Immutable snapshots remain untouched.
+            cur.execute(
+                """
+                DELETE FROM outcomes
+                WHERE snapshot_id IN (
+                    SELECT snapshot_id
+                    FROM snapshots
+                    WHERE scan_date = ?
+                )
+                """,
+                (scan_date,),
+            )
+
+            cur.execute(
+                """
+                DELETE FROM trigger_results
+                WHERE snapshot_id IN (
+                    SELECT snapshot_id
+                    FROM snapshots
+                    WHERE scan_date = ?
+                )
+                """,
+                (scan_date,),
+            )
+
+            conn.commit()
+
+        snapshots = cur.execute(
+            """
+            SELECT *
+            FROM snapshots
+            WHERE scan_date = ?
+            ORDER BY snapshot_id
+            """,
+            (scan_date,),
+        ).fetchall()
+
+        print(
+            f"Snapshots: "
+            f"{len(snapshots)}"
+        )
+
+        if not snapshots:
+            return
+
+        for snapshot in snapshots:
+
+            try:
+
+                evaluate_snapshot(
+                    cur,
+                    snapshot,
+                )
+
+                conn.commit()
+
+            except Exception as exc:
+
+                print(
+                    f"[evaluate] "
+                    f"{snapshot['ticker']} "
+                    f"ERROR: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+                conn.rollback()
+
+        # -------------------------------------------------------------
+        # Final statistics
+        # -------------------------------------------------------------
+
+        stats = calculate_db_stats(
+            cur,
+            scan_date,
+        )
+
+        print()
+        print("=" * 80)
+        print(
+            f"SUMMARY — "
+            f"{scan_date}"
+        )
+        print("=" * 80)
+
+        print(
+            f"Total outcomes:     "
+            f"{stats['total_outcomes']}"
+        )
+
+        print(
+            f"Valid Net-R:        "
+            f"{stats['valid_net_r']}"
+        )
+
+        print(
+            f"Excluded Net-R:     "
+            f"{stats['excluded_net_r']}"
+        )
+
+        if (
+            stats["valid_net_r"]
+            > 0
+        ):
+
+            avg_net = (
+                stats[
+                    "sum_net_r"
+                ]
+                / stats[
+                    "valid_net_r"
+                ]
+            )
+
+            win_rate = (
+                stats["wins"]
+                / stats[
+                    "valid_net_r"
+                ]
+                * 100
+            )
+
+            print(
+                f"Avg Net R:          "
+                f"{avg_net:.3f}"
+            )
+
+            print(
+                f"Win Rate:           "
+                f"{win_rate:.1f}%"
+            )
+
+            print(
+                f"W / L / BE:         "
+                f"{stats['wins']} / "
+                f"{stats['losses']} / "
+                f"{stats['breakeven']}"
+            )
+
+        else:
+
+            print(
+                "Avg Net R:          N/A"
+            )
+
+            print(
+                "Win Rate:           N/A"
+            )
+
+        print("=" * 80)
+
+    finally:
+
+        conn.close()
+
+
+# =====================================================================
+# CLI
+# =====================================================================
+
+if __name__ == "__main__":
+
+    parser = ArgumentParser(
+        description=(
+            "DAYS-BOT V5.0.6 "
+            "Snapshot Evaluator"
+        )
+    )
+
+    parser.add_argument(
+        "--scan-date",
+        type=str,
+        default=None,
+        help=(
+            "Scan date "
+            "(YYYY-MM-DD)"
+        ),
+    )
+
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Delete derived "
+            "trigger/outcome rows "
+            "and reevaluate."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    evaluate_all(
+        scan_date=args.scan_date,
+        force=args.force,
+    )
