@@ -2,6 +2,18 @@
 """
 DAYS-BOT V5.0.6 — Daily EOD Report Generator
 Answers: "What did DAYS-BOT say at the morning — and what happened after?"
+
+V5.0.6 changes:
+- Respects net_r_status (VALID / NON_EXECUTABLE / INCOMPLETE / INVALID)
+- NON_EXECUTABLE ≠ BREAKEVEN (shows N/A + EXCLUDED)
+- Summary uses VALID-only statistics (no misleading 0R)
+- Distinguishes ACTIONABLE vs RESEARCH vs NO_TRADE
+- Distinguishes NO_TRIGGER / NOT_EXECUTABLE / DATA_UNAVAILABLE
+
+Rules:
+    NO_TRIGGER       ≠ LOSS
+    NOT_EXECUTABLE   ≠ LOSS
+    DATA_UNAVAILABLE ≠ LOSS
 """
 import sys
 import json
@@ -19,6 +31,27 @@ from eod_report.format_helpers import (
 )
 
 
+# ============================================================
+# HELPERS
+# ============================================================
+def _safe_col(row, key, default=None):
+    """Safely get a column value from sqlite3.Row (returns None if missing)."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def _net_r_status_of(oc):
+    """Extract net_r_status from an outcome row (None if column missing)."""
+    if oc is None:
+        return None
+    return _safe_col(oc, "net_r_status", None)
+
+
+# ============================================================
+# FETCHERS
+# ============================================================
 def fetch_snapshots(cur, scan_date):
     return cur.execute("""
         SELECT * FROM snapshots WHERE scan_date = ? ORDER BY snapshot_id
@@ -39,6 +72,49 @@ def fetch_outcomes(cur, trigger_result_id, horizon):
     """, (trigger_result_id, horizon)).fetchone()
 
 
+# ============================================================
+# HORIZON RENDERER
+# ============================================================
+def _render_horizon(hz_name, oc):
+    """Render a single horizon line respecting net_r_status."""
+    if oc is None:
+        return None
+
+    status = _net_r_status_of(oc)
+    exit_reason = oc["exit_reason"] or "—"
+    mfe_str = fmt_pct(oc["mfe_pct"], sign=True)
+    mae_str = fmt_pct(oc["mae_pct"], sign=True)
+
+    # NON_EXECUTABLE — show MFE/MAE (research value) but no Net R
+    if status == "NON_EXECUTABLE":
+        return (
+            f"  - **{hz_name}**: exit=`{exit_reason}` | "
+            f"MFE {mfe_str} | MAE {mae_str} | "
+            f"Net N/A (NON_EXECUTABLE) | Performance: EXCLUDED"
+        )
+
+    # No net_r value — incomplete or invalid
+    if oc["net_r"] is None:
+        return (
+            f"  - **{hz_name}**: exit=`{exit_reason}` | "
+            f"MFE {mfe_str} | MAE {mae_str} | "
+            f"Net N/A ({status or 'INCOMPLETE'}) | Performance: EXCLUDED"
+        )
+
+    # Valid outcome — show full data
+    gross_str = fmt_r(oc["gross_r"])
+    net_str = fmt_r(oc["net_r"])
+    return (
+        f"  - **{hz_name}**: exit=`{exit_reason}` | "
+        f"MFE {mfe_str} | MAE {mae_str} | "
+        f"Gross {gross_str} | Net {net_str} | "
+        f"Status: {status or 'VALID'}"
+    )
+
+
+# ============================================================
+# SNAPSHOT BLOCK
+# ============================================================
 def render_snapshot_block(cur, snap):
     lines = []
     ticker = snap["ticker"]
@@ -46,22 +122,30 @@ def render_snapshot_block(cur, snap):
 
     lines.append(f"### {ticker} — {state}")
     lines.append("")
+
+    # ---- S0 (immutable) ----
     lines.append("**S0 (Snapshot, immutable):**")
     lines.append(f"- Snapshot time ET: `{snap['snapshot_time_et']}`")
-    lines.append(f"- Price: {fmt_price(snap['price'])} (prev close {fmt_price(snap['prev_close'])})")
+    lines.append(f"- Price: {fmt_price(snap['price'])} "
+                 f"(prev close {fmt_price(snap['prev_close'])})")
     lines.append(f"- Gap: {fmt_pct(snap['gap_pct'], sign=True)}")
     lines.append(f"- PM High/Low: {fmt_price(snap['pm_high'])} / {fmt_price(snap['pm_low'])}")
     lines.append(f"- PM VWAP: {fmt_price(snap['pm_vwap'])}")
-    lines.append(f"- PM Volume: {fmt_int(snap['pm_volume'])} ({snap['pm_volume_status'] or '—'})")
-    lines.append(f"- PM Bars: {fmt_int(snap['pm_bars'])} ({snap['pm_source'] or '—'})")
+    lines.append(f"- PM Volume: {fmt_int(snap['pm_volume'])} "
+                 f"({snap['pm_volume_status'] or '—'})")
+    lines.append(f"- PM Bars: {fmt_int(snap['pm_bars'])} "
+                 f"({snap['pm_source'] or '—'})")
     lines.append(f"- Float: {fmt_int(int(snap['float']) if snap['float'] else None)}")
     lines.append(f"- Spread: {fmt_pct(snap['spread_pct'])}")
-    lines.append(f"- Composite: {snap['composite_score'] if snap['composite_score'] is not None else '—'}")
-    lines.append(f"- Swing: {snap['swing_score'] if snap['swing_score'] is not None else '—'}")
+    lines.append(f"- Composite: "
+                 f"{snap['composite_score'] if snap['composite_score'] is not None else '—'}")
+    lines.append(f"- Swing: "
+                 f"{snap['swing_score'] if snap['swing_score'] is not None else '—'}")
     lines.append(f"- Trade type: `{snap['trade_type'] or '—'}`")
     lines.append(f"- Data status: `{snap['data_status'] or '—'}`")
     lines.append("")
 
+    # ---- Trade Plan (as captured at S0) ----
     if snap["entry"] is not None:
         lines.append("**Trade Plan (as captured at S0):**")
         lines.append(f"- Entry: {fmt_price(snap['entry'])}")
@@ -76,8 +160,10 @@ def render_snapshot_block(cur, snap):
         lines.append("**Trade Plan:** N/A (no valid plan at S0)")
     lines.append("")
 
+    # ---- What happened after S0 ----
     lines.append("**What happened after S0:**")
     triggers = fetch_triggers(cur, snap["snapshot_id"])
+
     if not triggers:
         lines.append("- No trigger results recorded")
     else:
@@ -94,38 +180,53 @@ def render_snapshot_block(cur, snap):
             mom = fetch_outcomes(cur, trig_id, "MOMENTUM_90M")
             swing = fetch_outcomes(cur, trig_id, "SWING_3D")
 
-            label = trigger_outcome_label(dict(trig), dict(intra) if intra else None)
+            label = trigger_outcome_label(
+                dict(trig),
+                dict(intra) if intra else None,
+            )
             lines.append(f"- **{method}** [{mode}/{window}]: {label}")
-            if hit == 1:
-                lines.append(f"  - Trigger time: {tt} | Trigger price: {fmt_price(tp)}")
 
-            for hz_name, oc in (("MOMENTUM_90M", mom), ("INTRADAY_EOD", intra), ("SWING_3D", swing)):
-                if oc is None:
-                    continue
-                lines.append(
-                    f"  - **{hz_name}**: exit=`{oc['exit_reason'] or '—'}` | "
-                    f"MFE {fmt_pct(oc['mfe_pct'], sign=True)} | "
-                    f"MAE {fmt_pct(oc['mae_pct'], sign=True)} | "
-                    f"Gross {fmt_r(oc['gross_r'])} | Net {fmt_r(oc['net_r'])}"
-                )
+            if hit == 1:
+                lines.append(f"  - Trigger time: {tt} | "
+                             f"Trigger price: {fmt_price(tp)}")
+
+            for hz_name, oc in (
+                ("MOMENTUM_90M", mom),
+                ("INTRADAY_EOD", intra),
+                ("SWING_3D", swing),
+            ):
+                rendered = _render_horizon(hz_name, oc)
+                if rendered is not None:
+                    lines.append(rendered)
+
     lines.append("")
     return lines
 
 
+# ============================================================
+# SUMMARY
+# ============================================================
 def render_summary(cur, scan_date):
     lines = []
     lines.append("## Daily Summary")
     lines.append("")
 
+    # ---- Snapshot counts ----
     total_snapshots = cur.execute(
-        "SELECT COUNT(*) FROM snapshots WHERE scan_date = ?", (scan_date,)
+        "SELECT COUNT(*) FROM snapshots WHERE scan_date = ?",
+        (scan_date,),
     ).fetchone()[0]
 
-    rows = cur.execute("SELECT * FROM snapshots WHERE scan_date = ?", (scan_date,)).fetchall()
+    rows = cur.execute(
+        "SELECT * FROM snapshots WHERE scan_date = ?",
+        (scan_date,),
+    ).fetchall()
+
     n_actionable = sum(1 for r in rows if recommendation_state(dict(r)) == "ACTIONABLE")
     n_research = sum(1 for r in rows if recommendation_state(dict(r)) == "RESEARCH")
     n_no_trade = sum(1 for r in rows if recommendation_state(dict(r)) == "NO_TRADE")
 
+    # ---- Trigger stats ----
     trig_stats = cur.execute("""
         SELECT
             COUNT(*) AS total,
@@ -133,7 +234,9 @@ def render_summary(cur, scan_date):
             SUM(CASE WHEN hit = 0 THEN 1 ELSE 0 END) AS misses,
             SUM(CASE WHEN hit IS NULL THEN 1 ELSE 0 END) AS unknowns
         FROM trigger_results
-        WHERE snapshot_id IN (SELECT snapshot_id FROM snapshots WHERE scan_date = ?)
+        WHERE snapshot_id IN (
+            SELECT snapshot_id FROM snapshots WHERE scan_date = ?
+        )
     """, (scan_date,)).fetchone()
 
     total_t = trig_stats[0] or 0
@@ -142,7 +245,9 @@ def render_summary(cur, scan_date):
     unknowns = trig_stats[3] or 0
     trigger_rate = (hits / total_t * 100) if total_t > 0 else 0
 
-    oc_stats = cur.execute("""
+    # ---- Outcome stats: VALID-only ----
+    # Valid trades only — excludes NON_EXECUTABLE, INCOMPLETE, INVALID
+    valid_stats = cur.execute("""
         SELECT
             COUNT(*) AS n,
             SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) AS wins,
@@ -154,38 +259,90 @@ def render_summary(cur, scan_date):
             AVG(mae_pct) AS avg_mae
         FROM outcomes
         WHERE outcome_horizon = 'INTRADAY_EOD'
-          AND snapshot_id IN (SELECT snapshot_id FROM snapshots WHERE scan_date = ?)
+          AND net_r_status = 'VALID'
+          AND net_r IS NOT NULL
+          AND snapshot_id IN (
+              SELECT snapshot_id FROM snapshots WHERE scan_date = ?
+          )
     """, (scan_date,)).fetchone()
 
-    n_oc = oc_stats[0] or 0
-    n_wins = oc_stats[1] or 0
-    n_losses = oc_stats[2] or 0
-    n_be = oc_stats[3] or 0
-    avg_gross = oc_stats[4]
-    avg_net = oc_stats[5]
-    avg_mfe = oc_stats[6]
-    avg_mae = oc_stats[7]
-    win_rate = (n_wins / n_oc * 100) if n_oc > 0 else 0
+    n_valid = valid_stats[0] or 0
+    n_wins = valid_stats[1] or 0
+    n_losses = valid_stats[2] or 0
+    n_be = valid_stats[3] or 0
+    avg_gross = valid_stats[4]
+    avg_net = valid_stats[5]
+    avg_mfe = valid_stats[6]
+    avg_mae = valid_stats[7]
+    win_rate = (n_wins / n_valid * 100) if n_valid > 0 else None
 
+    # ---- Excluded outcomes (all horizons) ----
+    excluded_stats = cur.execute("""
+        SELECT
+            SUM(CASE WHEN net_r_status = 'NON_EXECUTABLE' THEN 1 ELSE 0 END) AS non_exec,
+            SUM(CASE WHEN net_r_status = 'INCOMPLETE' THEN 1 ELSE 0 END) AS incomplete,
+            SUM(CASE WHEN net_r_status = 'INVALID' THEN 1 ELSE 0 END) AS invalid,
+            SUM(CASE WHEN net_r_status IS NULL THEN 1 ELSE 0 END) AS null_status
+        FROM outcomes
+        WHERE snapshot_id IN (
+            SELECT snapshot_id FROM snapshots WHERE scan_date = ?
+        )
+    """, (scan_date,)).fetchone()
+
+    n_non_exec = excluded_stats[0] or 0
+    n_incomplete = excluded_stats[1] or 0
+    n_invalid = excluded_stats[2] or 0
+    n_null_status = excluded_stats[3] or 0
+
+    # ============================================================
+    # Render
+    # ============================================================
     lines.append(f"- Snapshots: {total_snapshots}")
     lines.append(f"- Actionable setups: {n_actionable}")
     lines.append(f"- Research candidates: {n_research}")
     lines.append(f"- NO_TRADE: {n_no_trade}")
     lines.append("")
-    lines.append(f"- Triggers: {total_t} evaluated ({hits} hit, {misses} miss, {unknowns} unknown)")
+
+    lines.append(f"- Triggers: {total_t} evaluated "
+                 f"({hits} hit, {misses} miss, {unknowns} unknown)")
     lines.append(f"- Trigger rate: {trigger_rate:.1f}%")
     lines.append("")
-    lines.append(f"- Outcomes (INTRADAY_EOD): {n_oc}")
-    lines.append(f"- Win / Loss / BE: {n_wins} / {n_losses} / {n_be}")
-    lines.append(f"- Win rate: {win_rate:.1f}%")
-    lines.append(f"- Avg MFE: {fmt_pct(avg_mfe, sign=True)}")
-    lines.append(f"- Avg MAE: {fmt_pct(avg_mae, sign=True)}")
-    lines.append(f"- Avg Gross R: {fmt_r(avg_gross)}")
-    lines.append(f"- Avg Net R: {fmt_r(avg_net)}")
+
+    lines.append(f"- **Valid outcomes (INTRADAY_EOD)**: {n_valid}")
+    lines.append(f"  - Win / Loss / BE: {n_wins} / {n_losses} / {n_be}")
+
+    if win_rate is not None:
+        lines.append(f"  - Win rate: {win_rate:.1f}%")
+        lines.append(f"  - Avg MFE: {fmt_pct(avg_mfe, sign=True)}")
+        lines.append(f"  - Avg MAE: {fmt_pct(avg_mae, sign=True)}")
+        lines.append(f"  - Avg Gross R: {fmt_r(avg_gross)}")
+        lines.append(f"  - Avg Net R: {fmt_r(avg_net)}")
+    else:
+        lines.append(f"  - Win rate: N/A (no valid trades)")
+        lines.append(f"  - Avg Net R: N/A")
+
     lines.append("")
+
+    # ---- Excluded section (all horizons, all statuses) ----
+    total_excluded = n_non_exec + n_incomplete + n_invalid + n_null_status
+    if total_excluded > 0:
+        lines.append(f"- **Excluded from performance** (all horizons): {total_excluded}")
+        if n_non_exec > 0:
+            lines.append(f"  - NON_EXECUTABLE: {n_non_exec}")
+        if n_incomplete > 0:
+            lines.append(f"  - INCOMPLETE: {n_incomplete}")
+        if n_invalid > 0:
+            lines.append(f"  - INVALID: {n_invalid}")
+        if n_null_status > 0:
+            lines.append(f"  - NULL status: {n_null_status}")
+        lines.append("")
+
     return lines
 
 
+# ============================================================
+# MAIN
+# ============================================================
 def generate_report(scan_date, output_path=None):
     if not DB_PATH.exists():
         print(f"ERROR: DB not found at {DB_PATH}")
@@ -202,11 +359,11 @@ def generate_report(scan_date, output_path=None):
         return 1
 
     lines = []
-    lines.append(f"# DAYS-BOT V5.0.6 — Daily EOD Report")
-    lines.append(f"")
+    lines.append("# DAYS-BOT V5.0.6 — Daily EOD Report")
+    lines.append("")
     lines.append(f"**Scan date:** {scan_date}")
     lines.append(f"**Snapshots:** {len(snapshots)}")
-    lines.append(f"")
+    lines.append("")
     lines.append("---")
     lines.append("")
     lines.append("## Per-Setup Detail")
@@ -221,7 +378,10 @@ def generate_report(scan_date, output_path=None):
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append("**Note:** `NO_TRIGGER`, `NOT_EXECUTABLE`, and `DATA_UNAVAILABLE` are NOT losses.")
+    lines.append("**Notes:**")
+    lines.append("- `NO_TRIGGER`, `NON_EXECUTABLE`, and `DATA_UNAVAILABLE` are **NOT losses**.")
+    lines.append("- Only `net_r_status = 'VALID'` outcomes are included in Win Rate / Avg Net R.")
+    lines.append("- MFE/MAE are preserved for all outcomes (research value) even when excluded.")
     lines.append("")
 
     report = "\n".join(lines)
