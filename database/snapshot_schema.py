@@ -972,4 +972,165 @@ def verify_snapshot_integrity(
     if scan_date is None:
         scan_date = datetime.now().strftime(
             "%Y-%m-%d"
-   
+        )
+
+    conn = sqlite3.connect(
+        str(DB_PATH)
+    )
+
+    conn.row_factory = sqlite3.Row
+
+    cur = conn.cursor()
+
+    print()
+    print("=" * 80)
+    print(
+        "SNAPSHOT INTEGRITY CHECK — "
+        f"scan_date={scan_date}"
+    )
+    print("=" * 80)
+
+    print(
+        f"{'ticker':8s} | "
+        f"{'snap_comp':>10s} | "
+        f"{'alert_comp':>10s} | "
+        f"{'snap_swing':>10s} | "
+        f"{'alert_swing':>10s} | "
+        f"{'MATCH':>8s}"
+    )
+
+    print("-" * 80)
+
+    mismatches = 0
+
+    snapshots = cur.execute(
+        """
+        SELECT
+            snapshot_id,
+            ticker,
+            composite_score,
+            swing_score
+        FROM snapshots
+        WHERE scan_date = ?
+        ORDER BY snapshot_id
+        """,
+        (scan_date,),
+    ).fetchall()
+
+    for snap in snapshots:
+
+        ticker = snap["ticker"]
+
+        alert = cur.execute(
+            """
+            SELECT
+                composite_score,
+                swing_score
+            FROM alerts
+            WHERE ticker = ?
+              AND scan_date = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                ticker,
+                scan_date,
+            ),
+        ).fetchone()
+
+        snap_comp = (
+            snap["composite_score"]
+        )
+
+        snap_swing = (
+            snap["swing_score"]
+        )
+
+        alert_comp = (
+            alert["composite_score"]
+            if alert
+            else None
+        )
+
+        alert_swing = (
+            alert["swing_score"]
+            if alert
+            else None
+        )
+
+        match = "UNKNOWN"
+
+        if (
+            snap_comp is None
+            and alert_comp is None
+        ):
+            match = "BOTH_NULL"
+
+        elif (
+            snap_comp is not None
+            and alert_comp is not None
+        ):
+            if abs(
+                float(snap_comp)
+                - float(alert_comp)
+            ) < 0.01:
+                match = "OK"
+            else:
+                match = "MISMATCH"
+                mismatches += 1
+
+        print(
+            f"{ticker:8s} | "
+            f"{str(snap_comp):>10s} | "
+            f"{str(alert_comp):>10s} | "
+            f"{str(snap_swing):>10s} | "
+            f"{str(alert_swing):>10s} | "
+            f"{match:>8s}"
+        )
+
+    print("-" * 80)
+    print(
+        f"Total mismatches: {mismatches}"
+    )
+    print("=" * 80)
+
+    conn.close()
+
+    return mismatches
+
+
+# =====================================================================
+# MAIN
+# =====================================================================
+
+if __name__ == "__main__":
+
+    init_snapshot_schema()
+
+    print(
+        "✅ snapshot_schema initialized"
+    )
+
+    conn = sqlite3.connect(
+        str(DB_PATH)
+    )
+
+    try:
+        for table in (
+            "snapshots",
+            "trigger_results",
+            "outcomes",
+        ):
+            rows = conn.execute(
+                f"PRAGMA table_info({table})"
+            ).fetchall()
+
+            print(
+                f"{table}: "
+                f"{len(rows)} columns"
+            )
+
+    finally:
+        conn.close()
+
+    verify_snapshot_integrity()
