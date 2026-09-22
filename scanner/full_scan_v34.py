@@ -1,10 +1,12 @@
 """
-DAYS-BOT V5.0.5.2.6 – Full Scan Engine
+DAYS-BOT V5.0.6 – Full Scan Engine
 FIXES:
 - V5.0.5.2.1: Float Hard Gate (<=20M); UNKNOWN → WATCH (not Strict)
 - V5.0.5.2.2: Reuse float from Discovery (avoids double fetch)
 - V5.0.5.2.5: Tag-only gap fields (gap_sign, gap_bucket, is_extreme_gap)
 - V5.0.5.2.6: Live Capture — save pm_bars_json (raw PM bars list)
+- V5.0.6:     pm_volume = None ≠ 0; pm_volume_status passthrough
+- V5.0.6:     Data Quality Gate BEFORE trade plan (no synthetic Entry/Stop)
 """
 import json
 from datetime import datetime
@@ -226,7 +228,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['gap_bucket'] = gap_tags['gap_bucket']
         c['is_extreme_gap'] = gap_tags['is_extreme_gap']
 
+        # ============================================================
         # GATE 1: Corporate Action
+        # ============================================================
         corp_action = _safe_call(check_corporate_action, {}, ticker,
                                  expected_type=dict, name=f"corp_action:{ticker}")
         c['corporate_action'] = corp_action.get('corporate_action', False)
@@ -247,7 +251,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             scored.append(c)
             continue
 
+        # ============================================================
         # GATE 2: Liquidity
+        # ============================================================
         liquidity = _check_liquidity_gate(c)
         c['liquidity_gate'] = liquidity
 
@@ -270,7 +276,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         passed_gates += 1
 
-        # PM DATA
+        # ============================================================
+        # PM DATA — V5.0.6: preserve None, pass through statuses
+        # ============================================================
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker,
                              expected_type=dict, name=f"pm:{ticker}")
 
@@ -284,10 +292,31 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_high'] = pm_data.get('pm_high')
             c['pm_low'] = pm_data.get('pm_low')
             c['pm_vwap'] = pm_data.get('pm_vwap')
-            c['pm_volume'] = int(pm_data.get('pm_volume', 0) or 0)
+
+            # V5.0.6 — keep None if source didn't provide volume
+            _raw_pm_vol = pm_data.get('pm_volume')
+            if _raw_pm_vol is not None:
+                try:
+                    c['pm_volume'] = int(_raw_pm_vol)
+                except (TypeError, ValueError):
+                    c['pm_volume'] = None
+            else:
+                c['pm_volume'] = None
+
             c['pm_bars'] = pm_bars_received
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
             c['pm_source'] = pm_source
+
+            # V5.0.6 — status passthrough from pm_engine
+            c['pm_volume_status'] = pm_data.get('pm_volume_status', 'UNAVAILABLE')
+            c['pm_vwap_status'] = pm_data.get('pm_vwap_status', 'UNAVAILABLE')
+
+            # Legacy fallback: if engine returned UNAVAILABLE but source is yfinance
+            # and we have bars but no volume → VOLUME_UNAVAILABLE
+            if c['pm_volume_status'] == 'UNAVAILABLE':
+                if pm_source == 'yfinance' and c['pm_volume'] in (None, 0):
+                    c['pm_volume_status'] = 'VOLUME_UNAVAILABLE'
+
             c['pm_dist_signed'] = (
                 ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0
                 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
@@ -298,21 +327,15 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 pm_data.get('pm_bars_list', []),
                 default=str,
             )
-
-            if c['pm_volume'] == 0:
-                if pm_source == 'yfinance':
-                    c['pm_volume_status'] = "VOLUME_UNAVAILABLE"
-                else:
-                    c['pm_volume_status'] = "ZERO"
-            else:
-                c['pm_volume_status'] = "OK"
         else:
             c.update({
                 "pm_high": None, "pm_low": None, "pm_vwap": None,
-                "pm_volume": 0, "pm_bars": 0,
+                "pm_volume": None, "pm_bars": 0,
                 "pm_bars_json": None,
                 "pm_data_quality": "UNAVAILABLE", "pm_source": pm_source,
-                "pm_dist_signed": None, "pm_volume_status": "UNAVAILABLE",
+                "pm_dist_signed": None,
+                "pm_volume_status": "UNAVAILABLE",
+                "pm_vwap_status": "UNAVAILABLE",
             })
 
         analysis['pm_data_quality'] = c['pm_data_quality']
@@ -320,7 +343,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['pm_bars_received'] = pm_bars_received
         analysis['pm_source'] = pm_source
 
+        # ============================================================
         # Early Move
+        # ============================================================
         early_data = _safe_call(calculate_early_move_score,
             {"early_score": 0, "state": "UNKNOWN", "components": {}, "data_quality": "UNKNOWN"},
             ticker, c.get('pm_high'), c.get('pm_vwap'),
@@ -378,7 +403,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sec_has_offering'] = sec_risk.get('has_offering', False)
         analysis['sec_risk'] = sec_risk
 
+        # ============================================================
         # FLOAT: reuse from Discovery if injected
+        # ============================================================
         float_from_discovery = c.get('float')
         float_source_from_discovery = c.get('float_source')
 
@@ -405,7 +432,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             analysis['float'] = c['float']
             analysis['short_interest'] = c['short_interest']
 
-        # FLOAT HARD GATE
+        # ============================================================
+        # GATE 3: FLOAT HARD GATE
+        # ============================================================
         raw_float = c.get('float')
         float_num = None
         if raw_float is not None:
@@ -464,82 +493,4 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                                    expected_type=dict, name=f"vwap:{ticker}")
         analysis['vwap'] = vwap_data
         c['vwap_data'] = vwap_data
-        c['vwap'] = vwap_data.get('vwap', 0) if vwap_data else None
-
-        analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3,
-                                          expected_type=list, name=f"sympathy:{ticker}")
-        c['sympathy'] = analysis['sympathy']
-
-        plan = _safe_call(build_trade_plan, {}, c, ACCOUNT_SIZE,
-                          MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
-                          expected_type=dict, name=f"tradeplan:{ticker}")
-        if plan:
-            c.update(plan)
-        else:
-            c['plan_valid'] = False
-            c['plan_error'] = 'Trade plan build failed'
-
-        c['account_size'] = ACCOUNT_SIZE
-        c['risk_pct'] = MAX_RISK_PER_TRADE_V31
-
-        score = _safe_call(calculate_composite_score, None, c, analysis,
-            expected_type=(int, float, type(None)), name=f"score:{ticker}")
-        if score is None:
-            c['composite_score'] = None
-            c['score_status'] = 'ERROR'
-        else:
-            c['composite_score'] = round(float(score), 1)
-            c['score_status'] = 'OK'
-
-        completeness = _check_data_completeness(c)
-        c['data_completeness'] = completeness
-        c['data_status'] = completeness['status']
-
-        if completeness['status'] == 'NO_TRADE':
-            c['trade_type'] = 'NO_TRADE'
-        elif completeness['status'] == 'WATCH':
-            c['trade_type'] = 'WATCH'
-
-        c['diagnostics'] = {
-            'pm': c.get('pm_data_quality'),
-            'pm_volume_status': c.get('pm_volume_status'),
-            'early': c.get('early_data_quality'),
-            'rvol': c.get('rvol_status'),
-            'catalyst': c.get('catalyst_type'),
-            'sec': c.get('sec_risk_level'),
-            'score': c.get('score_status'),
-            'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
-            'float_source': c.get('float_source', 'unknown'),
-        }
-
-        c['analysis'] = analysis
-        scored.append(c)
-
-    print()
-    print("=" * 74)
-    print("FULLSCAN GATE SUMMARY")
-    print("=" * 74)
-    print(f"  Total analyzed:                {total_to_analyze}")
-    print(f"  Corporate Action rejects:      {corp_action_rejects}")
-    print(f"  Liquidity rejects:             {liquidity_rejects}")
-    print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
-    print(f"  Float cache hits (Discovery):  {float_cache_hits}")
-    print(f"  Float live fetches:            {float_live_fetches}")
-    print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
-    valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
-    print(f"  Top 5 returned:                {min(5, len(valid_scored))}")
-    print("=" * 74)
-
-    gate_summary = {
-        "corp_action_rejects": corp_action_rejects,
-        "liquidity_rejects": liquidity_rejects,
-        "float_rejects": float_rejects,
-        "float_cache_hits": float_cache_hits,
-        "float_live_fetches": float_live_fetches,
-    }
-    for c in scored:
-        c['_gate_summary'] = gate_summary
-
-    valid_scored.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
-
-    return valid_scored[:5] if len(valid_scored) >= 5 else valid_scored
+        c['vwap'] = vwap_data.get('vwap', 0) if vwap_da
