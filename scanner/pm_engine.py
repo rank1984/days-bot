@@ -1,3 +1,4 @@
+python
 """
 DAYS-BOT V5.0.6 – Premarket Engine (Alpaca IEX + yfinance Fallback)
 Fetches real 1-minute premarket bars.
