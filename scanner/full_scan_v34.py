@@ -1,12 +1,5 @@
 """
 DAYS-BOT V5.0.6 – Full Scan Engine
-FIXES:
-- V5.0.5.2.1: Float Hard Gate (<=20M); UNKNOWN → WATCH (not Strict)
-- V5.0.5.2.2: Reuse float from Discovery (avoids double fetch)
-- V5.0.5.2.5: Tag-only gap fields (gap_sign, gap_bucket, is_extreme_gap)
-- V5.0.5.2.6: Live Capture — save pm_bars_json (raw PM bars list)
-- V5.0.6:     pm_volume = None ≠ 0; pm_volume_status passthrough
-- V5.0.6:     Data Quality Gate BEFORE trade plan (no synthetic Entry/Stop)
 """
 import json
 from datetime import datetime
@@ -31,10 +24,8 @@ from scanner.scoring_engine import calculate_composite_score
 from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
 ET = pytz.timezone("America/New_York")
-
 LIQUIDITY_MAX_SPREAD_PCT = 8.0
 LIQUIDITY_MIN_PRICE = 1.0
-
 FLOAT_MAX_HARD_GATE = 20_000_000
 
 
@@ -43,11 +34,11 @@ def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
     try:
         result = func(*args, **kwargs)
         if expected_type is not None and not isinstance(result, expected_type):
-            print(f"[FullScan] ⚠️ {label}: expected {expected_type.__name__}, got {type(result).__name__}")
+            print(f"[FullScan] WARN {label}: wrong type")
             return default
         return result
     except Exception as e:
-        print(f"[FullScan] ❌ {label}: {type(e).__name__}: {e}")
+        print(f"[FullScan] ERR {label}: {type(e).__name__}: {e}")
         return default
 
 
@@ -60,49 +51,43 @@ def _safe_float(value, default=0.0):
         return default
 
 
-def _check_liquidity_gate(candidate: dict) -> dict:
-    hard_reasons = []
-    soft_reasons = []
-
+def _check_liquidity_gate(candidate):
+    hard = []
+    soft = []
     price = _safe_float(candidate.get('price', 0))
     spread = candidate.get('spread_pct')
 
     if price < LIQUIDITY_MIN_PRICE:
-        hard_reasons.append(f"PRICE_TOO_LOW ({price:.2f})")
+        hard.append(f"PRICE_TOO_LOW ({price:.2f})")
 
     if spread is None:
-        soft_reasons.append("SPREAD_UNKNOWN")
+        soft.append("SPREAD_UNKNOWN")
     else:
         try:
-            spread_val = float(spread)
-            if spread_val > LIQUIDITY_MAX_SPREAD_PCT:
-                hard_reasons.append(f"SPREAD_TOO_WIDE ({spread_val:.2f}%)")
+            sv = float(spread)
+            if sv > LIQUIDITY_MAX_SPREAD_PCT:
+                hard.append(f"SPREAD_TOO_WIDE ({sv:.2f}%)")
         except (TypeError, ValueError):
-            soft_reasons.append("SPREAD_INVALID")
+            soft.append("SPREAD_INVALID")
 
-    return {
-        "passed": len(hard_reasons) == 0,
-        "hard_reasons": hard_reasons,
-        "soft_reasons": soft_reasons,
-    }
+    return {"passed": len(hard) == 0, "hard_reasons": hard, "soft_reasons": soft}
 
 
-def _check_data_completeness(candidate: dict) -> dict:
+def _check_data_completeness(candidate):
     missing = []
     soft_flags = []
 
     price = candidate.get('price')
     if price is None or _safe_float(price) <= 0:
-        missing.append("מחיר")
-
+        missing.append("price")
     if candidate.get('gap_pct') is None:
-        missing.append("גאפ")
+        missing.append("gap")
 
     pm_vol_status = candidate.get('pm_volume_status', 'UNAVAILABLE')
     if pm_vol_status == "UNAVAILABLE":
-        missing.append("נפח PM (חסר מקור)")
+        missing.append("pm_volume_source")
     elif pm_vol_status == "VOLUME_UNAVAILABLE":
-        soft_flags.append("נפח PM (yfinance לא מדווח)")
+        soft_flags.append("pm_volume_yfinance")
 
     pm_high = candidate.get('pm_high')
     if pm_high is None or _safe_float(pm_high) <= 0:
@@ -114,11 +99,11 @@ def _check_data_completeness(candidate: dict) -> dict:
 
     cat_type = candidate.get('catalyst_type')
     if cat_type in (None, "UNAVAILABLE", ""):
-        missing.append("קטליזטור")
+        missing.append("catalyst")
 
     sec_level = candidate.get('sec_risk_level')
     if sec_level in (None, "UNAVAILABLE", ""):
-        missing.append("סיכון SEC")
+        missing.append("sec")
 
     if len(missing) == 0 and len(soft_flags) == 0:
         status = "ACTIONABLE"
@@ -127,7 +112,7 @@ def _check_data_completeness(candidate: dict) -> dict:
     else:
         status = "NO_TRADE"
 
-    display_missing = missing + soft_flags if (missing or soft_flags) else ["ללא חוסרים"]
+    display_missing = missing + soft_flags if (missing or soft_flags) else ["ok"]
 
     return {
         "complete": len(missing) == 0 and len(soft_flags) == 0,
@@ -140,7 +125,7 @@ def _check_data_completeness(candidate: dict) -> dict:
 
 def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
                       float_gate_reason=None):
-    c['float_gate_passed'] = (gate_name != 'FLOAT_OVER_20M' and gate_name != 'FLOAT_UNAVAILABLE')
+    c['float_gate_passed'] = (gate_name not in ('FLOAT_OVER_20M', 'FLOAT_UNAVAILABLE'))
     c['float_gate_reason'] = float_gate_reason if float_gate_reason is not None else gate_name
     c['qualified'] = False
     c['trade_type'] = trade_type
@@ -159,10 +144,6 @@ def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
     c['diagnostics'] = {
         'pm': c.get('pm_data_quality'),
         'pm_volume_status': c.get('pm_volume_status'),
-        'early': c.get('early_data_quality'),
-        'rvol': c.get('rvol_status'),
-        'catalyst': c.get('catalyst_type'),
-        'sec': c.get('sec_risk_level'),
         'score': 'REJECTED_GATE',
         'float_gate': gate_name,
     }
@@ -170,10 +151,9 @@ def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
     scored.append(c)
 
 
-def _classify_gap(gap_pct: float) -> dict:
+def _classify_gap(gap_pct):
     gap = _safe_float(gap_pct, 0.0)
     abs_gap = abs(gap)
-
     if gap > 0.05:
         sign = "POS"
     elif gap < -0.05:
