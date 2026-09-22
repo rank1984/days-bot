@@ -1,3 +1,4 @@
+```python
 """
 DAYS-BOT V5.0.6 – Full Scan Engine
 FIXES:
@@ -493,4 +494,4 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                                    expected_type=dict, name=f"vwap:{ticker}")
         analysis['vwap'] = vwap_data
         c['vwap_data'] = vwap_data
-        c['vwap'] = vwap_data.get('vwap', 0) if vwap_da
+        c['vwap'] = vwap_data.get('vwap', 0) 
