@@ -1,5 +1,8 @@
 """
-DAYS-BOT V5.0.2 – Volume Analyzer (RVOL Informational)
+DAYS-BOT V5.0.6 – Volume Analyzer (RVOL Informational)
+V5.0.6 changes:
+- Handle pm_volume=None safely (do NOT crash on None)
+- None ≠ 0 — different semantics
 """
 import pytz
 import requests
@@ -83,34 +86,70 @@ def _get_historical_pm_volume(ticker: str, lookback_days: int = 10) -> Optional[
 
 
 def calculate_rvol(candidate: dict) -> dict:
+    """
+    V5.0.6 — Safe handling of pm_volume=None.
+    None (missing) is NOT the same as 0 (measured zero).
+    """
     ticker = candidate.get('ticker')
-    pm_volume = candidate.get('pm_volume', 0)
 
-    if not ticker or pm_volume <= 0:
+    # DO NOT default to 0 — keep None
+    pm_volume = candidate.get('pm_volume')
+
+    # Safe None handling
+    if not ticker:
+        return {
+            "rvol": None,
+            "status": "UNAVAILABLE",
+            "method": "NO_TICKER",
+            "pm_volume": pm_volume,
+            "reference_volume": 0,
+        }
+
+    if pm_volume is None:
+        return {
+            "rvol": None,
+            "status": "UNAVAILABLE",
+            "method": "VOLUME_UNAVAILABLE",
+            "pm_volume": None,
+            "reference_volume": 0,
+        }
+
+    try:
+        pm_volume_val = int(pm_volume)
+    except (TypeError, ValueError):
+        return {
+            "rvol": None,
+            "status": "UNAVAILABLE",
+            "method": "VOLUME_INVALID",
+            "pm_volume": pm_volume,
+            "reference_volume": 0,
+        }
+
+    if pm_volume_val <= 0:
         return {
             "rvol": None,
             "status": "UNAVAILABLE",
             "method": "NO_DATA",
-            "pm_volume": pm_volume,
-            "reference_volume": 0
+            "pm_volume": pm_volume_val,
+            "reference_volume": 0,
         }
 
     historical_median = _get_historical_pm_volume(ticker, lookback_days=10)
 
     if historical_median is not None and historical_median > 0:
-        rvol = round(pm_volume / historical_median, 2)
+        rvol = round(pm_volume_val / historical_median, 2)
         return {
             "rvol": rvol,
             "status": "TIME_ADJUSTED",
             "method": "Alpaca 1-min bars, same time window (median, 10 days)",
-            "pm_volume": pm_volume,
-            "reference_volume": round(historical_median)
+            "pm_volume": pm_volume_val,
+            "reference_volume": round(historical_median),
         }
 
     return {
         "rvol": None,
         "status": "UNAVAILABLE",
         "method": "No historical PM data available",
-        "pm_volume": pm_volume,
-        "reference_volume": 0
+        "pm_volume": pm_volume_val,
+        "reference_volume": 0,
     }
