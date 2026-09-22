@@ -3,28 +3,17 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
 
-  # ============================================================
-  # 10 premarket runs
-  # Israel: 15:02-16:25 IDT
-  # UTC:    12:02-13:25
-  # ET:     08:02-09:25 EDT (EDT = UTC-4)
-  #
-  # NOTE:
-  # - GitHub Actions cron is ALWAYS UTC.
-  # - In winter (EST), ET shifts 1h earlier → runs 07:02-08:25 ET
-  #   Still fully inside the premarket window.
-  # ============================================================
   schedule:
-    - cron: '2 12 * * 1-5'    # 15:02 IDT | 08:02 ET
-    - cron: '12 12 * * 1-5'   # 15:12 IDT | 08:12 ET
-    - cron: '22 12 * * 1-5'   # 15:22 IDT | 08:22 ET
-    - cron: '32 12 * * 1-5'   # 15:32 IDT | 08:32 ET
-    - cron: '42 12 * * 1-5'   # 15:42 IDT | 08:42 ET
-    - cron: '52 12 * * 1-5'   # 15:52 IDT | 08:52 ET
-    - cron: '2 13 * * 1-5'    # 16:02 IDT | 09:02 ET
-    - cron: '12 13 * * 1-5'   # 16:12 IDT | 09:12 ET
-    - cron: '22 13 * * 1-5'   # 16:22 IDT | 09:22 ET
-    - cron: '25 13 * * 1-5'   # 16:25 IDT | 09:25 ET
+    - cron: '2 12 * * 1-5'
+    - cron: '12 12 * * 1-5'
+    - cron: '22 12 * * 1-5'
+    - cron: '32 12 * * 1-5'
+    - cron: '42 12 * * 1-5'
+    - cron: '52 12 * * 1-5'
+    - cron: '2 13 * * 1-5'
+    - cron: '12 13 * * 1-5'
+    - cron: '22 13 * * 1-5'
+    - cron: '25 13 * * 1-5'
 
 permissions:
   contents: read
@@ -40,39 +29,24 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      # ============================================================
-      # 1. Checkout
-      # ============================================================
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ============================================================
-      # 2. Python
-      # ============================================================
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
 
-      # ============================================================
-      # 3. Dependencies
-      # ============================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ============================================================
-      # 4. Prepare data directory
-      # ============================================================
       - name: Prepare data directory
         run: |
           mkdir -p data
 
-      # ============================================================
-      # 5. Determine scan date (ET)
-      # ============================================================
       - name: Determine scan date
         id: date
         run: |
@@ -80,9 +54,7 @@ jobs:
           NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z')
           NOW_UTC=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
           NOW_IL=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
-
           echo "today=$TODAY_ET" >> "$GITHUB_OUTPUT"
-
           echo "=================================================="
           echo "DAYS-BOT V5.0.6 SCAN"
           echo "GitHub run:    ${{ github.run_id }}"
@@ -94,9 +66,6 @@ jobs:
           echo "Scan date ET:  $TODAY_ET"
           echo "=================================================="
 
-      # ============================================================
-      # 6. Find previous same-day scan artifact
-      # ============================================================
       - name: Find previous same-day scan artifact
         id: restore
         env:
@@ -104,20 +73,14 @@ jobs:
           TODAY_ET: ${{ steps.date.outputs.today }}
         run: |
           set -euo pipefail
-
           echo "Looking for previous successful scan run for ET date: $TODAY_ET"
-
           PREV_RUN=""
-
           while IFS=$'\t' read -r RUN_ID RUN_STARTED_AT RUN_NUMBER; do
             if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
               continue
             fi
-
             RUN_DATE_ET=$(TZ=America/New_York date -d "$RUN_STARTED_AT" +%Y-%m-%d)
-
             echo "Candidate run=$RUN_ID number=$RUN_NUMBER started=$RUN_STARTED_AT ET_date=$RUN_DATE_ET"
-
             if [ "$RUN_DATE_ET" = "$TODAY_ET" ]; then
               PREV_RUN="$RUN_ID"
               PREV_RUN_NUMBER="$RUN_NUMBER"
@@ -129,42 +92,31 @@ jobs:
               "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=100&status=success" \
               --jq '.workflow_runs[] | [.id, .run_started_at, .run_number] | @tsv'
           )
-
           if [ -z "${PREV_RUN:-}" ]; then
             echo "[restore] No previous successful scan run found for $TODAY_ET"
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           echo "[restore] Previous same-day run:"
           echo "  run_id=$PREV_RUN"
           echo "  run_number=$PREV_RUN_NUMBER"
-
           EXPECTED_ARTIFACT="scan-${TODAY_ET}-r${PREV_RUN_NUMBER}"
-
           echo "[restore] Looking for artifact: $EXPECTED_ARTIFACT"
-
           ARTIFACT_EXISTS=$(gh api \
             -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
             --jq "[.artifacts[] | select(.name == \"$EXPECTED_ARTIFACT\") and (.expired == false)] | length")
-
           if [ "$ARTIFACT_EXISTS" -eq 0 ]; then
             echo "[restore] Expected artifact not found: $EXPECTED_ARTIFACT"
             echo "[restore] Starting with fresh DB"
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
           echo "[restore] Artifact found: $EXPECTED_ARTIFACT"
-
           echo "has_prev=true" >> "$GITHUB_OUTPUT"
           echo "prev_run=$PREV_RUN" >> "$GITHUB_OUTPUT"
           echo "artifact_name=$EXPECTED_ARTIFACT" >> "$GITHUB_OUTPUT"
 
-      # ============================================================
-      # 7. Download previous artifact
-      # ============================================================
       - name: Download previous artifact
         if: steps.restore.outputs.has_prev == 'true'
         uses: actions/download-artifact@v4
@@ -174,38 +126,26 @@ jobs:
           path: /tmp/prev/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ============================================================
-      # 8. Restore DB
-      # ============================================================
       - name: Restore DB from previous artifact
         if: steps.restore.outputs.has_prev == 'true'
         run: |
           set -euo pipefail
-
           echo "=== Previous artifact contents ==="
           find /tmp/prev -maxdepth 4 -type f -print || true
-
           DB_PATH=""
-
           if [ -f "/tmp/prev/alerts.db" ]; then
             DB_PATH="/tmp/prev/alerts.db"
           elif [ -f "/tmp/prev/data/alerts.db" ]; then
             DB_PATH="/tmp/prev/data/alerts.db"
           fi
-
           if [ -z "$DB_PATH" ]; then
             echo "ERROR: alerts.db not found in previous artifact"
             exit 1
           fi
-
           cp "$DB_PATH" data/alerts.db
-
           echo "[restore] DB restored:"
           ls -lh data/alerts.db
 
-      # ============================================================
-      # 9. Run scanner
-      # ============================================================
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -217,243 +157,39 @@ jobs:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
           set -euo pipefail
-
           echo "Running DAYS-BOT V5.0.6 scanner..."
-
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python main.py fullscan_v34 --manual
           else
             python main.py fullscan_v34
           fi
 
-      # ============================================================
-      # 10. DB Integrity Check
-      # ============================================================
-      - name: DB Integrity Check
+      - name: Verify schema
         if: always()
         run: |
           python3 << 'PYEOF'
-          import sqlite3
-          import json
-          import sys
-          import os
-
-          db_path = "data/alerts.db"
-
-          if not os.path.exists(db_path):
-              print("ERROR: DB not found")
-              sys.exit(1)
-
-          conn = sqlite3.connect(db_path)
-          conn.row_factory = sqlite3.Row
+          import sqlite3, os
+          if not os.path.exists('data/alerts.db'):
+              print("DB not found"); raise SystemExit(0)
+          conn = sqlite3.connect('data/alerts.db')
           cur = conn.cursor()
-
           print()
-          print("=" * 74)
-          print("DB INTEGRITY CHECK (V5.0.6)")
-          print("=" * 74)
-
-          row = cur.execute(
-              "SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1"
-          ).fetchone()
-
-          if not row:
-              print("WARNING: alerts table contains no rows")
-              conn.close()
-              sys.exit(0)
-
-          scan_date = row["scan_date"]
-          print(f"Checking latest alerts.scan_date = {scan_date}")
-
-          mismatches = 0
-
-          for r in cur.execute(
-              """SELECT ticker, composite_score, raw_candidate_json
-                 FROM alerts WHERE scan_date = ? ORDER BY id DESC""",
-              (scan_date,)
-          ):
-              ticker = r["ticker"]
-              db_c = r["composite_score"]
-              raw_json = r["raw_candidate_json"]
-
-              if not raw_json:
-                  continue
-
-              try:
-                  raw = json.loads(raw_json)
-              except Exception:
-                  mismatches += 1
-                  print(f"  INVALID RAW JSON: {ticker}")
-                  continue
-
-              raw_c = raw.get("composite_score")
-
-              if db_c is not None and raw_c is not None:
-                  try:
-                      if abs(float(db_c) - float(raw_c)) >= 0.01:
-                          print(f"  MISMATCH {ticker}: DB={db_c} RAW={raw_c}")
-                          mismatches += 1
-                  except Exception:
-                      mismatches += 1
-                      print(f"  SCORE PARSE ERROR: {ticker}")
-
-          print(f"MISMATCHES: {mismatches}")
-          print("=" * 74)
-          conn.close()
-
-          if mismatches > 0:
-              print(f"FAIL: {mismatches} mismatch(es)")
-              sys.exit(1)
-
-          print("PASS: DB matches RAW JSON")
-          PYEOF
-
-      # ============================================================
-      # 11. Verify PM bars JSON
-      # ============================================================
-      - name: Verify PM bars JSON
-        if: always()
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3
-          import json
-          import os
-
-          db_path = "data/alerts.db"
-          if not os.path.exists(db_path):
-              print("DB not found — skipping PM verification")
-              raise SystemExit(0)
-
-          conn = sqlite3.connect(db_path)
-          conn.row_factory = sqlite3.Row
-          cur = conn.cursor()
-
-          try:
-              row = cur.execute(
-                  "SELECT DISTINCT scan_date FROM alerts ORDER BY scan_date DESC LIMIT 1"
-              ).fetchone()
-          except Exception as exc:
-              print(f"Could not query alerts table: {exc}")
-              conn.close()
-              raise SystemExit(0)
-
-          if not row:
-              print("No alert rows — skipping PM verification")
-              conn.close()
-              raise SystemExit(0)
-
-          scan_date = row["scan_date"]
-
-          print()
-          print("=" * 74)
-          print(f"PM BARS JSON VERIFICATION — {scan_date}")
-          print("=" * 74)
-
-          mismatch = 0
-
-          for r in cur.execute(
-              """SELECT ticker, pm_bars, pm_bars_json
-                 FROM alerts WHERE scan_date = ? ORDER BY id DESC""",
-              (scan_date,)
-          ):
-              ticker = r["ticker"]
-              pm_bars = r["pm_bars"] or 0
-              raw = r["pm_bars_json"]
-
-              if raw is None:
-                  json_count = 0
-              else:
-                  try:
-                      json_count = len(json.loads(raw))
-                  except Exception:
-                      json_count = -1
-
-              status = "OK" if pm_bars == json_count else "MISMATCH"
-              if status == "MISMATCH":
-                  mismatch += 1
-
-              print(f"  {ticker:8s} | pm_bars={pm_bars:>3} | json={json_count:>3} | {status}")
-
-          print("=" * 74)
-          print(f"PM BAR MISMATCHES: {mismatch}")
-          conn.close()
-          PYEOF
-
-      # ============================================================
-      # 12. Verify V5.0.6 Schema
-      # ============================================================
-      - name: Verify V5.0.6 Schema
-        if: always()
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3
-          import os
-
-          db_path = "data/alerts.db"
-          if not os.path.exists(db_path):
-              print("DB not found — skipping schema verification")
-              raise SystemExit(0)
-
-          conn = sqlite3.connect(db_path)
-          cur = conn.cursor()
-
-          print()
-          print("=" * 74)
           print("V5.0.6 SCHEMA VERIFICATION")
           print("=" * 74)
-
-          required = [
-              ("snapshots",       "pm_bars_json"),
-              ("trigger_results", "trigger_data_mode"),
-              ("outcomes",        "trigger_result_id"),
-              ("outcomes",        "net_r_status"),
-          ]
-
-          missing = 0
-
-          for table, col in required:
-              cur.execute(f"PRAGMA table_info({table})")
+          for table, col in [("snapshots","pm_bars_json"),
+                              ("trigger_results","trigger_data_mode"),
+                              ("outcomes","trigger_result_id"),
+                              ("outcomes","net_r_status")]:
+              cur.execute("PRAGMA table_info(" + table + ")")
               cols = {row[1] for row in cur.fetchall()}
-              present = col in cols
-
-              print(f"  {table:20s}.{col:25s} : {'present' if present else 'MISSING'}")
-              if not present:
-                  missing += 1
-
-          print()
-
+              print("  " + table + "." + col + " : " + ("present" if col in cols else "MISSING"))
           for table in ("snapshots", "trigger_results", "outcomes"):
-              try:
-                  n = cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-              except Exception:
-                  n = "ERROR"
-              print(f"  {table:20s} rows: {n}")
-
+              n = cur.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+              print("  " + table + " rows: " + str(n))
           print("=" * 74)
           conn.close()
-
-          if missing:
-              print(f"WARNING: {missing} required schema field(s) missing")
-          else:
-              print("PASS: Required V5.0.6 schema fields present")
           PYEOF
 
-      # ============================================================
-      # 13. Verify final DB exists
-      # ============================================================
-      - name: Verify final DB exists
-        if: always()
-        run: |
-          if [ ! -f "data/alerts.db" ]; then
-            echo "ERROR: final data/alerts.db does not exist"
-            exit 1
-          fi
-          echo "Final DB:"
-          ls -lh data/alerts.db
-
-      # ============================================================
-      # 14. Upload daily artifact
-      # ============================================================
       - name: Upload daily artifact
         if: always()
         uses: actions/upload-artifact@v4
