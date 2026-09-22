@@ -1,12 +1,15 @@
 """
-DAYS-BOT V5.0.5.2.6 – Premarket Engine (Alpaca IEX + yfinance Fallback)
+DAYS-BOT V5.0.6 – Premarket Engine (Alpaca IEX + yfinance Fallback)
 Fetches real 1-minute premarket bars.
 If Alpaca IEX fails / returns empty → falls back to yfinance (prepost=True).
 
-V5.0.5.2.6 changes:
-- Added `pm_bars_list` to output (Live Capture — saves raw PM bars)
-- Minimal bar format: {t, o, h, l, c, v}
-- No changes to existing PM calculation (pm_high, pm_vwap, etc.)
+V5.0.6 changes:
+- pm_volume = None when source doesn't provide volume (NOT 0)
+- pm_volume_status: OK | VOLUME_UNAVAILABLE | UNAVAILABLE | ZERO
+- pm_vwap_status:   OK | VOLUME_UNAVAILABLE | UNAVAILABLE
+- VWAP is None (not last close) when volume unavailable
+- Alpaca diagnostic (first 2 + last 2 bars) — TEMP, remove after 1 day
+- pm_bars_list preserved (Live Capture)
 """
 import json
 import pytz
@@ -16,6 +19,7 @@ from typing import Optional, Dict, Any
 import pandas as pd
 import yfinance as yf
 from utils.config import ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
+
 
 ET = pytz.timezone("America/New_York")
 BARS_URL = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/bars"
@@ -34,17 +38,15 @@ def _headers() -> dict:
 
 def _build_bars_list(df: pd.DataFrame) -> list:
     """
-    V5.0.5.2.6 – Live Capture
+    V5.0.6 – Live Capture
     Build minimal bar list: {t, o, h, l, c, v}
     Handles both Alpaca (index from column 't') and yfinance (DatetimeIndex).
     """
     bars = []
     has_open = "open" in df.columns
     for idx, row in df.iterrows():
-        # Timestamp resolution
         ts = None
         if "t" in row and row["t"] is not None:
-            # Alpaca path — we injected 't' column
             try:
                 ts = pd.Timestamp(row["t"])
             except Exception:
@@ -81,27 +83,42 @@ def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
 
     pm_high = float(df["high"].max())
     pm_low = float(df["low"].min())
-    pm_volume = int(df["volume"].sum())
     pm_bars_count = len(df)
 
-    # VWAP (typical price weighted)
-    typical = (df["high"] + df["low"] + df["close"]) / 3.0
-    total_value = (typical * df["volume"]).sum()
-    total_volume = df["volume"].sum()
-    pm_vwap = float(total_value / total_volume) if total_volume > 0 else float(df["close"].iloc[-1])
+    # ================================================================
+    # V5.0.6 — Volume / VWAP quality
+    # None (not 0) when source doesn't provide volume
+    # ================================================================
+    total_volume = int(df["volume"].sum())
 
-    # V5.0.5.2.6 – Live Capture: build raw bars list
+    if total_volume > 0:
+        typical = (df["high"] + df["low"] + df["close"]) / 3.0
+        total_value = (typical * df["volume"]).sum()
+        pm_vwap = float(total_value / total_volume)
+        pm_volume = total_volume
+        pm_volume_status = "OK"
+        pm_vwap_status = "OK"
+    else:
+        # Bars exist, but no usable volume (yfinance PM)
+        # Do NOT pretend this is VWAP or true zero-volume
+        pm_vwap = None
+        pm_volume = None
+        pm_volume_status = "VOLUME_UNAVAILABLE"
+        pm_vwap_status = "VOLUME_UNAVAILABLE"
+
     pm_bars_list = _build_bars_list(df)
 
     return {
         "pm_high": round(pm_high, 4),
         "pm_low": round(pm_low, 4),
-        "pm_vwap": round(pm_vwap, 4),
+        "pm_vwap": round(pm_vwap, 4) if pm_vwap is not None else None,
         "pm_volume": pm_volume,
+        "pm_volume_status": pm_volume_status,
+        "pm_vwap_status": pm_vwap_status,
         "pm_bars_count": pm_bars_count,
         "pm_data_quality": "GOOD_DATA" if pm_bars_count >= 10 else "LOW_DATA",
         "pm_last": round(float(df["close"].iloc[-1]), 4),
-        "pm_bars_list": pm_bars_list,   # V5.0.5.2.6
+        "pm_bars_list": pm_bars_list,
     }
 
 
@@ -121,7 +138,6 @@ def _fetch_yfinance_pm(ticker: str, target_date: datetime) -> Optional[Dict[str,
         if data is None or data.empty:
             return None
 
-        # Flatten MultiIndex columns if present (newer yfinance)
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
 
@@ -130,7 +146,6 @@ def _fetch_yfinance_pm(ticker: str, target_date: datetime) -> Optional[Dict[str,
             data.index = data.index.tz_localize("UTC")
         data = data.tz_convert(ET)
 
-        # Filter to the target calendar day
         target_date_only = target_date.date() if hasattr(target_date, "date") else target_date
         mask = data.index.date == target_date_only
         df = data.loc[mask]
@@ -138,7 +153,6 @@ def _fetch_yfinance_pm(ticker: str, target_date: datetime) -> Optional[Dict[str,
         if df.empty:
             return None
 
-        # PM window only (04:00 inclusive → 09:30 exclusive)
         df = df.between_time("04:00", "09:29")
 
         if df.empty:
@@ -198,6 +212,20 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[
                 bars = data.get("bars", {}).get(ticker, [])
                 print(f"[PM] {ticker} - Alpaca total bars received: {len(bars)}")
 
+                # V5.0.6 TEMP diagnostic — remove after 1 day
+                if bars:
+                    for bar in (bars[:2] + bars[-2:]):
+                        try:
+                            ts = datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
+                            ts_et = ts.astimezone(ET)
+                            print(
+                                f"[PM][Alpaca] {ticker} | "
+                                f"UTC={bar['t']} | ET={ts_et.strftime('%H:%M')} | "
+                                f"v={bar.get('v')}"
+                            )
+                        except Exception:
+                            pass
+
                 if bars:
                     pm_bars = []
                     target_d = target_date.date()
@@ -219,7 +247,6 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[
                     print(f"[PM] {ticker} - PM bars (04:00-09:30, today): {len(pm_bars)}")
 
                     if pm_bars:
-                        # V5.0.5.2.6 – include 't' for bar list + 'open'
                         records = []
                         for b in pm_bars:
                             ts = datetime.fromisoformat(b["t"].replace("Z", "+00:00"))
@@ -255,7 +282,9 @@ def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[
         "pm_high": None,
         "pm_low": None,
         "pm_vwap": None,
-        "pm_volume": 0,
+        "pm_volume": None,
+        "pm_volume_status": "UNAVAILABLE",
+        "pm_vwap_status": "UNAVAILABLE",
         "pm_bars_count": 0,
         "pm_data_quality": "NO_DATA",
         "pm_last": None,
