@@ -1,4 +1,3 @@
-```python
 """
 DAYS-BOT V5.0.6 – Full Scan Engine
 FIXES:
@@ -494,4 +493,128 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                                    expected_type=dict, name=f"vwap:{ticker}")
         analysis['vwap'] = vwap_data
         c['vwap_data'] = vwap_data
-        c['vwap'] = vwap_data.get('vwap', 0) 
+        c['vwap'] = vwap_data.get('vwap', 0) if vwap_data else None
+
+        analysis['sympathy'] = _safe_call(find_sympathy_candidates, [], c, 3,
+                                          expected_type=list, name=f"sympathy:{ticker}")
+        c['sympathy'] = analysis['sympathy']
+
+        # ============================================================
+        # V5.0.6 — DATA QUALITY GATE (BEFORE Trade Plan)
+        # ============================================================
+        completeness = _check_data_completeness(c)
+        c['data_completeness'] = completeness
+        c['data_status'] = completeness['status']
+
+        if completeness['status'] == 'NO_TRADE':
+            c['trade_type'] = 'NO_TRADE'
+            c['qualified'] = False
+            c['plan_valid'] = False
+            c['plan_error'] = f"DATA_QUALITY_GATE: {', '.join(completeness['hard_missing'])}"
+            c['composite_score'] = None
+            c['score_status'] = 'BLOCKED_DATA_QUALITY'
+            c['diagnostics'] = {
+                'pm': c.get('pm_data_quality'),
+                'pm_volume_status': c.get('pm_volume_status'),
+                'pm_vwap_status': c.get('pm_vwap_status'),
+                'early': c.get('early_data_quality'),
+                'rvol': c.get('rvol_status'),
+                'catalyst': c.get('catalyst_type'),
+                'sec': c.get('sec_risk_level'),
+                'score': 'BLOCKED_DATA_QUALITY',
+            }
+            c['analysis'] = analysis
+            scored.append(c)
+            continue
+
+        if completeness['status'] == 'WATCH':
+            c['trade_type'] = 'WATCH'
+            c['qualified'] = False
+            c['plan_valid'] = False
+            c['plan_error'] = "DATA_QUALITY_GATE: WATCH"
+            c['composite_score'] = None
+            c['score_status'] = 'BLOCKED_DATA_QUALITY'
+            c['diagnostics'] = {
+                'pm': c.get('pm_data_quality'),
+                'pm_volume_status': c.get('pm_volume_status'),
+                'pm_vwap_status': c.get('pm_vwap_status'),
+                'early': c.get('early_data_quality'),
+                'rvol': c.get('rvol_status'),
+                'catalyst': c.get('catalyst_type'),
+                'sec': c.get('sec_risk_level'),
+                'score': 'BLOCKED_DATA_QUALITY',
+            }
+            c['analysis'] = analysis
+            scored.append(c)
+            continue
+
+        # ============================================================
+        # Only ACTIONABLE reaches here
+        # ============================================================
+        c['qualified'] = True
+
+        plan = _safe_call(build_trade_plan, {}, c, ACCOUNT_SIZE,
+                          MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
+                          expected_type=dict, name=f"tradeplan:{ticker}")
+        if plan:
+            c.update(plan)
+        else:
+            c['plan_valid'] = False
+            c['plan_error'] = 'Trade plan build failed'
+
+        c['account_size'] = ACCOUNT_SIZE
+        c['risk_pct'] = MAX_RISK_PER_TRADE_V31
+
+        score = _safe_call(calculate_composite_score, None, c, analysis,
+            expected_type=(int, float, type(None)), name=f"score:{ticker}")
+        if score is None:
+            c['composite_score'] = None
+            c['score_status'] = 'ERROR'
+        else:
+            c['composite_score'] = round(float(score), 1)
+            c['score_status'] = 'OK'
+
+        c['diagnostics'] = {
+            'pm': c.get('pm_data_quality'),
+            'pm_volume_status': c.get('pm_volume_status'),
+            'pm_vwap_status': c.get('pm_vwap_status'),
+            'early': c.get('early_data_quality'),
+            'rvol': c.get('rvol_status'),
+            'catalyst': c.get('catalyst_type'),
+            'sec': c.get('sec_risk_level'),
+            'score': c.get('score_status'),
+            'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
+            'float_source': c.get('float_source', 'unknown'),
+        }
+
+        c['analysis'] = analysis
+        scored.append(c)
+
+    print()
+    print("=" * 74)
+    print("FULLSCAN GATE SUMMARY")
+    print("=" * 74)
+    print(f"  Total analyzed:                {total_to_analyze}")
+    print(f"  Corporate Action rejects:      {corp_action_rejects}")
+    print(f"  Liquidity rejects:             {liquidity_rejects}")
+    print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
+    print(f"  Float cache hits (Discovery):  {float_cache_hits}")
+    print(f"  Float live fetches:            {float_live_fetches}")
+    print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
+    valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
+    print(f"  Top 5 returned:                {min(5, len(valid_scored))}")
+    print("=" * 74)
+
+    gate_summary = {
+        "corp_action_rejects": corp_action_rejects,
+        "liquidity_rejects": liquidity_rejects,
+        "float_rejects": float_rejects,
+        "float_cache_hits": float_cache_hits,
+        "float_live_fetches": float_live_fetches,
+    }
+    for c in scored:
+        c['_gate_summary'] = gate_summary
+
+    valid_scored.sort(key=lambda x: x.get('composite_score', 0), reverse=True)
+
+    return valid_scored[:5] if len(valid_scored) >= 5 else valid_scored
