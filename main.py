@@ -1,13 +1,14 @@
 """
-DAYS-BOT V5.0.6-prep – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
+DAYS-BOT V5.0.6-prep.1 – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
 
 Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
 
-V5.0.6-prep changes:
-- Added snapshot_schema integration
-- Save T0 immutable snapshot for EVERY Strict Candidate in EVERY scan
+V5.0.6-prep.1 changes:
+- FIXED: Save T0 snapshots BEFORE early return on empty Top 5
+- Snapshots are the primary Evidence. They MUST be captured
+  even when Liquidity/Data-Quality gates reject all candidates.
 - scan_id format: YYYY-MM-DD_HHMM (ET)
 """
 import sys
@@ -140,17 +141,19 @@ def _run_replay_integrity_check(replay_count, strict_count):
 
 def run_fullscan_v34(manual=False):
     init_db()
-    init_snapshot_schema()  # V5.0.6-prep
+    init_snapshot_schema()
     now_et = datetime.now(ET)
     scan_date = now_et.strftime("%Y-%m-%d")
-    scan_id = now_et.strftime("%Y-%m-%d_%H%M")  # V5.0.6-prep
+    scan_id = now_et.strftime("%Y-%m-%d_%H%M")
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.6-prep – RESEARCH ENGINE (Snapshot Schema)")
+    print("DAYS-BOT V5.0.6-prep.1 – RESEARCH ENGINE (Snapshot Schema)")
     print(f"Date: {scan_date} | Scan ID: {scan_id} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
+    # ============================================================
     # DISCOVERY
+    # ============================================================
     print("[Main] Starting discovery...")
     from scanner.premarket import scan_premarket
 
@@ -181,51 +184,19 @@ def run_fullscan_v34(manual=False):
         f"float_unknown={discovery_stats['float_unknown']}"
     )
 
+    # ============================================================
     # FULL ANALYSIS
+    # ============================================================
     print("[Main] Running full analysis on ALL strict candidates...")
     top5 = full_scan_v34(candidates, manual)
 
-    if not top5:
-        print("[Main] ❌ Full analysis returned empty.")
-        msg = "😴 DAYS-BOT\n\nה-Discovery עבד, אבל לא התקבל מועמד לניתוח מלא."
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        return
-
-    print(f"[Main] ✅ Full analysis returned {len(top5)} candidates")
-
-    # REPLAY SNAPSHOTS
-    print("[Main] Saving replay snapshots for ALL strict candidates...")
-    replay_saved = 0
-    replay_failed = 0
-
-    for idx, candidate in enumerate(candidates):
-        try:
-            save_candidate_snapshot(candidate, idx)
-            replay_saved += 1
-        except Exception as e:
-            replay_failed += 1
-            print(f"[Main] ⚠️ Replay snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
-
-    print(f"[Main] Replay snapshots saved: {replay_saved} (failed: {replay_failed})")
-
-    # SWING ANALYSIS FOR TOP 5
-    print("[Main] Running swing analysis for Top 5...")
-    for idx, candidate in enumerate(top5):
-        analysis = candidate.get('analysis', {})
-        swing = _safe_swing(candidate, analysis)
-
-        candidate["swing_score"] = float(swing.get("swing_score", 0) or 0)
-        candidate["qualified"] = swing.get("qualified", False)
-        candidate["swing_data"] = swing
-        candidate["trade_type"] = _classify_trade_type(candidate)
-
-        try:
-            save_alert(**candidate)
-            print(f"[Main] DB saved: {candidate.get('ticker')}")
-        except Exception as e:
-            print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
-
-    # V5.0.6-prep: Save T0 snapshots for ALL Strict Candidates
+    # ============================================================
+    # V5.0.6-prep.1 — SAVE T0 SNAPSHOTS **BEFORE** ANY EARLY RETURN
+    #
+    # Snapshots are the primary Evidence. They MUST be captured
+    # even when Top 5 is empty (all candidates rejected by
+    # Liquidity / Data-Quality gates).
+    # ============================================================
     print("[Main] Saving V5.0.6 T0 snapshots for ALL strict candidates...")
     snapshot_saved = 0
     snapshot_failed = 0
@@ -243,11 +214,62 @@ def run_fullscan_v34(manual=False):
 
     print(f"[Main] V5.0.6 snapshots saved: {snapshot_saved} (failed/skipped: {snapshot_failed})")
 
+    # ============================================================
+    # EARLY RETURN — AFTER snapshots are saved
+    # ============================================================
+    if not top5:
+        print("[Main] ❌ Full analysis returned empty.")
+        msg = "😴 DAYS-BOT\n\nה-Discovery עבד, אבל לא התקבל מועמד לניתוח מלא."
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        return
+
+    print(f"[Main] ✅ Full analysis returned {len(top5)} candidates")
+
+    # ============================================================
+    # REPLAY SNAPSHOTS
+    # ============================================================
+    print("[Main] Saving replay snapshots for ALL strict candidates...")
+    replay_saved = 0
+    replay_failed = 0
+
+    for idx, candidate in enumerate(candidates):
+        try:
+            save_candidate_snapshot(candidate, idx)
+            replay_saved += 1
+        except Exception as e:
+            replay_failed += 1
+            print(f"[Main] ⚠️ Replay snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+
+    print(f"[Main] Replay snapshots saved: {replay_saved} (failed: {replay_failed})")
+
+    # ============================================================
+    # SWING ANALYSIS FOR TOP 5
+    # ============================================================
+    print("[Main] Running swing analysis for Top 5...")
+    for idx, candidate in enumerate(top5):
+        analysis = candidate.get('analysis', {})
+        swing = _safe_swing(candidate, analysis)
+
+        candidate["swing_score"] = float(swing.get("swing_score", 0) or 0)
+        candidate["qualified"] = swing.get("qualified", False)
+        candidate["swing_data"] = swing
+        candidate["trade_type"] = _classify_trade_type(candidate)
+
+        try:
+            save_alert(**candidate)
+            print(f"[Main] DB saved: {candidate.get('ticker')}")
+        except Exception as e:
+            print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+
+    # ============================================================
     # REPLAY INTEGRITY CHECK
+    # ============================================================
     strict_count = discovery_stats.get("strict_candidates", 0)
     integrity_ok = _run_replay_integrity_check(replay_saved, strict_count)
 
+    # ============================================================
     # LEARNING
+    # ============================================================
     print("[Main] Building daily lesson...")
     previous_lesson = load_previous_learning()
     lesson = build_lesson(
@@ -265,7 +287,9 @@ def run_fullscan_v34(manual=False):
     save_learning(lesson)
     print_lesson(lesson)
 
+    # ============================================================
     # TELEGRAM
+    # ============================================================
     print("[Main] Sending Telegram...")
     msg = format_research_report(top5, now_et)
     telegram_ok = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
@@ -275,7 +299,9 @@ def run_fullscan_v34(manual=False):
         lesson_msg = format_lesson_for_telegram(lesson)
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, lesson_msg)
 
+    # ============================================================
     # FLOW SUMMARY
+    # ============================================================
     print()
     print("=" * 74)
     print("DISCOVERY → GATES → TOP 5 FLOW")
@@ -288,7 +314,9 @@ def run_fullscan_v34(manual=False):
     print(f"  V5.0.6 Snapshots saved:    {snapshot_saved}")
     print("=" * 74)
 
+    # ============================================================
     # TOP 5 SUMMARY
+    # ============================================================
     print()
     print("=" * 74)
     print("TOP 5")
@@ -306,7 +334,9 @@ def run_fullscan_v34(manual=False):
         )
     print("=" * 74)
 
+    # ============================================================
     # REPLAY SUMMARY
+    # ============================================================
     print()
     print("=" * 74)
     print("REPLAY SUMMARY")
