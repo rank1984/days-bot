@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
 
   schedule:
-    - cron: '2 12 * * 1-5'
-    - cron: '12 12 * * 1-5'
-    - cron: '22 12 * * 1-5'
-    - cron: '32 12 * * 1-5'
-    - cron: '42 12 * * 1-5'
-    - cron: '52 12 * * 1-5'
-    - cron: '2 13 * * 1-5'
-    - cron: '12 13 * * 1-5'
-    - cron: '22 13 * * 1-5'
-    - cron: '25 13 * * 1-5'
+    - cron: '0 12 * * 1-5'    # 15:00 IDT
+    - cron: '9 12 * * 1-5'    # 15:09 IDT
+    - cron: '18 12 * * 1-5'   # 15:18 IDT
+    - cron: '27 12 * * 1-5'   # 15:27 IDT
+    - cron: '36 12 * * 1-5'   # 15:36 IDT
+    - cron: '45 12 * * 1-5'   # 15:45 IDT
+    - cron: '54 12 * * 1-5'   # 15:54 IDT
+    - cron: '3 13 * * 1-5'    # 16:03 IDT
+    - cron: '12 13 * * 1-5'   # 16:12 IDT
+    - cron: '20 13 * * 1-5'   # 16:20 IDT
 
 permissions:
   contents: read
