@@ -218,7 +218,7 @@ jobs:
           fi
 
       # ============================================================
-      # Verify schema (also prints column names for pm_bars verification)
+      # Verify schema
       # ============================================================
       - name: Verify schema
         if: always()
@@ -248,9 +248,9 @@ jobs:
           PYEOF
 
       # ============================================================
-      # PM Data Integrity Check — WARNING ONLY (writes evidence)
+      # PM Data Integrity Investigation — WARNING ONLY (evidence, no fix)
       # ============================================================
-      - name: PM Data Integrity Check
+      - name: PM Data Integrity Investigation
         if: always()
         env:
           TODAY_ET: ${{ steps.date.outputs.today }}
@@ -280,26 +280,26 @@ jobs:
           conn.row_factory = sqlite3.Row
           cur = conn.cursor()
 
-          # Verify required column exists
           cur.execute("PRAGMA table_info(snapshots)")
           cols = {r[1] for r in cur.fetchall()}
           if "pm_bars" not in cols:
               result["status"] = "NO_COLUMN"
-              result["error"] = "snapshots.pm_bars column missing"
               with open("data/pm_integrity.json", "w") as f:
                   json.dump(result, f, indent=2)
-              print("WARN: snapshots.pm_bars column missing — skipping check")
+              print("WARN: snapshots.pm_bars column missing")
               conn.close()
               raise SystemExit(0)
 
           print()
           print("=" * 74)
-          print(f"PM DATA INTEGRITY CHECK — {scan_date}")
+          print(f"PM DATA INTEGRITY INVESTIGATION — {scan_date}")
           print("=" * 74)
 
           rows = cur.execute("""
-              SELECT ticker, pm_bars, pm_volume, pm_volume_status,
-                     pm_high, pm_low, pm_vwap
+              SELECT snapshot_id, ticker, snapshot_time_et,
+                     pm_bars, pm_volume, pm_volume_status,
+                     pm_high, pm_low, pm_vwap,
+                     pm_source, pm_data_quality
               FROM snapshots
               WHERE scan_date = ?
                 AND (pm_bars IS NULL OR pm_bars = 0)
@@ -312,26 +312,37 @@ jobs:
 
           if rows:
               result["status"] = "VIOLATION"
-              print(f"  WARN: {len(rows)} PM DATA INTEGRITY VIOLATION(S)")
+              print(f"  WARN: {len(rows)} PM INTEGRITY VIOLATION(S) — INVESTIGATE")
               print()
-              print(f"  {'ticker':8s} | {'bars':>4s} | {'volume':>10s} | {'vol_status':<22s} | {'high':>8s} | {'vwap':>8s}")
-              print("  " + "-" * 76)
               for r in rows:
-                  print(f"  {r['ticker']:8s} | {str(r['pm_bars'] or 0):>4s} | "
-                        f"{str(r['pm_volume']):>10s} | "
-                        f"{str(r['pm_volume_status'] or 'NULL'):<22s} | "
-                        f"{str(r['pm_high']):>8s} | {str(r['pm_vwap']):>8s}")
+                  print(f"  [snapshot_id={r['snapshot_id']}] {r['ticker']}")
+                  print(f"    time_et:      {r['snapshot_time_et']}")
+                  print(f"    pm_bars:      {r['pm_bars']}")
+                  print(f"    pm_volume:    {r['pm_volume']}")
+                  print(f"    vol_status:   {r['pm_volume_status']}")
+                  print(f"    pm_high:      {r['pm_high']}")
+                  print(f"    pm_low:       {r['pm_low']}")
+                  print(f"    pm_vwap:      {r['pm_vwap']}")
+                  print(f"    pm_source:    {r['pm_source']}")
+                  print(f"    pm_data_q:    {r['pm_data_quality']}")
+                  print()
                   result["violations"].append({
+                      "snapshot_id": r["snapshot_id"],
                       "ticker": r["ticker"],
+                      "snapshot_time_et": r["snapshot_time_et"],
                       "pm_bars": r["pm_bars"],
                       "pm_volume": r["pm_volume"],
                       "pm_volume_status": r["pm_volume_status"],
                       "pm_high": r["pm_high"],
                       "pm_low": r["pm_low"],
                       "pm_vwap": r["pm_vwap"],
+                      "pm_source": r["pm_source"],
+                      "pm_data_quality": r["pm_data_quality"],
                   })
+              print("  NOTE: This is EVIDENCE ONLY. Do not auto-fix.")
+              print("  NOTE: Investigate root cause: pm_engine / full_scan_v34 / snapshot assembly")
           else:
-              print(f"  PASS: No PM DATA INTEGRITY violations for {scan_date}")
+              print(f"  PASS: No PM INTEGRITY violations for {scan_date}")
 
           print("=" * 74)
           conn.close()
@@ -339,7 +350,6 @@ jobs:
           with open("data/pm_integrity.json", "w") as f:
               json.dump(result, f, indent=2)
 
-          # DO NOT fail the run — evidence is in the artifact
           raise SystemExit(0)
           PYEOF
 
@@ -379,8 +389,7 @@ jobs:
           print("=" * 74)
 
           rows = cur.execute("""
-              SELECT scan_date,
-                     COUNT(*) AS n,
+              SELECT scan_date, COUNT(*) AS n,
                      MIN(snapshot_time_et) AS first_et,
                      MAX(snapshot_time_et) AS last_et,
                      MIN(price) AS min_price,
@@ -391,7 +400,7 @@ jobs:
               LIMIT 5
           """).fetchall()
 
-          print(f"  {'scan_date':12s} | {'n':>4s} | {'first_et':20s} | {'last_et':20s} | {'price_range'}")
+          print(f"  {'scan_date':12s} | {'n':>4s} | {'first_et':20s} | {'last_et':20s} | price_range")
           print("  " + "-" * 80)
           for r in rows:
               print(f"  {r['scan_date']:12s} | {r['n']:>4d} | "
@@ -415,11 +424,8 @@ jobs:
           if dupes:
               result["status"] = "WARN"
               print(f"  WARN: {len(dupes)} suspect(s) — same price+prev_close across days:")
-              print(f"  {'ticker':8s} | {'price':>8s} | {'prev_close':>10s} | {'n_days':>6s} | dates")
-              print("  " + "-" * 80)
               for d in dupes:
-                  print(f"  {d['ticker']:8s} | {d['price']:>8.4f} | "
-                        f"{d['prev_close']:>10.4f} | {d['n_days']:>6d} | {d['scan_dates']}")
+                  print(f"  {d['ticker']:8s} | price={d['price']:.4f} | prev={d['prev_close']:.4f} | days={d['n_days']} | {d['scan_dates']}")
                   result["suspects"].append({
                       "ticker": d["ticker"],
                       "price": d["price"],
@@ -436,12 +442,11 @@ jobs:
           with open("data/stale_data.json", "w") as f:
               json.dump(result, f, indent=2)
 
-          # WARN — do not fail
           raise SystemExit(0)
           PYEOF
 
       # ============================================================
-      # Research Summary — uses explicit scan_date
+      # Research Summary — Separated Counters
       # ============================================================
       - name: Research Summary
         if: always()
@@ -458,18 +463,18 @@ jobs:
               print("DB not found"); raise SystemExit(0)
 
           conn = sqlite3.connect(db_path)
-          conn.row_factory = sqlite3.Row
           cur = conn.cursor()
 
+          # ---- Stage 1: Snapshots ----
           n_snapshots = cur.execute(
               "SELECT COUNT(*) FROM snapshots WHERE scan_date = ?", (scan_date,)
           ).fetchone()[0]
 
+          # ---- Stage 2: PM data quality ----
           n_pm_ok = cur.execute("""
               SELECT COUNT(*) FROM snapshots
               WHERE scan_date = ? AND pm_bars > 0
           """, (scan_date,)).fetchone()[0]
-
           n_pm_zero = n_snapshots - n_pm_ok
 
           n_pm_vol = cur.execute("""
@@ -477,45 +482,39 @@ jobs:
               WHERE scan_date = ? AND pm_volume IS NOT NULL AND pm_volume > 0
           """, (scan_date,)).fetchone()[0]
 
-          trig_n = cur.execute("""
+          # ---- Stage 3: Gates ----
+          n_float_pass = cur.execute("""
+              SELECT COUNT(*) FROM snapshots
+              WHERE scan_date = ? AND float IS NOT NULL AND float <= 20000000
+          """, (scan_date,)).fetchone()[0]
+
+          n_liquidity_pass = cur.execute("""
+              SELECT COUNT(*) FROM snapshots
+              WHERE scan_date = ? AND float_gate_passed = 1
+          """, (scan_date,)).fetchone()[0]
+
+          n_scored = cur.execute("""
+              SELECT COUNT(*) FROM snapshots
+              WHERE scan_date = ? AND composite_score IS NOT NULL
+          """, (scan_date,)).fetchone()[0]
+
+          # ---- Stage 4: Triggers ----
+          n_triggers = cur.execute("""
               SELECT COUNT(*) FROM trigger_results
-              WHERE snapshot_id IN (SELECT snapshot_id FROM snapshots WHERE scan_date = ?)
+              WHERE snapshot_id IN (
+                  SELECT snapshot_id FROM snapshots WHERE scan_date = ?
+              )
           """, (scan_date,)).fetchone()[0]
 
-          out_n = cur.execute("""
+          n_trigger_hits = cur.execute("""
+              SELECT COUNT(*) FROM trigger_results
+              WHERE hit = 1
+                AND snapshot_id IN (
+                    SELECT snapshot_id FROM snapshots WHERE scan_date = ?
+                )
+          """, (scan_date,)).fetchone()[0]
+
+          # ---- Stage 5: Outcomes ----
+          n_outcomes = cur.execute("""
               SELECT COUNT(*) FROM outcomes
-              WHERE snapshot_id IN (SELECT snapshot_id FROM snapshots WHERE scan_date = ?)
-          """, (scan_date,)).fetchone()[0]
-
-          print()
-          print("=" * 74)
-          print("V5.0.6 RESEARCH INTEGRITY SUMMARY")
-          print("=" * 74)
-          print(f"  Scan date:           {scan_date}")
-          print(f"  Event:               {os.environ.get('GITHUB_EVENT_NAME', '')}")
-          print(f"  Run number:          {os.environ.get('GITHUB_RUN_NUMBER', '')}")
-          print(f"  Git SHA:             {os.environ.get('GITHUB_SHA', '')[:12]}")
-          print()
-          print(f"  Snapshots:           {n_snapshots}")
-          print(f"  PM bars > 0:         {n_pm_ok}")
-          print(f"  PM bars = 0:         {n_pm_zero}")
-          print(f"  PM volume > 0:       {n_pm_vol}")
-          print()
-          print(f"  Triggers:            {trig_n}")
-          print(f"  Outcomes:            {out_n}")
-          print("=" * 74)
-
-          conn.close()
-          PYEOF
-
-      # ============================================================
-      # Upload daily artifact
-      # ============================================================
-      - name: Upload daily artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: scan-${{ steps.date.outputs.today }}-r${{ github.run_number }}
-          path: data/
-          retention-days: 30
-          if-no-files-found: warn
+              WHERE snapshot_id
