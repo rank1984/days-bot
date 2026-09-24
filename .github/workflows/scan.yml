@@ -518,4 +518,4 @@ jobs:
           name: scan-${{ steps.date.outputs.today }}-r${{ github.run_number }}
           path: data/
           retention-days: 30
-          if-no-files-found: 
+          if-no-files-found: warn
