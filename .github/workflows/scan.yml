@@ -54,7 +54,7 @@ jobs:
           NOW_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           NOW_IL=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
 
-          # PM window: 04:00–09:30 ET  [0400, 0930)
+          # PM window: 04:00-09:30 ET  [0400, 0930)
           if [ "$NOW_HHMM" -ge "0400" ] && [ "$NOW_HHMM" -lt "0930" ]; then
             IN_PM_WINDOW=true
           else
@@ -166,6 +166,13 @@ jobs:
           TODAY_ET: ${{ steps.date.outputs.today }}
           IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
         run: python3 scripts/research_diagnostics.py
+
+      - name: Run PM forensics
+        if: always()
+        env:
+          TODAY_ET: ${{ steps.date.outputs.today }}
+          IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
+        run: python3 scripts/pm_forensics.py
 
       - name: Upload daily artifact
         if: always()
