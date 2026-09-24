@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DAYS-BOT V5.0.6 — Write run_metadata.json at scan start."""
+"""DAYS-BOT V5.0.6 - Write run_metadata.json at scan start."""
 import json
 import os
 from datetime import datetime
