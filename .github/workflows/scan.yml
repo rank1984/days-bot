@@ -79,7 +79,9 @@ jobs:
             RUN_DATE_ET=$(TZ=America/New_York date -d "$RUN_STARTED_AT" +%Y-%m-%d)
             echo "cand run=$RUN_ID num=$RUN_NUMBER started=$RUN_STARTED_AT ET=$RUN_DATE_ET"
             if [ "$RUN_DATE_ET" = "$TODAY_ET" ]; then
-              PREV_RUN="$RUN_ID"; PREV_RUN_NUMBER="$RUN_NUMBER"; break
+              PREV_RUN="$RUN_ID"
+              PREV_RUN_NUMBER="$RUN_NUMBER"
+              break
             fi
           done < <(
             gh api -H "Accept: application/vnd.github+json" \
@@ -120,7 +122,7 @@ jobs:
           elif [ -f /tmp/prev/data/alerts.db ]; then
             cp /tmp/prev/data/alerts.db data/alerts.db
           else
-            echo "ERROR: alerts.db not found"
+            echo "ERROR: alerts.db not found in artifact"
             exit 1
           fi
           ls -lh data/alerts.db
