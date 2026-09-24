@@ -2,7 +2,6 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
   workflow_dispatch:
-
   schedule:
     - cron: '2 12 * * 1-5'
     - cron: '12 12 * * 1-5'
@@ -44,12 +43,8 @@ jobs:
           pip install -r requirements.txt
 
       - name: Prepare data directory
-        run: |
-          mkdir -p data
+        run: mkdir -p data
 
-      # ============================================================
-      # Determine scan date
-      # ============================================================
       - name: Determine scan date
         id: date
         run: |
@@ -57,76 +52,55 @@ jobs:
           NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z')
           NOW_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           NOW_IL=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
-
           echo "today=$TODAY_ET" >> "$GITHUB_OUTPUT"
           echo "now_utc=$NOW_UTC" >> "$GITHUB_OUTPUT"
-
           echo "=================================================="
           echo "DAYS-BOT V5.0.6 SCAN"
-          echo "GitHub run:    ${{ github.run_id }}"
-          echo "Run number:    ${{ github.run_number }}"
-          echo "Event:         ${{ github.event_name }}"
-          echo "Git SHA:       ${{ github.sha }}"
-          echo "Branch:        ${{ github.ref_name }}"
-          echo "UTC time:      $NOW_UTC"
-          echo "ET time:       $NOW_ET"
-          echo "Israel time:   $NOW_IL"
-          echo "Scan date ET:  $TODAY_ET"
+          echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
+          echo "Event:      ${{ github.event_name }}"
+          echo "Git SHA:    ${{ github.sha }}"
+          echo "Branch:     ${{ github.ref_name }}"
+          echo "UTC:        $NOW_UTC"
+          echo "ET:         $NOW_ET"
+          echo "Israel:     $NOW_IL"
+          echo "Scan date:  $TODAY_ET"
           echo "=================================================="
 
-      # ============================================================
-      # Find previous same-day scan artifact
-      # ============================================================
-      - name: Find previous same-day scan artifact
+      - name: Find previous same-day artifact
         id: restore
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TODAY_ET: ${{ steps.date.outputs.today }}
         run: |
           set -euo pipefail
-          echo "Looking for previous successful scan run for ET date: $TODAY_ET"
           PREV_RUN=""
           while IFS=$'\t' read -r RUN_ID RUN_STARTED_AT RUN_NUMBER; do
-            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
-              continue
-            fi
+            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then continue; fi
             RUN_DATE_ET=$(TZ=America/New_York date -d "$RUN_STARTED_AT" +%Y-%m-%d)
-            echo "Candidate run=$RUN_ID number=$RUN_NUMBER started=$RUN_STARTED_AT ET_date=$RUN_DATE_ET"
+            echo "cand run=$RUN_ID num=$RUN_NUMBER started=$RUN_STARTED_AT ET=$RUN_DATE_ET"
             if [ "$RUN_DATE_ET" = "$TODAY_ET" ]; then
-              PREV_RUN="$RUN_ID"
-              PREV_RUN_NUMBER="$RUN_NUMBER"
-              break
+              PREV_RUN="$RUN_ID"; PREV_RUN_NUMBER="$RUN_NUMBER"; break
             fi
           done < <(
-            gh api \
-              -H "Accept: application/vnd.github+json" \
+            gh api -H "Accept: application/vnd.github+json" \
               "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=100&status=success" \
               --jq '.workflow_runs[] | [.id, .run_started_at, .run_number] | @tsv'
           )
           if [ -z "${PREV_RUN:-}" ]; then
-            echo "[restore] No previous successful scan run found for $TODAY_ET"
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "[restore] Previous same-day run:"
-          echo "  run_id=$PREV_RUN"
-          echo "  run_number=$PREV_RUN_NUMBER"
-          EXPECTED_ARTIFACT="scan-${TODAY_ET}-r${PREV_RUN_NUMBER}"
-          echo "[restore] Looking for artifact: $EXPECTED_ARTIFACT"
-          ARTIFACT_EXISTS=$(gh api \
-            -H "Accept: application/vnd.github+json" \
+          EXPECTED="scan-${TODAY_ET}-r${PREV_RUN_NUMBER}"
+          EXISTS=$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
-            --jq "[.artifacts[] | select(.name == \"$EXPECTED_ARTIFACT\") and (.expired == false)] | length")
-          if [ "$ARTIFACT_EXISTS" -eq 0 ]; then
-            echo "[restore] Expected artifact not found: $EXPECTED_ARTIFACT"
-            echo "[restore] Starting with fresh DB"
+            --jq "[.artifacts[] | select(.name == \"$EXPECTED\") and (.expired == false)] | length")
+          if [ "$EXISTS" -eq 0 ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "[restore] Artifact found: $EXPECTED_ARTIFACT"
           echo "has_prev=true" >> "$GITHUB_OUTPUT"
           echo "prev_run=$PREV_RUN" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=$EXPECTED_ARTIFACT" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$EXPECTED" >> "$GITHUB_OUTPUT"
 
       - name: Download previous artifact
         if: steps.restore.outputs.has_prev == 'true'
@@ -137,68 +111,23 @@ jobs:
           path: /tmp/prev/
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Restore DB from previous artifact
+      - name: Restore DB
         if: steps.restore.outputs.has_prev == 'true'
         run: |
           set -euo pipefail
-          echo "=== Previous artifact contents ==="
-          find /tmp/prev -maxdepth 4 -type f -print || true
-          DB_PATH=""
-          if [ -f "/tmp/prev/alerts.db" ]; then
-            DB_PATH="/tmp/prev/alerts.db"
-          elif [ -f "/tmp/prev/data/alerts.db" ]; then
-            DB_PATH="/tmp/prev/data/alerts.db"
-          fi
-          if [ -z "$DB_PATH" ]; then
-            echo "ERROR: alerts.db not found in previous artifact"
+          if [ -f /tmp/prev/alerts.db ]; then
+            cp /tmp/prev/alerts.db data/alerts.db
+          elif [ -f /tmp/prev/data/alerts.db ]; then
+            cp /tmp/prev/data/alerts.db data/alerts.db
+          else
+            echo "ERROR: alerts.db not found"
             exit 1
           fi
-          cp "$DB_PATH" data/alerts.db
-          echo "[restore] DB restored:"
           ls -lh data/alerts.db
 
-      # ============================================================
-      # Write run_metadata.json
-      # ============================================================
       - name: Write run_metadata.json
-        run: |
-          python3 << 'PYEOF'
-          import json
-          import os
-          from datetime import datetime
-          import pytz
+        run: python3 scripts/write_run_metadata.py
 
-          ET = pytz.timezone("America/New_York")
-          IL = pytz.timezone("Asia/Jerusalem")
-          now_utc = datetime.now(pytz.UTC)
-          now_et = now_utc.astimezone(ET)
-          now_il = now_utc.astimezone(IL)
-
-          meta = {
-              "workflow_run_id": os.environ.get("GITHUB_RUN_ID", ""),
-              "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
-              "event": os.environ.get("GITHUB_EVENT_NAME", ""),
-              "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
-              "git_sha": os.environ.get("GITHUB_SHA", ""),
-              "branch": os.environ.get("GITHUB_REF_NAME", ""),
-              "repository": os.environ.get("GITHUB_REPOSITORY", ""),
-              "scan_date_et": now_et.strftime("%Y-%m-%d"),
-              "started_at_utc": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "started_at_et": now_et.strftime("%Y-%m-%dT%H:%M:%S%z"),
-              "started_at_il": now_il.strftime("%Y-%m-%dT%H:%M:%S%z"),
-          }
-
-          os.makedirs("data", exist_ok=True)
-          with open("data/run_metadata.json", "w") as f:
-              json.dump(meta, f, indent=2)
-
-          print("=== run_metadata.json ===")
-          print(json.dumps(meta, indent=2))
-          PYEOF
-
-      # ============================================================
-      # Run scanner
-      # ============================================================
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -210,311 +139,23 @@ jobs:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
         run: |
           set -euo pipefail
-          echo "Running DAYS-BOT V5.0.6 scanner..."
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python main.py fullscan_v34 --manual
           else
             python main.py fullscan_v34
           fi
 
-      # ============================================================
-      # Verify schema
-      # ============================================================
-      - name: Verify schema
-        if: always()
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3, os
-          if not os.path.exists('data/alerts.db'):
-              print("DB not found"); raise SystemExit(0)
-          conn = sqlite3.connect('data/alerts.db')
-          cur = conn.cursor()
-          print()
-          print("V5.0.6 SCHEMA VERIFICATION")
-          print("=" * 74)
-          for table, col in [("snapshots","pm_bars_json"),
-                              ("snapshots","pm_bars"),
-                              ("trigger_results","trigger_data_mode"),
-                              ("outcomes","trigger_result_id"),
-                              ("outcomes","net_r_status")]:
-              cur.execute("PRAGMA table_info(" + table + ")")
-              cols = {row[1] for row in cur.fetchall()}
-              print("  " + table + "." + col + " : " + ("present" if col in cols else "MISSING"))
-          for table in ("snapshots", "trigger_results", "outcomes"):
-              n = cur.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
-              print("  " + table + " rows: " + str(n))
-          print("=" * 74)
-          conn.close()
-          PYEOF
-
-      # ============================================================
-      # PM Data Integrity Investigation — WARNING ONLY (evidence, no fix)
-      # ============================================================
-      - name: PM Data Integrity Investigation
+      - name: Run research diagnostics
         if: always()
         env:
           TODAY_ET: ${{ steps.date.outputs.today }}
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3, os, json
-          from datetime import datetime
-          import pytz
+        run: python3 scripts/research_diagnostics.py
 
-          db_path = "data/alerts.db"
-          scan_date = os.environ.get("TODAY_ET", "")
-          result = {
-              "scan_date": scan_date,
-              "checked_at_utc": datetime.now(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "violations": [],
-              "status": "PASS",
-          }
-
-          if not os.path.exists(db_path):
-              result["status"] = "NO_DB"
-              with open("data/pm_integrity.json", "w") as f:
-                  json.dump(result, f, indent=2)
-              print("DB not found")
-              raise SystemExit(0)
-
-          conn = sqlite3.connect(db_path)
-          conn.row_factory = sqlite3.Row
-          cur = conn.cursor()
-
-          cur.execute("PRAGMA table_info(snapshots)")
-          cols = {r[1] for r in cur.fetchall()}
-          if "pm_bars" not in cols:
-              result["status"] = "NO_COLUMN"
-              with open("data/pm_integrity.json", "w") as f:
-                  json.dump(result, f, indent=2)
-              print("WARN: snapshots.pm_bars column missing")
-              conn.close()
-              raise SystemExit(0)
-
-          print()
-          print("=" * 74)
-          print(f"PM DATA INTEGRITY INVESTIGATION — {scan_date}")
-          print("=" * 74)
-
-          rows = cur.execute("""
-              SELECT snapshot_id, ticker, snapshot_time_et,
-                     pm_bars, pm_volume, pm_volume_status,
-                     pm_high, pm_low, pm_vwap,
-                     pm_source, pm_data_quality
-              FROM snapshots
-              WHERE scan_date = ?
-                AND (pm_bars IS NULL OR pm_bars = 0)
-                AND (pm_volume IS NOT NULL
-                     OR pm_high IS NOT NULL
-                     OR pm_low IS NOT NULL
-                     OR pm_vwap IS NOT NULL)
-              ORDER BY snapshot_id DESC
-          """, (scan_date,)).fetchall()
-
-          if rows:
-              result["status"] = "VIOLATION"
-              print(f"  WARN: {len(rows)} PM INTEGRITY VIOLATION(S) — INVESTIGATE")
-              print()
-              for r in rows:
-                  print(f"  [snapshot_id={r['snapshot_id']}] {r['ticker']}")
-                  print(f"    time_et:      {r['snapshot_time_et']}")
-                  print(f"    pm_bars:      {r['pm_bars']}")
-                  print(f"    pm_volume:    {r['pm_volume']}")
-                  print(f"    vol_status:   {r['pm_volume_status']}")
-                  print(f"    pm_high:      {r['pm_high']}")
-                  print(f"    pm_low:       {r['pm_low']}")
-                  print(f"    pm_vwap:      {r['pm_vwap']}")
-                  print(f"    pm_source:    {r['pm_source']}")
-                  print(f"    pm_data_q:    {r['pm_data_quality']}")
-                  print()
-                  result["violations"].append({
-                      "snapshot_id": r["snapshot_id"],
-                      "ticker": r["ticker"],
-                      "snapshot_time_et": r["snapshot_time_et"],
-                      "pm_bars": r["pm_bars"],
-                      "pm_volume": r["pm_volume"],
-                      "pm_volume_status": r["pm_volume_status"],
-                      "pm_high": r["pm_high"],
-                      "pm_low": r["pm_low"],
-                      "pm_vwap": r["pm_vwap"],
-                      "pm_source": r["pm_source"],
-                      "pm_data_quality": r["pm_data_quality"],
-                  })
-              print("  NOTE: This is EVIDENCE ONLY. Do not auto-fix.")
-              print("  NOTE: Investigate root cause: pm_engine / full_scan_v34 / snapshot assembly")
-          else:
-              print(f"  PASS: No PM INTEGRITY violations for {scan_date}")
-
-          print("=" * 74)
-          conn.close()
-
-          with open("data/pm_integrity.json", "w") as f:
-              json.dump(result, f, indent=2)
-
-          raise SystemExit(0)
-          PYEOF
-
-      # ============================================================
-      # Stale Data Diagnostic — WARNING ONLY
-      # ============================================================
-      - name: Stale Data Diagnostic
+      - name: Upload daily artifact
         if: always()
-        env:
-          TODAY_ET: ${{ steps.date.outputs.today }}
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3, os, json
-          from datetime import datetime
-          import pytz
-
-          db_path = "data/alerts.db"
-          scan_date = os.environ.get("TODAY_ET", "")
-          result = {
-              "scan_date": scan_date,
-              "checked_at_utc": datetime.now(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "suspects": [],
-              "status": "OK",
-          }
-
-          if not os.path.exists(db_path):
-              print("DB not found")
-              raise SystemExit(0)
-
-          conn = sqlite3.connect(db_path)
-          conn.row_factory = sqlite3.Row
-          cur = conn.cursor()
-
-          print()
-          print("=" * 74)
-          print(f"STALE DATA DIAGNOSTIC — {scan_date}")
-          print("=" * 74)
-
-          rows = cur.execute("""
-              SELECT scan_date, COUNT(*) AS n,
-                     MIN(snapshot_time_et) AS first_et,
-                     MAX(snapshot_time_et) AS last_et,
-                     MIN(price) AS min_price,
-                     MAX(price) AS max_price
-              FROM snapshots
-              GROUP BY scan_date
-              ORDER BY scan_date DESC
-              LIMIT 5
-          """).fetchall()
-
-          print(f"  {'scan_date':12s} | {'n':>4s} | {'first_et':20s} | {'last_et':20s} | price_range")
-          print("  " + "-" * 80)
-          for r in rows:
-              print(f"  {r['scan_date']:12s} | {r['n']:>4d} | "
-                    f"{str(r['first_et']):20s} | {str(r['last_et']):20s} | "
-                    f"{r['min_price']:.4f} - {r['max_price']:.4f}")
-
-          print()
-
-          dupes = cur.execute("""
-              SELECT ticker, price, prev_close,
-                     GROUP_CONCAT(scan_date, ', ') AS scan_dates,
-                     COUNT(DISTINCT scan_date) AS n_days
-              FROM snapshots
-              WHERE scan_date >= date('now', '-5 days')
-              GROUP BY ticker, price, prev_close
-              HAVING n_days > 1
-              ORDER BY n_days DESC, ticker
-              LIMIT 10
-          """).fetchall()
-
-          if dupes:
-              result["status"] = "WARN"
-              print(f"  WARN: {len(dupes)} suspect(s) — same price+prev_close across days:")
-              for d in dupes:
-                  print(f"  {d['ticker']:8s} | price={d['price']:.4f} | prev={d['prev_close']:.4f} | days={d['n_days']} | {d['scan_dates']}")
-                  result["suspects"].append({
-                      "ticker": d["ticker"],
-                      "price": d["price"],
-                      "prev_close": d["prev_close"],
-                      "n_days": d["n_days"],
-                      "scan_dates": d["scan_dates"],
-                  })
-          else:
-              print("  OK: No stale-data suspects in last 5 days")
-
-          print("=" * 74)
-          conn.close()
-
-          with open("data/stale_data.json", "w") as f:
-              json.dump(result, f, indent=2)
-
-          raise SystemExit(0)
-          PYEOF
-
-      # ============================================================
-      # Research Summary — Separated Counters
-      # ============================================================
-      - name: Research Summary
-        if: always()
-        env:
-          TODAY_ET: ${{ steps.date.outputs.today }}
-        run: |
-          python3 << 'PYEOF'
-          import sqlite3, os
-
-          db_path = "data/alerts.db"
-          scan_date = os.environ.get("TODAY_ET", "")
-
-          if not os.path.exists(db_path):
-              print("DB not found"); raise SystemExit(0)
-
-          conn = sqlite3.connect(db_path)
-          cur = conn.cursor()
-
-          # ---- Stage 1: Snapshots ----
-          n_snapshots = cur.execute(
-              "SELECT COUNT(*) FROM snapshots WHERE scan_date = ?", (scan_date,)
-          ).fetchone()[0]
-
-          # ---- Stage 2: PM data quality ----
-          n_pm_ok = cur.execute("""
-              SELECT COUNT(*) FROM snapshots
-              WHERE scan_date = ? AND pm_bars > 0
-          """, (scan_date,)).fetchone()[0]
-          n_pm_zero = n_snapshots - n_pm_ok
-
-          n_pm_vol = cur.execute("""
-              SELECT COUNT(*) FROM snapshots
-              WHERE scan_date = ? AND pm_volume IS NOT NULL AND pm_volume > 0
-          """, (scan_date,)).fetchone()[0]
-
-          # ---- Stage 3: Gates ----
-          n_float_pass = cur.execute("""
-              SELECT COUNT(*) FROM snapshots
-              WHERE scan_date = ? AND float IS NOT NULL AND float <= 20000000
-          """, (scan_date,)).fetchone()[0]
-
-          n_liquidity_pass = cur.execute("""
-              SELECT COUNT(*) FROM snapshots
-              WHERE scan_date = ? AND float_gate_passed = 1
-          """, (scan_date,)).fetchone()[0]
-
-          n_scored = cur.execute("""
-              SELECT COUNT(*) FROM snapshots
-              WHERE scan_date = ? AND composite_score IS NOT NULL
-          """, (scan_date,)).fetchone()[0]
-
-          # ---- Stage 4: Triggers ----
-          n_triggers = cur.execute("""
-              SELECT COUNT(*) FROM trigger_results
-              WHERE snapshot_id IN (
-                  SELECT snapshot_id FROM snapshots WHERE scan_date = ?
-              )
-          """, (scan_date,)).fetchone()[0]
-
-          n_trigger_hits = cur.execute("""
-              SELECT COUNT(*) FROM trigger_results
-              WHERE hit = 1
-                AND snapshot_id IN (
-                    SELECT snapshot_id FROM snapshots WHERE scan_date = ?
-                )
-          """, (scan_date,)).fetchone()[0]
-
-          # ---- Stage 5: Outcomes ----
-          n_outcomes = cur.execute("""
-              SELECT COUNT(*) FROM outcomes
-              WHERE snapshot_id
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ steps.date.outputs.today }}-r${{ github.run_number }}
+          path: data/
+          retention-days: 30
+          if-no-files-found: warn
