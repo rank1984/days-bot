@@ -1,15 +1,11 @@
 """
 DAYS-BOT V5.0.6 – Premarket Engine (Alpaca IEX + yfinance Fallback)
-Fetches real 1-minute premarket bars.
-If Alpaca IEX fails / returns empty → falls back to yfinance (prepost=True).
 
 V5.0.6 changes:
 - pm_volume = None when source doesn't provide volume (NOT 0)
-- pm_volume_status: OK | VOLUME_UNAVAILABLE | UNAVAILABLE | ZERO
-- pm_vwap_status:   OK | VOLUME_UNAVAILABLE | UNAVAILABLE
 - VWAP is None (not last close) when volume unavailable
-- Alpaca diagnostic (first 2 + last 2 bars) — TEMP, remove after 1 day
-- pm_bars_list preserved (Live Capture)
+- DIAGNOSTIC: logs pm_bars_count vs pm_volume mismatch
+- DIAGNOSTIC: first 2 + last 2 Alpaca bars (ET times)
 """
 import json
 import pytz
@@ -36,7 +32,7 @@ def _headers() -> dict:
     }
 
 
-def _build_bars_list(df):
+def _build_bars_list(df: pd.DataFrame) -> list:
     bars = []
     has_open = "open" in df.columns
     for idx, row in df.iterrows():
@@ -60,7 +56,7 @@ def _build_bars_list(df):
     return bars
 
 
-def _calculate_pm_metrics(df):
+def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     if df is None or df.empty:
         return None
 
@@ -111,16 +107,12 @@ def _calculate_pm_metrics(df):
     }
 
 
-def _fetch_yfinance_pm(ticker, target_date):
+def _fetch_yfinance_pm(ticker: str, target_date: datetime) -> Optional[Dict[str, Any]]:
     try:
         data = yf.download(
-            ticker,
-            period="2d",
-            interval="1m",
-            prepost=True,
-            progress=False,
-            auto_adjust=False,
-            threads=False,
+            ticker, period="2d", interval="1m",
+            prepost=True, progress=False,
+            auto_adjust=False, threads=False,
         )
 
         if data is None or data.empty:
@@ -142,7 +134,6 @@ def _fetch_yfinance_pm(ticker, target_date):
             return None
 
         df = df.between_time("04:00", "09:29")
-
         if df.empty:
             return None
 
@@ -158,7 +149,7 @@ def _fetch_yfinance_pm(ticker, target_date):
         return None
 
 
-def get_premarket_minute_data(ticker, target_date_str=None):
+def get_premarket_minute_data(ticker: str, target_date_str: str = None) -> Dict[str, Any]:
     now_et = datetime.now(ET)
 
     if target_date_str:
@@ -171,10 +162,10 @@ def get_premarket_minute_data(ticker, target_date_str=None):
         target_date = now_et
         target_date_str = now_et.strftime("%Y-%m-%d")
 
+    # ---- Alpaca ----
     if ALPACA_API_KEY and ALPACA_SECRET_KEY:
         try:
             start = now_et - timedelta(days=3)
-
             response = requests.get(
                 BARS_URL,
                 headers=_headers(),
@@ -196,6 +187,7 @@ def get_premarket_minute_data(ticker, target_date_str=None):
                 print(f"[PM] {ticker} - Alpaca total bars received: {len(bars)}")
 
                 if bars:
+                    # DIAGNOSTIC — first 2 + last 2 bars
                     for bar in (bars[:2] + bars[-2:]):
                         try:
                             ts = datetime.fromisoformat(bar["t"].replace("Z", "+00:00"))
@@ -208,7 +200,6 @@ def get_premarket_minute_data(ticker, target_date_str=None):
                         except Exception:
                             pass
 
-                if bars:
                     pm_bars = []
                     target_d = target_date.date()
                     current_t = now_et.time()
@@ -241,7 +232,6 @@ def get_premarket_minute_data(ticker, target_date_str=None):
                                 "volume": int(b["v"]),
                             })
                         df = pd.DataFrame(records)
-
                         metrics = _calculate_pm_metrics(df)
                         if metrics:
                             metrics["source"] = "alpaca_iex"
@@ -253,11 +243,13 @@ def get_premarket_minute_data(ticker, target_date_str=None):
         except Exception as e:
             print(f"[PM] {ticker} - Alpaca exception: {e}")
 
+    # ---- yfinance fallback ----
     print(f"[PM] {ticker} - Falling back to yfinance")
     yf_result = _fetch_yfinance_pm(ticker, target_date)
     if yf_result:
         return yf_result
 
+    # ---- Complete failure ----
     return {
         "pm_high": None,
         "pm_low": None,
