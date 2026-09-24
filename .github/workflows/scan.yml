@@ -45,15 +45,27 @@ jobs:
       - name: Prepare data directory
         run: mkdir -p data
 
-      - name: Determine scan date
+      - name: Determine scan date and PM window
         id: date
         run: |
           TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
+          NOW_HHMM=$(TZ=America/New_York date +%H%M)
           NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z')
           NOW_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           NOW_IL=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
+
+          # PM window: 04:00–09:30 ET  [0400, 0930)
+          if [ "$NOW_HHMM" -ge "0400" ] && [ "$NOW_HHMM" -lt "0930" ]; then
+            IN_PM_WINDOW=true
+          else
+            IN_PM_WINDOW=false
+          fi
+
           echo "today=$TODAY_ET" >> "$GITHUB_OUTPUT"
           echo "now_utc=$NOW_UTC" >> "$GITHUB_OUTPUT"
+          echo "now_hhmm=$NOW_HHMM" >> "$GITHUB_OUTPUT"
+          echo "in_pm_window=$IN_PM_WINDOW" >> "$GITHUB_OUTPUT"
+
           echo "=================================================="
           echo "DAYS-BOT V5.0.6 SCAN"
           echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
@@ -64,6 +76,7 @@ jobs:
           echo "ET:         $NOW_ET"
           echo "Israel:     $NOW_IL"
           echo "Scan date:  $TODAY_ET"
+          echo "PM window:  $IN_PM_WINDOW (now=$NOW_HHMM ET)"
           echo "=================================================="
 
       - name: Find previous same-day artifact
@@ -151,6 +164,7 @@ jobs:
         if: always()
         env:
           TODAY_ET: ${{ steps.date.outputs.today }}
+          IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
         run: python3 scripts/research_diagnostics.py
 
       - name: Upload daily artifact
