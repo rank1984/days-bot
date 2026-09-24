@@ -1,9 +1,18 @@
 """
-DAYS-BOT V5.0.6-prep.1 – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
+DAYS-BOT V5.0.6-prep.2 – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
 
 Intraday + Swing 1–3D
 Manual execution only.
 No automatic orders.
+
+V5.0.6-prep.2 changes (over prep.1):
+- FIXED (root cause of 28 PM violations): save_snapshot was being
+  called with partial PM data (pm_volume/pm_high populated, pm_bars=0).
+  New _sanitize_pm_fields() enforces PM evidence atomicity:
+    * pm_bars > 0  → keep all PM scalars; ensure pm_source is set
+    * pm_bars = 0  → NULL out pm_volume, pm_high, pm_low, pm_vwap,
+                     pm_source; set status to NO_DATA / NO_PM_BARS
+  This prevents the DB from ever containing partial PM state.
 
 V5.0.6-prep.1 changes:
 - FIXED: Save T0 snapshots BEFORE early return on empty Top 5
@@ -39,6 +48,68 @@ from learning.lesson_engine import (
     load_previous_learning,
 )
 
+
+# ---------------------------------------------------------------------------
+# PM DATA SANITIZATION (V5.0.6-prep.2)
+# ---------------------------------------------------------------------------
+
+def _sanitize_pm_fields(candidate):
+    """
+    Enforce PM evidence atomicity before DB write.
+
+    Rule: PM evidence is all-or-nothing.
+      - If we have bars (pm_bars > 0), we derive volume/high/low/vwap
+        from those bars, and pm_source must be set.
+      - If we have no bars (pm_bars == 0 or missing), we must NOT
+        persist partial PM scalars. Set them all to NULL.
+
+    Returns True if any field was changed (for logging).
+    """
+    changed = False
+
+    raw_bars = candidate.get("pm_bars", 0)
+    try:
+        pm_bars = int(raw_bars) if raw_bars is not None else 0
+    except (TypeError, ValueError):
+        pm_bars = 0
+
+    if pm_bars <= 0:
+        # No PM bars → no PM evidence. Clear everything.
+        if candidate.get("pm_bars") not in (0, None):
+            changed = True
+        candidate["pm_bars"] = 0
+
+        for field in ("pm_volume", "pm_high", "pm_low", "pm_vwap", "pm_source"):
+            if candidate.get(field) is not None:
+                changed = True
+                candidate[field] = None
+
+        if candidate.get("pm_volume_status") not in (None, "NO_DATA"):
+            changed = True
+        candidate["pm_volume_status"] = "NO_DATA"
+
+        if candidate.get("pm_data_quality") not in (None, "NO_PM_BARS"):
+            changed = True
+        candidate["pm_data_quality"] = "NO_PM_BARS"
+
+        if candidate.get("pm_bars_json") not in (None, "", "[]"):
+            changed = True
+            candidate["pm_bars_json"] = None
+    else:
+        # Bars exist → ensure source is populated
+        if not candidate.get("pm_source"):
+            candidate["pm_source"] = "alpaca"
+            changed = True
+        if not candidate.get("pm_volume_status"):
+            candidate["pm_volume_status"] = "OK"
+            changed = True
+
+    return changed
+
+
+# ---------------------------------------------------------------------------
+# Swing / trade-type helpers
+# ---------------------------------------------------------------------------
 
 def _safe_swing(candidate, analysis=None):
     try:
@@ -146,9 +217,14 @@ def run_fullscan_v34(manual=False):
     scan_date = now_et.strftime("%Y-%m-%d")
     scan_id = now_et.strftime("%Y-%m-%d_%H%M")
 
+    # --- PM window detection (matches workflow logic) ---
+    now_hhmm = now_et.strftime("%H%M")
+    in_pm_window = ("0400" <= now_hhmm < "0930")
+
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.6-prep.1 – RESEARCH ENGINE (Snapshot Schema)")
+    print("DAYS-BOT V5.0.6-prep.2 – RESEARCH ENGINE (Snapshot Schema)")
     print(f"Date: {scan_date} | Scan ID: {scan_id} | Mode: {'MANUAL' if manual else 'LIVE'}")
+    print(f"PM window (04:00–09:30 ET): {'IN' if in_pm_window else 'OUT'} | now={now_hhmm}")
     print("=" * 74)
 
     # ============================================================
@@ -191,18 +267,43 @@ def run_fullscan_v34(manual=False):
     top5 = full_scan_v34(candidates, manual)
 
     # ============================================================
-    # V5.0.6-prep.1 — SAVE T0 SNAPSHOTS **BEFORE** ANY EARLY RETURN
+    # V5.0.6-prep.2 — SAVE T0 SNAPSHOTS (WITH PM SANITIZATION)
     #
     # Snapshots are the primary Evidence. They MUST be captured
     # even when Top 5 is empty (all candidates rejected by
     # Liquidity / Data-Quality gates).
+    #
+    # Each candidate passes through _sanitize_pm_fields() first so
+    # that partial PM data (volume/high without bars) can never
+    # reach the DB.
     # ============================================================
     print("[Main] Saving V5.0.6 T0 snapshots for ALL strict candidates...")
     snapshot_saved = 0
     snapshot_failed = 0
+    pm_sanitized = 0
+    pm_with_bars = 0
 
     for candidate in candidates:
         try:
+            raw_bars = candidate.get("pm_bars", 0) or 0
+            try:
+                raw_bars = int(raw_bars)
+            except (TypeError, ValueError):
+                raw_bars = 0
+
+            was_changed = _sanitize_pm_fields(candidate)
+
+            if raw_bars <= 0:
+                pm_sanitized += 1
+            else:
+                pm_with_bars += 1
+
+            if was_changed:
+                print(
+                    f"[Main] 🧹 PM sanitized: {candidate.get('ticker')} "
+                    f"(pm_bars={raw_bars})"
+                )
+
             sid = save_snapshot(candidate, scan_id, now_et)
             if sid is not None:
                 snapshot_saved += 1
@@ -212,7 +313,11 @@ def run_fullscan_v34(manual=False):
             snapshot_failed += 1
             print(f"[Main] ⚠️ Snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
-    print(f"[Main] V5.0.6 snapshots saved: {snapshot_saved} (failed/skipped: {snapshot_failed})")
+    print(
+        f"[Main] V5.0.6 snapshots saved: {snapshot_saved} "
+        f"(failed/skipped: {snapshot_failed}) | "
+        f"PM with bars: {pm_with_bars} | PM sanitized to NULL: {pm_sanitized}"
+    )
 
     # ============================================================
     # EARLY RETURN — AFTER snapshots are saved
@@ -312,6 +417,7 @@ def run_fullscan_v34(manual=False):
     print(f"  Analyzed (FullScan):       {len(candidates)}")
     print(f"  In Top 5:                  {len(top5)}")
     print(f"  V5.0.6 Snapshots saved:    {snapshot_saved}")
+    print(f"  PM with bars / sanitized:  {pm_with_bars} / {pm_sanitized}")
     print("=" * 74)
 
     # ============================================================
