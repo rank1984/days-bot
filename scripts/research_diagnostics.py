@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT V5.0.6 - Research Diagnostics
+DAYS-BOT V5.0.6-prep.2 - Research Diagnostics
 Runs after scanner. Prints separated counters, PM integrity check, stale data.
 Writes JSON evidence files. Always exits 0 (evidence, not failure).
+
+V5.0.6-prep.2 changes:
+- Respects IN_PM_WINDOW env var (set by workflow from current ET time).
+  When outside the PM window (04:00-09:30 ET), pm_bars=0 is expected
+  and check_pm_integrity() returns SKIPPED_OUTSIDE_WINDOW instead of
+  reporting false-positive violations.
+- Defensive column detection everywhere (survives schema drift).
+- Per-stage try/except so no single failure aborts the whole report.
 """
 import os
 import sys
@@ -16,6 +24,8 @@ SCAN_DATE = os.environ.get("TODAY_ET") or os.environ.get("SCAN_DATE", "")
 EVENT = os.environ.get("GITHUB_EVENT_NAME", "")
 RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "")
 GIT_SHA = os.environ.get("GITHUB_SHA", "")
+# IN_PM_WINDOW: "true" | "false" | "" (empty = legacy, behave as true)
+IN_PM_WINDOW = os.environ.get("IN_PM_WINDOW", "true").strip().lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +106,7 @@ def dump_schema(cur):
 def check_pm_integrity(cur):
     result = {
         "scan_date": SCAN_DATE,
+        "in_pm_window": IN_PM_WINDOW,
         "checked_at_utc": datetime.now(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "violations": [],
         "status": "PASS",
@@ -106,9 +117,21 @@ def check_pm_integrity(cur):
     print("PM DATA INTEGRITY INVESTIGATION - " + SCAN_DATE)
     print("=" * 74)
 
+    # If the run is outside the PM window (04:00-09:30 ET), pm_bars=0
+    # is expected and correct. Do not report as violation.
+    if not IN_PM_WINDOW:
+        print("  SKIP: outside PM window (IN_PM_WINDOW=false)")
+        print("  NOTE: pm_bars=0 outside PM window is expected behaviour.")
+        print("=" * 74)
+        result["status"] = "SKIPPED_OUTSIDE_WINDOW"
+        write_json("data/pm_integrity.json", result)
+        return result
+
     if not _table_exists(cur, "snapshots"):
         print("  SKIP: snapshots table not found")
         print("=" * 74)
+        result["status"] = "SKIPPED"
+        result["reason"] = "snapshots table missing"
         write_json("data/pm_integrity.json", result)
         return result
 
@@ -405,6 +428,7 @@ def print_counters(cur):
     print("  Event:                    " + EVENT)
     print("  Run number:               " + RUN_NUMBER)
     print("  Git SHA:                  " + GIT_SHA[:12])
+    print("  In PM window:             " + str(IN_PM_WINDOW))
     print()
     print("  -- Stage 1: Snapshots --")
     print("  Snapshots (raw):          " + _fmt(n_snapshots))
@@ -435,6 +459,7 @@ def print_counters(cur):
         "event": EVENT,
         "run_number": RUN_NUMBER,
         "git_sha": GIT_SHA,
+        "in_pm_window": IN_PM_WINDOW,
         "snapshots": n_snapshots,
         "pm_bars_ok": n_pm_ok,
         "pm_bars_zero": n_pm_zero,
