@@ -1,23 +1,21 @@
 """
 DAYS-BOT V5.0.6-prep.2 – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
 
-Intraday + Swing 1–3D
+Intraday + Swing 1-3D
 Manual execution only.
 No automatic orders.
 
 V5.0.6-prep.2 changes (over prep.1):
-- FIXED (root cause of 28 PM violations): save_snapshot was being
-  called with partial PM data (pm_volume/pm_high populated, pm_bars=0).
+- FIXED (root cause of PM violations): save_snapshot was being called
+  with partial PM data (pm_volume/pm_high populated, pm_bars=0).
   New _sanitize_pm_fields() enforces PM evidence atomicity:
-    * pm_bars > 0  → keep all PM scalars; ensure pm_source is set
-    * pm_bars = 0  → NULL out pm_volume, pm_high, pm_low, pm_vwap,
-                     pm_source; set status to NO_DATA / NO_PM_BARS
+    * pm_bars > 0  -> keep all PM scalars; ensure pm_source is set
+    * pm_bars = 0  -> NULL out pm_volume, pm_high, pm_low, pm_vwap,
+                      pm_source, pm_bars_json; set status to NO_DATA
   This prevents the DB from ever containing partial PM state.
 
 V5.0.6-prep.1 changes:
 - FIXED: Save T0 snapshots BEFORE early return on empty Top 5
-- Snapshots are the primary Evidence. They MUST be captured
-  even when Liquidity/Data-Quality gates reject all candidates.
 - scan_id format: YYYY-MM-DD_HHMM (ET)
 """
 import sys
@@ -58,10 +56,8 @@ def _sanitize_pm_fields(candidate):
     Enforce PM evidence atomicity before DB write.
 
     Rule: PM evidence is all-or-nothing.
-      - If we have bars (pm_bars > 0), we derive volume/high/low/vwap
-        from those bars, and pm_source must be set.
-      - If we have no bars (pm_bars == 0 or missing), we must NOT
-        persist partial PM scalars. Set them all to NULL.
+      - If we have bars (pm_bars > 0), we keep scalars and ensure source.
+      - If we have no bars, we must NOT persist partial PM scalars.
 
     Returns True if any field was changed (for logging).
     """
@@ -74,7 +70,7 @@ def _sanitize_pm_fields(candidate):
         pm_bars = 0
 
     if pm_bars <= 0:
-        # No PM bars → no PM evidence. Clear everything.
+        # No PM bars -> no PM evidence. Clear everything.
         if candidate.get("pm_bars") not in (0, None):
             changed = True
         candidate["pm_bars"] = 0
@@ -96,7 +92,7 @@ def _sanitize_pm_fields(candidate):
             changed = True
             candidate["pm_bars_json"] = None
     else:
-        # Bars exist → ensure source is populated
+        # Bars exist -> ensure source is populated
         if not candidate.get("pm_source"):
             candidate["pm_source"] = "alpaca"
             changed = True
@@ -115,11 +111,11 @@ def _safe_swing(candidate, analysis=None):
     try:
         result = calculate_swing_score(candidate, analysis)
         if not isinstance(result, dict):
-            print(f"[Main] ⚠️ Swing returned {type(result).__name__} for {candidate.get('ticker')}")
+            print(f"[Main] Swing returned {type(result).__name__} for {candidate.get('ticker')}")
             return {"swing_score": 0, "swing_type": "INVALID", "qualified": False}
         return result
     except Exception as e:
-        print(f"[Main] ❌ Swing error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+        print(f"[Main] Swing error {candidate.get('ticker')}: {type(e).__name__}: {e}")
         return {"swing_score": 0, "swing_type": "ERROR", "error": str(e), "qualified": False}
 
 
@@ -204,7 +200,7 @@ def _run_replay_integrity_check(replay_count, strict_count):
     print(f"  replay_records == strict_candidates:  {'PASS' if strict_ok else 'FAIL'}")
     if not strict_ok:
         print()
-        print("  ⚠️ WARNING: Replay count does not match strict candidates.")
+        print("  WARNING: Replay count does not match strict candidates.")
     print("=" * 74)
     print()
     return strict_ok
@@ -222,9 +218,9 @@ def run_fullscan_v34(manual=False):
     in_pm_window = ("0400" <= now_hhmm < "0930")
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.6-prep.2 – RESEARCH ENGINE (Snapshot Schema)")
+    print("DAYS-BOT V5.0.6-prep.2 - RESEARCH ENGINE (Snapshot Schema)")
     print(f"Date: {scan_date} | Scan ID: {scan_id} | Mode: {'MANUAL' if manual else 'LIVE'}")
-    print(f"PM window (04:00–09:30 ET): {'IN' if in_pm_window else 'OUT'} | now={now_hhmm}")
+    print(f"PM window (04:00-09:30 ET): {'IN' if in_pm_window else 'OUT'} | now={now_hhmm}")
     print("=" * 74)
 
     # ============================================================
@@ -245,12 +241,12 @@ def run_fullscan_v34(manual=False):
     discovery_stats = _normalize_discovery_stats(discovery_stats)
 
     if not candidates:
-        print("[Main] ❌ No candidates found by discovery.")
-        msg = "😴 DAYS-BOT\n\nלא נמצאו מועמדים.\nאין מספיק market data כרגע.\n\n⚠️ אין לבצע עסקה על בסיס סריקה ריקה."
+        print("[Main] No candidates found by discovery.")
+        msg = "DAYS-BOT\n\nNo candidates.\nInsufficient market data.\n\nNo trade."
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
-    print(f"[Main] ✅ Discovery returned {len(candidates)} candidates")
+    print(f"[Main] Discovery returned {len(candidates)} candidates")
     print(
         f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | "
         f"snapshots={discovery_stats['snapshots_received']} | "
@@ -267,15 +263,7 @@ def run_fullscan_v34(manual=False):
     top5 = full_scan_v34(candidates, manual)
 
     # ============================================================
-    # V5.0.6-prep.2 — SAVE T0 SNAPSHOTS (WITH PM SANITIZATION)
-    #
-    # Snapshots are the primary Evidence. They MUST be captured
-    # even when Top 5 is empty (all candidates rejected by
-    # Liquidity / Data-Quality gates).
-    #
-    # Each candidate passes through _sanitize_pm_fields() first so
-    # that partial PM data (volume/high without bars) can never
-    # reach the DB.
+    # SAVE T0 SNAPSHOTS (WITH PM SANITIZATION)
     # ============================================================
     print("[Main] Saving V5.0.6 T0 snapshots for ALL strict candidates...")
     snapshot_saved = 0
@@ -300,7 +288,7 @@ def run_fullscan_v34(manual=False):
 
             if was_changed:
                 print(
-                    f"[Main] 🧹 PM sanitized: {candidate.get('ticker')} "
+                    f"[Main] PM sanitized: {candidate.get('ticker')} "
                     f"(pm_bars={raw_bars})"
                 )
 
@@ -311,7 +299,7 @@ def run_fullscan_v34(manual=False):
                 snapshot_failed += 1
         except Exception as e:
             snapshot_failed += 1
-            print(f"[Main] ⚠️ Snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+            print(f"[Main] Snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
     print(
         f"[Main] V5.0.6 snapshots saved: {snapshot_saved} "
@@ -323,12 +311,12 @@ def run_fullscan_v34(manual=False):
     # EARLY RETURN — AFTER snapshots are saved
     # ============================================================
     if not top5:
-        print("[Main] ❌ Full analysis returned empty.")
-        msg = "😴 DAYS-BOT\n\nה-Discovery עבד, אבל לא התקבל מועמד לניתוח מלא."
+        print("[Main] Full analysis returned empty.")
+        msg = "DAYS-BOT\n\nDiscovery worked, but no candidate passed full analysis."
         send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
-    print(f"[Main] ✅ Full analysis returned {len(top5)} candidates")
+    print(f"[Main] Full analysis returned {len(top5)} candidates")
 
     # ============================================================
     # REPLAY SNAPSHOTS
@@ -343,7 +331,7 @@ def run_fullscan_v34(manual=False):
             replay_saved += 1
         except Exception as e:
             replay_failed += 1
-            print(f"[Main] ⚠️ Replay snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+            print(f"[Main] Replay snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
     print(f"[Main] Replay snapshots saved: {replay_saved} (failed: {replay_failed})")
 
@@ -364,7 +352,7 @@ def run_fullscan_v34(manual=False):
             save_alert(**candidate)
             print(f"[Main] DB saved: {candidate.get('ticker')}")
         except Exception as e:
-            print(f"[Main] ❌ DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+            print(f"[Main] DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
 
     # ============================================================
     # REPLAY INTEGRITY CHECK
@@ -409,7 +397,7 @@ def run_fullscan_v34(manual=False):
     # ============================================================
     print()
     print("=" * 74)
-    print("DISCOVERY → GATES → TOP 5 FLOW")
+    print("DISCOVERY -> GATES -> TOP 5 FLOW")
     print("=" * 74)
     print(f"  Universe:                  {discovery_stats['universe']}")
     print(f"  Valid snapshots:           {discovery_stats['snapshots_received']}")
@@ -454,9 +442,9 @@ def run_fullscan_v34(manual=False):
     print(f"V5.0.6 snapshots:     {snapshot_saved}")
     print(f"Top 5:                {len(top5)}")
     print()
-    print(f"Replay integrity:     {'✅ PASS' if integrity_ok else '❌ FAIL'}")
+    print(f"Replay integrity:     {'PASS' if integrity_ok else 'FAIL'}")
     print("=" * 74)
-    print("⚠️ NO AUTOMATIC ORDERS – MANUAL EXECUTION ONLY")
+    print("NO AUTOMATIC ORDERS - MANUAL EXECUTION ONLY")
     print("=" * 74)
 
 
