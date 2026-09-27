@@ -4,13 +4,10 @@ DAYS-BOT V5.0.6-prep.2 - Research Diagnostics
 Runs after scanner. Prints separated counters, PM integrity check, stale data.
 Writes JSON evidence files. Always exits 0 (evidence, not failure).
 
-V5.0.6-prep.2 changes:
-- Respects IN_PM_WINDOW env var (set by workflow from current ET time).
-  When outside the PM window (04:00-09:30 ET), pm_bars=0 is expected
-  and check_pm_integrity() returns SKIPPED_OUTSIDE_WINDOW instead of
-  reporting false-positive violations.
-- Defensive column detection everywhere (survives schema drift).
-- Per-stage try/except so no single failure aborts the whole report.
+V5.0.6-prep.2:
+- Respects IN_PM_WINDOW env var from workflow.
+- Defensive column detection (survives schema drift).
+- Per-stage try/except — no single failure aborts the report.
 """
 import os
 import sys
@@ -24,13 +21,8 @@ SCAN_DATE = os.environ.get("TODAY_ET") or os.environ.get("SCAN_DATE", "")
 EVENT = os.environ.get("GITHUB_EVENT_NAME", "")
 RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "")
 GIT_SHA = os.environ.get("GITHUB_SHA", "")
-# IN_PM_WINDOW: "true" | "false" | "" (empty = legacy, behave as true)
 IN_PM_WINDOW = os.environ.get("IN_PM_WINDOW", "true").strip().lower() == "true"
 
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 def write_json(path, obj):
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -39,7 +31,6 @@ def write_json(path, obj):
 
 
 def _cols(cur, table):
-    """Return set of column names for a table, or empty set if table missing."""
     try:
         return {r[1] for r in cur.execute("PRAGMA table_info(" + table + ")")}
     except sqlite3.OperationalError:
@@ -58,7 +49,6 @@ def _table_exists(cur, table):
 
 
 def _count(cur, sql, params=()):
-    """Safe COUNT query. Returns int or None on error."""
     try:
         row = cur.execute(sql, params).fetchone()
         return row[0] if row else None
@@ -70,10 +60,6 @@ def _count(cur, sql, params=()):
 def _fmt(v):
     return "n/a" if v is None else str(v)
 
-
-# ---------------------------------------------------------------------------
-# schema dump (helps debug missing columns)
-# ---------------------------------------------------------------------------
 
 def dump_schema(cur):
     print()
@@ -99,10 +85,6 @@ def dump_schema(cur):
     print("=" * 74)
 
 
-# ---------------------------------------------------------------------------
-# PM integrity check
-# ---------------------------------------------------------------------------
-
 def check_pm_integrity(cur):
     result = {
         "scan_date": SCAN_DATE,
@@ -117,8 +99,6 @@ def check_pm_integrity(cur):
     print("PM DATA INTEGRITY INVESTIGATION - " + SCAN_DATE)
     print("=" * 74)
 
-    # If the run is outside the PM window (04:00-09:30 ET), pm_bars=0
-    # is expected and correct. Do not report as violation.
     if not IN_PM_WINDOW:
         print("  SKIP: outside PM window (IN_PM_WINDOW=false)")
         print("  NOTE: pm_bars=0 outside PM window is expected behaviour.")
@@ -149,7 +129,6 @@ def check_pm_integrity(cur):
         write_json("data/pm_integrity.json", result)
         return result
 
-    # Optional columns
     opt_time = "snapshot_time_et" if "snapshot_time_et" in snap_cols else "NULL"
     opt_volstat = "pm_volume_status" if "pm_volume_status" in snap_cols else "NULL"
     opt_low = "pm_low" if "pm_low" in snap_cols else "NULL"
@@ -204,10 +183,6 @@ def check_pm_integrity(cur):
     return result
 
 
-# ---------------------------------------------------------------------------
-# stale data check
-# ---------------------------------------------------------------------------
-
 def check_stale_data(cur):
     result = {
         "scan_date": SCAN_DATE,
@@ -229,7 +204,6 @@ def check_stale_data(cur):
 
     snap_cols = _cols(cur, "snapshots")
 
-    # latest 5 scan dates
     try:
         rows = cur.execute(
             "SELECT scan_date, COUNT(*), "
@@ -247,7 +221,6 @@ def check_stale_data(cur):
 
     print()
 
-    # duplicate price/prev_close across days
     if {"ticker", "price", "prev_close"} <= snap_cols:
         try:
             dupes = cur.execute(
@@ -285,10 +258,6 @@ def check_stale_data(cur):
     return result
 
 
-# ---------------------------------------------------------------------------
-# separated counters
-# ---------------------------------------------------------------------------
-
 def print_counters(cur):
     snap_cols = _cols(cur, "snapshots")
     trig_cols = _cols(cur, "trigger_results")
@@ -300,7 +269,6 @@ def print_counters(cur):
         (SCAN_DATE,),
     )
 
-    # --- PM ---
     if "pm_bars" in snap_cols:
         n_pm_ok = _count(
             cur,
@@ -326,8 +294,6 @@ def print_counters(cur):
     else:
         n_pm_vol = None
 
-    # --- Gates ---
-    # 'float' is quoted because it can be a type name; SQLite tolerates quotes.
     if "float" in snap_cols:
         n_float_pass = _count(
             cur,
@@ -338,7 +304,6 @@ def print_counters(cur):
     else:
         n_float_pass = None
 
-    # Float gate: try multiple candidate names
     n_liq_pass = None
     for cand in ("float_gate_passed", "passes_float_gate",
                  "float_gate", "float_gate_pass"):
@@ -364,7 +329,6 @@ def print_counters(cur):
     else:
         n_scored = None
 
-    # --- Triggers ---
     if _table_exists(cur, "trigger_results") and "snapshot_id" in trig_cols:
         n_triggers = _count(
             cur,
@@ -387,7 +351,6 @@ def print_counters(cur):
         n_triggers = None
         n_hits = None
 
-    # --- Outcomes ---
     if _table_exists(cur, "outcomes") and "snapshot_id" in outc_cols:
         n_outcomes = _count(
             cur,
@@ -453,7 +416,6 @@ def print_counters(cur):
     print("  Outcomes NON_EXECUTABLE:  " + _fmt(n_nonexec))
     print("=" * 74)
 
-    # Also write JSON for archival
     write_json("data/counters.json", {
         "scan_date": SCAN_DATE,
         "event": EVENT,
@@ -475,10 +437,6 @@ def print_counters(cur):
     })
 
 
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
-
 def main():
     if not os.path.exists(DB_PATH):
         print("DB not found at " + DB_PATH)
@@ -487,25 +445,21 @@ def main():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
-    # 1) schema (always useful)
     try:
         dump_schema(cur)
     except Exception as e:
         print("  ERROR in dump_schema: " + str(e))
 
-    # 2) PM integrity
     try:
         check_pm_integrity(cur)
     except Exception as e:
         print("  ERROR in check_pm_integrity: " + str(e))
 
-    # 3) stale data
     try:
         check_stale_data(cur)
     except Exception as e:
         print("  ERROR in check_stale_data: " + str(e))
 
-    # 4) counters
     try:
         print_counters(cur)
     except Exception as e:
