@@ -3,7 +3,7 @@
 DAYS-BOT V5.0.6 - PM Forensics (read-only)
 Classifies PM snapshot rows as LEGACY (pre-fix) vs POST-FIX violations.
 
-The invariant we enforce:
+Invariant enforced:
     pm_bars == 0  =>  pm_volume IS NULL
                   AND pm_high IS NULL
                   AND pm_low IS NULL
@@ -11,13 +11,11 @@ The invariant we enforce:
                   AND pm_source IS NULL
                   AND (pm_bars_json IS NULL OR pm_bars_json = '[]')
 
-Read-only. Does not modify the DB.
-Always exits 0.
+Read-only. Never modifies the DB. Always exits 0.
 """
 import os
 import sys
 import sqlite3
-import json
 from datetime import datetime
 import pytz
 
@@ -58,7 +56,6 @@ def main():
         conn.close()
         return 0
 
-    # Ensure all needed columns exist
     needed = {"snapshot_id", "ticker", "scan_date", "pm_bars",
               "pm_volume", "pm_high", "pm_low", "pm_vwap",
               "pm_source", "pm_bars_json"}
@@ -73,9 +70,6 @@ def main():
     print("  in_pm_window:      " + str(os.environ.get("IN_PM_WINDOW", "n/a")))
     print("  checked_at_utc:    " + datetime.now(pytz.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
-    # -----------------------------------------------------------------
-    # 1) Total / violation counts
-    # -----------------------------------------------------------------
     invariant_violation = """
         (pm_bars IS NULL OR pm_bars = 0)
         AND (
@@ -106,9 +100,7 @@ def main():
     print("  invariant violations:      " + str(viol_count))
     print("  clean (post-fix):          " + str(clean_count))
 
-    # -----------------------------------------------------------------
-    # 2) Full violation dump (all PM fields visible)
-    # -----------------------------------------------------------------
+    # Full dump
     _print_header("VIOLATIONS - FULL DUMP (all PM fields)")
     rows = cur.execute(
         "SELECT snapshot_id, ticker, pm_bars, pm_volume, pm_high, "
@@ -148,9 +140,7 @@ def main():
                 )
             )
 
-    # -----------------------------------------------------------------
-    # 3) Boundary: first snapshot_id that is CLEAN under full invariant
-    # -----------------------------------------------------------------
+    # Boundary
     _print_header("BOUNDARY - first CLEAN snapshot (full invariant)")
 
     first_clean = cur.execute(
@@ -167,7 +157,6 @@ def main():
     else:
         print("  first_clean:               " + str(first_clean))
 
-        # Look at rows on either side
         before = cur.execute(
             "SELECT COUNT(*) FROM snapshots "
             "WHERE scan_date = ? AND snapshot_id < ? AND " + invariant_violation,
@@ -200,9 +189,7 @@ def main():
             print("  >>> post-fix rows still violate invariant.")
             print("  >>> Do NOT clean DB. Fix writer first.")
 
-    # -----------------------------------------------------------------
-    # 4) Field-by-field breakdown of violations
-    # -----------------------------------------------------------------
+    # Field breakdown
     _print_header("VIOLATION BREAKDOWN BY FIELD")
 
     fields = [
@@ -224,9 +211,7 @@ def main():
         ).fetchone()[0]
         print("  {:<14} not-null in violations: {}".format(name + ":", c))
 
-    # -----------------------------------------------------------------
-    # 5) Latest 15 rows regardless of violation status
-    # -----------------------------------------------------------------
+    # Latest 15
     _print_header("LATEST 15 SNAPSHOTS (any status)")
 
     latest = cur.execute(
