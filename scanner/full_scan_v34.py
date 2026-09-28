@@ -1,7 +1,20 @@
 """
 DAYS-BOT V5.0.6 – Full Scan Engine
+
+V5.0.6-prep.3 changes:
+- DATA QUALITY GATE rebalanced:
+    * HARD:  price, gap, PM High, pm_volume_status=UNAVAILABLE
+    * SOFT:  VWAP, catalyst, sec_risk_level
+  Rationale: VWAP depends on PM volume which requires Alpaca SIP.
+  With IEX feed, VWAP is always NULL, blocking all candidates.
+  Catalyst/SEC depend on external APIs that often return UNAVAILABLE.
+- RESEARCH_MODE env flag (default: false):
+    * false → soft flags block scoring (production behavior)
+    * true  → soft flags are recorded but do NOT block scoring
+  Set RESEARCH_MODE=true in workflow env during data-collection phase.
 """
 import json
+import os
 from datetime import datetime
 from typing import List, Dict, Any
 import pytz
@@ -27,6 +40,9 @@ ET = pytz.timezone("America/New_York")
 LIQUIDITY_MAX_SPREAD_PCT = 8.0
 LIQUIDITY_MIN_PRICE = 1.0
 FLOAT_MAX_HARD_GATE = 20_000_000
+
+# Read once at import; workflow sets this env var.
+RESEARCH_MODE = os.environ.get("RESEARCH_MODE", "false").strip().lower() == "true"
 
 
 def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
@@ -73,15 +89,39 @@ def _check_liquidity_gate(candidate):
     return {"passed": len(hard) == 0, "hard_reasons": hard, "soft_reasons": soft}
 
 
-def _check_data_completeness(candidate):
-    missing = []
-    soft_flags = []
+def _check_data_completeness(candidate, research_mode=None):
+    """
+    Data quality gate.
 
+    HARD (block scoring always):
+      - price > 0
+      - gap_pct present
+      - pm_high > 0
+      - pm_volume_status == UNAVAILABLE  (no PM data at all)
+
+    SOFT (record only, block only when research_mode=False):
+      - pm_vwap       (depends on PM volume → requires Alpaca SIP)
+      - catalyst_type (external news API)
+      - sec_risk_level (external SEC API)
+      - pm_volume_status == VOLUME_UNAVAILABLE (yfinance: bars but no vol)
+    """
+    if research_mode is None:
+        research_mode = RESEARCH_MODE
+
+    missing = []          # hard
+    soft_flags = []       # soft
+
+    # ---------- HARD ----------
     price = candidate.get('price')
     if price is None or _safe_float(price) <= 0:
         missing.append("price")
+
     if candidate.get('gap_pct') is None:
         missing.append("gap")
+
+    pm_high = candidate.get('pm_high')
+    if pm_high is None or _safe_float(pm_high) <= 0:
+        missing.append("PM High")
 
     pm_vol_status = candidate.get('pm_volume_status', 'UNAVAILABLE')
     if pm_vol_status == "UNAVAILABLE":
@@ -89,24 +129,27 @@ def _check_data_completeness(candidate):
     elif pm_vol_status == "VOLUME_UNAVAILABLE":
         soft_flags.append("pm_volume_yfinance")
 
-    pm_high = candidate.get('pm_high')
-    if pm_high is None or _safe_float(pm_high) <= 0:
-        missing.append("PM High")
-
+    # ---------- SOFT ----------
     pm_vwap = candidate.get('pm_vwap')
     if pm_vwap is None or _safe_float(pm_vwap) <= 0:
-        missing.append("VWAP")
+        soft_flags.append("VWAP")
 
     cat_type = candidate.get('catalyst_type')
     if cat_type in (None, "UNAVAILABLE", ""):
-        missing.append("catalyst")
+        soft_flags.append("catalyst")
 
     sec_level = candidate.get('sec_risk_level')
     if sec_level in (None, "UNAVAILABLE", ""):
-        missing.append("sec")
+        soft_flags.append("sec")
 
+    # ---------- Status ----------
     if len(missing) == 0 and len(soft_flags) == 0:
         status = "ACTIONABLE"
+    elif len(missing) == 0:
+        # All hard requirements met; some soft flags.
+        # In research mode we still score (record + score).
+        # In production we downgrade to WATCH.
+        status = "ACTIONABLE" if research_mode else "WATCH"
     elif len(missing) <= 2:
         status = "WATCH"
     else:
@@ -120,6 +163,7 @@ def _check_data_completeness(candidate):
         "hard_missing": missing,
         "soft_flags": soft_flags,
         "status": status,
+        "research_mode": research_mode,
     }
 
 
@@ -187,6 +231,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
     total_to_analyze = len(candidates)
     print(f"[FullScan] Analyzing ALL {total_to_analyze} strict candidates...")
+    print(f"[FullScan] RESEARCH_MODE = {RESEARCH_MODE}")
 
     corp_action_rejects = 0
     liquidity_rejects = 0
@@ -194,6 +239,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     float_cache_hits = 0
     float_live_fetches = 0
     passed_gates = 0
+    dq_blocked = 0
     scored = []
 
     for idx, c in enumerate(candidates):
@@ -273,7 +319,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_low'] = pm_data.get('pm_low')
             c['pm_vwap'] = pm_data.get('pm_vwap')
 
-            # V5.0.6 — keep None if source didn't provide volume
             _raw_pm_vol = pm_data.get('pm_volume')
             if _raw_pm_vol is not None:
                 try:
@@ -287,12 +332,9 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['pm_data_quality'] = pm_data.get('pm_data_quality', 'LOW_DATA')
             c['pm_source'] = pm_source
 
-            # V5.0.6 — status passthrough from pm_engine
             c['pm_volume_status'] = pm_data.get('pm_volume_status', 'UNAVAILABLE')
             c['pm_vwap_status'] = pm_data.get('pm_vwap_status', 'UNAVAILABLE')
 
-            # Legacy fallback: if engine returned UNAVAILABLE but source is yfinance
-            # and we have bars but no volume → VOLUME_UNAVAILABLE
             if c['pm_volume_status'] == 'UNAVAILABLE':
                 if pm_source == 'yfinance' and c['pm_volume'] in (None, 0):
                     c['pm_volume_status'] = 'VOLUME_UNAVAILABLE'
@@ -302,7 +344,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
             )
 
-            # V5.0.5.2.6 – Live Capture: raw PM bars JSON
             c['pm_bars_json'] = json.dumps(
                 pm_data.get('pm_bars_list', []),
                 default=str,
@@ -480,13 +521,15 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sympathy'] = analysis['sympathy']
 
         # ============================================================
-        # V5.0.6 — DATA QUALITY GATE (BEFORE Trade Plan)
+        # V5.0.6-prep.3 — DATA QUALITY GATE (with RESEARCH_MODE)
         # ============================================================
-        completeness = _check_data_completeness(c)
+        completeness = _check_data_completeness(c, research_mode=RESEARCH_MODE)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
 
         if completeness['status'] == 'NO_TRADE':
+            dq_blocked += 1
+            print(f"[FullScan] ⛔ {ticker} | DATA_QUALITY: NO_TRADE | hard_missing={completeness['hard_missing']}")
             c['trade_type'] = 'NO_TRADE'
             c['qualified'] = False
             c['plan_valid'] = False
@@ -502,12 +545,16 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 'catalyst': c.get('catalyst_type'),
                 'sec': c.get('sec_risk_level'),
                 'score': 'BLOCKED_DATA_QUALITY',
+                'hard_missing': completeness['hard_missing'],
+                'soft_flags': completeness['soft_flags'],
             }
             c['analysis'] = analysis
             scored.append(c)
             continue
 
         if completeness['status'] == 'WATCH':
+            dq_blocked += 1
+            print(f"[FullScan] ⛔ {ticker} | DATA_QUALITY: WATCH | soft_flags={completeness['soft_flags']}")
             c['trade_type'] = 'WATCH'
             c['qualified'] = False
             c['plan_valid'] = False
@@ -523,13 +570,15 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 'catalyst': c.get('catalyst_type'),
                 'sec': c.get('sec_risk_level'),
                 'score': 'BLOCKED_DATA_QUALITY',
+                'hard_missing': completeness['hard_missing'],
+                'soft_flags': completeness['soft_flags'],
             }
             c['analysis'] = analysis
             scored.append(c)
             continue
 
         # ============================================================
-        # Only ACTIONABLE reaches here
+        # ACTIONABLE — build plan + score
         # ============================================================
         c['qualified'] = True
 
@@ -565,6 +614,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             'score': c.get('score_status'),
             'float_gate': c.get('float_gate_reason', 'UNKNOWN'),
             'float_source': c.get('float_source', 'unknown'),
+            'soft_flags': completeness['soft_flags'],
+            'research_mode': RESEARCH_MODE,
         }
 
         c['analysis'] = analysis
@@ -580,6 +631,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
     print(f"  Float rejects (incl. UNKNOWN): {float_rejects}")
     print(f"  Float cache hits (Discovery):  {float_cache_hits}")
     print(f"  Float live fetches:            {float_live_fetches}")
+    print(f"  DataQuality blocked:           {dq_blocked}")
+    print(f"  RESEARCH_MODE:                 {RESEARCH_MODE}")
     print(f"  Passed Gates (Scored):         {passed_gates - float_rejects}")
     valid_scored = [c for c in scored if isinstance(c.get('composite_score'), (int, float))]
     print(f"  Top 5 returned:                {min(5, len(valid_scored))}")
@@ -591,6 +644,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         "float_rejects": float_rejects,
         "float_cache_hits": float_cache_hits,
         "float_live_fetches": float_live_fetches,
+        "dq_blocked": dq_blocked,
+        "research_mode": RESEARCH_MODE,
     }
     for c in scored:
         c['_gate_summary'] = gate_summary
