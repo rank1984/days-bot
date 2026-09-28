@@ -3,20 +3,28 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
   schedule:
-    # PM window target: 04:00-09:30 ET = 08:00-13:30 UTC
+    # PM window target: 04:00-09:30 ET = 08:00-13:30 UTC = 11:00-16:30 IDT
     #
     # GitHub Actions delays scheduled jobs by ~4.5h during peak
     # US hours (observed 2026-09-25: 4h14m-4h34m).
     #
     # Compensation: schedule ~4.5h earlier so actual run lands
-    # inside the PM window.
+    # inside the PM window (11:00-16:30 IDT / 04:00-09:30 ET).
     #
-    - cron: '30 3 * * 1-5'   # 03:30 UTC -> ~08:00 ET (start of PM)
-    - cron: '30 4 * * 1-5'   # 04:30 UTC -> ~09:00 ET
-    - cron: '30 5 * * 1-5'   # 05:30 UTC -> ~10:00 ET
-    - cron: '30 6 * * 1-5'   # 06:30 UTC -> ~11:00 ET
-    - cron: '30 7 * * 1-5'   # 07:30 UTC -> ~12:00 ET
-    - cron: '30 8 * * 1-5'   # 08:30 UTC -> ~13:00 ET
+    # Actual expected landing times (IDT):
+    #   03:30 UTC + 4.5h = 08:00 UTC = 04:00 ET = 11:00 IDT  -> PM open
+    #   04:30 UTC + 4.5h = 09:00 UTC = 05:00 ET = 12:00 IDT
+    #   05:30 UTC + 4.5h = 10:00 UTC = 06:00 ET = 13:00 IDT
+    #   06:30 UTC + 4.5h = 11:00 UTC = 07:00 ET = 14:00 IDT
+    #   07:30 UTC + 4.5h = 12:00 UTC = 08:00 ET = 15:00 IDT
+    #   08:30 UTC + 4.5h = 13:00 UTC = 09:00 ET = 16:00 IDT  -> PM close
+    #
+    - cron: '30 3 * * 1-5'   # 03:30 UTC -> ~11:00 IDT
+    - cron: '30 4 * * 1-5'   # 04:30 UTC -> ~12:00 IDT
+    - cron: '30 5 * * 1-5'   # 05:30 UTC -> ~13:00 IDT
+    - cron: '30 6 * * 1-5'   # 06:30 UTC -> ~14:00 IDT
+    - cron: '30 7 * * 1-5'   # 07:30 UTC -> ~15:00 IDT
+    - cron: '30 8 * * 1-5'   # 08:30 UTC -> ~16:00 IDT
 
 permissions:
   contents: read
@@ -87,6 +95,7 @@ jobs:
       # CUMULATIVE DB RESTORE
       # Find the most recent successful run of THIS workflow (any date),
       # then download its scan-* artifact which contains the accumulated DB.
+      # This lets the DB grow across days instead of resetting each run.
       # ============================================================
       - name: Find latest previous artifact (cumulative DB)
         id: restore
@@ -123,7 +132,7 @@ jobs:
 
           echo "Most recent successful run: $PREV_RUN (#$PREV_RUN_NUMBER) at $PREV_RUN_STARTED"
 
-          # FIX: parentheses around the whole select() expression
+          # Pick the newest scan-* artifact from that run.
           ARTIFACT_NAME=$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
             --jq '[.artifacts[] | select((.name | startswith("scan-")) and (.expired == false))] | sort_by(.created_at) | reverse | .[0].name // empty')
@@ -207,6 +216,7 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+          RESEARCH_MODE: "true"
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
