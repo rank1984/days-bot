@@ -3,16 +3,24 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
   schedule:
-    - cron: '2 12 * * 1-5'
-    - cron: '12 12 * * 1-5'
-    - cron: '22 12 * * 1-5'
-    - cron: '32 12 * * 1-5'
-    - cron: '42 12 * * 1-5'
-    - cron: '52 12 * * 1-5'
-    - cron: '2 13 * * 1-5'
-    - cron: '12 13 * * 1-5'
-    - cron: '22 13 * * 1-5'
-    - cron: '25 13 * * 1-5'
+    # PM window target: 04:00-09:30 ET = 08:00-13:30 UTC
+    #
+    # GitHub Actions delays scheduled jobs by ~4.5h during peak
+    # US hours (observed 2026-09-25: 4h14m-4h34m).
+    #
+    # Compensation: schedule ~4.5h earlier so actual run lands
+    # inside the PM window.
+    #
+    # If delay = 0:      runs at 03:30-08:30 UTC = 23:30-04:30 ET (early)
+    # If delay = 4.5h:   runs at 08:00-13:00 UTC = 04:00-09:00 ET (PM) ✓
+    # If delay = 8h:     runs at 11:30-16:30 UTC = 07:30-12:30 ET (partial)
+    #
+    - cron: '30 3 * * 1-5'   # 03:30 UTC -> ~04:00 ET (start of PM)
+    - cron: '30 4 * * 1-5'   # 04:30 UTC -> ~05:00 ET
+    - cron: '30 5 * * 1-5'   # 05:30 UTC -> ~06:00 ET
+    - cron: '30 6 * * 1-5'   # 06:30 UTC -> ~07:00 ET
+    - cron: '30 7 * * 1-5'   # 07:30 UTC -> ~08:00 ET
+    - cron: '30 8 * * 1-5'   # 08:30 UTC -> ~09:00 ET (end of PM)
 
 permissions:
   contents: read
@@ -119,7 +127,6 @@ jobs:
 
           echo "Most recent successful run: $PREV_RUN (#$PREV_RUN_NUMBER) at $PREV_RUN_STARTED"
 
-          # Among artifacts of that run, pick the newest scan-* artifact
           ARTIFACT_NAME=$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
             --jq '[.artifacts[] | select(.name | startswith("scan-")) and (.expired == false)] | sort_by(.created_at) | reverse | .[0].name // empty')
