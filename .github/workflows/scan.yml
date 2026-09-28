@@ -11,16 +11,12 @@ on:
     # Compensation: schedule ~4.5h earlier so actual run lands
     # inside the PM window.
     #
-    # If delay = 0:      runs at 03:30-08:30 UTC = 23:30-04:30 ET (early)
-    # If delay = 4.5h:   runs at 08:00-13:00 UTC = 04:00-09:00 ET (PM) ✓
-    # If delay = 8h:     runs at 11:30-16:30 UTC = 07:30-12:30 ET (partial)
-    #
-    - cron: '30 3 * * 1-5'   # 03:30 UTC -> ~04:00 ET (start of PM)
-    - cron: '30 4 * * 1-5'   # 04:30 UTC -> ~05:00 ET
-    - cron: '30 5 * * 1-5'   # 05:30 UTC -> ~06:00 ET
-    - cron: '30 6 * * 1-5'   # 06:30 UTC -> ~07:00 ET
-    - cron: '30 7 * * 1-5'   # 07:30 UTC -> ~08:00 ET
-    - cron: '30 8 * * 1-5'   # 08:30 UTC -> ~09:00 ET (end of PM)
+    - cron: '30 3 * * 1-5'   # 03:30 UTC -> ~08:00 ET (start of PM)
+    - cron: '30 4 * * 1-5'   # 04:30 UTC -> ~09:00 ET
+    - cron: '30 5 * * 1-5'   # 05:30 UTC -> ~10:00 ET
+    - cron: '30 6 * * 1-5'   # 06:30 UTC -> ~11:00 ET
+    - cron: '30 7 * * 1-5'   # 07:30 UTC -> ~12:00 ET
+    - cron: '30 8 * * 1-5'   # 08:30 UTC -> ~13:00 ET
 
 permissions:
   contents: read
@@ -127,9 +123,10 @@ jobs:
 
           echo "Most recent successful run: $PREV_RUN (#$PREV_RUN_NUMBER) at $PREV_RUN_STARTED"
 
+          # FIX: parentheses around the whole select() expression
           ARTIFACT_NAME=$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
-            --jq '[.artifacts[] | select(.name | startswith("scan-")) and (.expired == false)] | sort_by(.created_at) | reverse | .[0].name // empty')
+            --jq '[.artifacts[] | select((.name | startswith("scan-")) and (.expired == false))] | sort_by(.created_at) | reverse | .[0].name // empty')
 
           if [ -z "$ARTIFACT_NAME" ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
