@@ -3,28 +3,23 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
   schedule:
-    # PM window target: 04:00-09:30 ET = 08:00-13:30 UTC = 11:00-16:30 IDT
+    # TARGET: 04:00-09:30 ET  =  08:00-13:30 UTC  =  11:00-16:30 IDT
     #
-    # GitHub Actions delays scheduled jobs by ~4.5h during peak
-    # US hours (observed 2026-09-25: 4h14m-4h34m).
+    # Cron is UTC-only. Current mapping: EDT (UTC-4) → 04:00 ET = 08:00 UTC.
     #
-    # Compensation: schedule ~4.5h earlier so actual run lands
-    # inside the PM window (11:00-16:30 IDT / 04:00-09:30 ET).
+    # DST NOTE: on 2026-11-01 NY switches to EST (UTC-5).
+    #           Shift all crons +1 hour: 02 9, 32 9, 02 10, ... 32 13.
     #
-    # Actual expected landing times (IDT):
-    #   03:30 UTC + 4.5h = 08:00 UTC = 04:00 ET = 11:00 IDT  -> PM open
-    #   04:30 UTC + 4.5h = 09:00 UTC = 05:00 ET = 12:00 IDT
-    #   05:30 UTC + 4.5h = 10:00 UTC = 06:00 ET = 13:00 IDT
-    #   06:30 UTC + 4.5h = 11:00 UTC = 07:00 ET = 14:00 IDT
-    #   07:30 UTC + 4.5h = 12:00 UTC = 08:00 ET = 15:00 IDT
-    #   08:30 UTC + 4.5h = 13:00 UTC = 09:00 ET = 16:00 IDT  -> PM close
-    #
-    - cron: '30 3 * * 1-5'   # 03:30 UTC -> ~11:00 IDT
-    - cron: '30 4 * * 1-5'   # 04:30 UTC -> ~12:00 IDT
-    - cron: '30 5 * * 1-5'   # 05:30 UTC -> ~13:00 IDT
-    - cron: '30 6 * * 1-5'   # 06:30 UTC -> ~14:00 IDT
-    - cron: '30 7 * * 1-5'   # 07:30 UTC -> ~15:00 IDT
-    - cron: '30 8 * * 1-5'   # 08:30 UTC -> ~16:00 IDT
+    - cron: '02 8 * * 1-5'    # 04:02 ET  |  11:02 IDT
+    - cron: '32 8 * * 1-5'    # 04:32 ET  |  11:32 IDT
+    - cron: '02 9 * * 1-5'    # 05:02 ET  |  12:02 IDT
+    - cron: '32 9 * * 1-5'    # 05:32 ET  |  12:32 IDT
+    - cron: '02 10 * * 1-5'   # 06:02 ET  |  13:02 IDT
+    - cron: '32 10 * * 1-5'   # 06:32 ET  |  13:32 IDT
+    - cron: '02 11 * * 1-5'   # 07:02 ET  |  14:02 IDT
+    - cron: '32 11 * * 1-5'   # 07:32 ET  |  14:32 IDT
+    - cron: '02 12 * * 1-5'   # 08:02 ET  |  15:02 IDT
+    - cron: '32 12 * * 1-5'   # 08:32 ET  |  15:32 IDT
 
 permissions:
   contents: read
@@ -93,9 +88,6 @@ jobs:
 
       # ============================================================
       # CUMULATIVE DB RESTORE
-      # Find the most recent successful run of THIS workflow (any date),
-      # then download its scan-* artifact which contains the accumulated DB.
-      # This lets the DB grow across days instead of resetting each run.
       # ============================================================
       - name: Find latest previous artifact (cumulative DB)
         id: restore
@@ -132,7 +124,6 @@ jobs:
 
           echo "Most recent successful run: $PREV_RUN (#$PREV_RUN_NUMBER) at $PREV_RUN_STARTED"
 
-          # Pick the newest scan-* artifact from that run.
           ARTIFACT_NAME=$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
             --jq '[.artifacts[] | select((.name | startswith("scan-")) and (.expired == false))] | sort_by(.created_at) | reverse | .[0].name // empty')
@@ -173,7 +164,6 @@ jobs:
             cp /tmp/prev/data/alerts.db data/alerts.db
           else
             echo "WARNING: alerts.db not found in artifact"
-            echo "Available files:"
             find /tmp/prev -type f -maxdepth 3 || true
             echo "Starting with empty DB."
             exit 0
