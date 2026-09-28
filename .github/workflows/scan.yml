@@ -79,43 +79,63 @@ jobs:
           echo "PM window:  $IN_PM_WINDOW (now=$NOW_HHMM ET)"
           echo "=================================================="
 
-      - name: Find previous same-day artifact
+      # ============================================================
+      # CUMULATIVE DB RESTORE
+      # Find the most recent successful run of THIS workflow (any date),
+      # then download its scan-* artifact which contains the accumulated DB.
+      # ============================================================
+      - name: Find latest previous artifact (cumulative DB)
         id: restore
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TODAY_ET: ${{ steps.date.outputs.today }}
         run: |
           set -euo pipefail
+          echo "Looking for the most recent successful run of scan.yml ..."
+
           PREV_RUN=""
+          PREV_RUN_NUMBER=""
+          PREV_RUN_STARTED=""
+
           while IFS=$'\t' read -r RUN_ID RUN_STARTED_AT RUN_NUMBER; do
-            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then continue; fi
-            RUN_DATE_ET=$(TZ=America/New_York date -d "$RUN_STARTED_AT" +%Y-%m-%d)
-            echo "cand run=$RUN_ID num=$RUN_NUMBER started=$RUN_STARTED_AT ET=$RUN_DATE_ET"
-            if [ "$RUN_DATE_ET" = "$TODAY_ET" ]; then
-              PREV_RUN="$RUN_ID"
-              PREV_RUN_NUMBER="$RUN_NUMBER"
-              break
+            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
+              echo "skip current run $RUN_ID"
+              continue
             fi
+            PREV_RUN="$RUN_ID"
+            PREV_RUN_NUMBER="$RUN_NUMBER"
+            PREV_RUN_STARTED="$RUN_STARTED_AT"
+            break
           done < <(
             gh api -H "Accept: application/vnd.github+json" \
-              "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=100&status=success" \
+              "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=50&status=success" \
               --jq '.workflow_runs[] | [.id, .run_started_at, .run_number] | @tsv'
           )
+
           if [ -z "${PREV_RUN:-}" ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
+            echo "No previous successful run found - starting fresh DB."
             exit 0
           fi
-          EXPECTED="scan-${TODAY_ET}-r${PREV_RUN_NUMBER}"
-          EXISTS=$(gh api -H "Accept: application/vnd.github+json" \
+
+          echo "Most recent successful run: $PREV_RUN (#$PREV_RUN_NUMBER) at $PREV_RUN_STARTED"
+
+          # Among artifacts of that run, pick the newest scan-* artifact
+          ARTIFACT_NAME=$(gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
-            --jq "[.artifacts[] | select(.name == \"$EXPECTED\") and (.expired == false)] | length")
-          if [ "$EXISTS" -eq 0 ]; then
+            --jq '[.artifacts[] | select(.name | startswith("scan-")) and (.expired == false)] | sort_by(.created_at) | reverse | .[0].name // empty')
+
+          if [ -z "$ARTIFACT_NAME" ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
+            echo "No usable artifact on run $PREV_RUN - starting fresh DB."
             exit 0
           fi
+
+          echo "Selected artifact: $ARTIFACT_NAME"
           echo "has_prev=true" >> "$GITHUB_OUTPUT"
           echo "prev_run=$PREV_RUN" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=$EXPECTED" >> "$GITHUB_OUTPUT"
+          echo "prev_run_number=$PREV_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "prev_run_started=$PREV_RUN_STARTED" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Download previous artifact
         if: steps.restore.outputs.has_prev == 'true'
@@ -130,15 +150,46 @@ jobs:
         if: steps.restore.outputs.has_prev == 'true'
         run: |
           set -euo pipefail
+          echo "Restoring DB from artifact: ${{ steps.restore.outputs.artifact_name }}"
+          echo "From run: ${{ steps.restore.outputs.prev_run }} (#${{ steps.restore.outputs.prev_run_number }})"
+          echo "Started:  ${{ steps.restore.outputs.prev_run_started }}"
+
           if [ -f /tmp/prev/alerts.db ]; then
             cp /tmp/prev/alerts.db data/alerts.db
           elif [ -f /tmp/prev/data/alerts.db ]; then
             cp /tmp/prev/data/alerts.db data/alerts.db
           else
-            echo "ERROR: alerts.db not found in artifact"
-            exit 1
+            echo "WARNING: alerts.db not found in artifact"
+            echo "Available files:"
+            find /tmp/prev -type f -maxdepth 3 || true
+            echo "Starting with empty DB."
+            exit 0
           fi
+
+          echo "DB restored successfully."
           ls -lh data/alerts.db
+
+      - name: DB pre-scan summary
+        if: steps.restore.outputs.has_prev == 'true'
+        run: |
+          python3 -c "
+          import sqlite3, os
+          p = 'data/alerts.db'
+          if not os.path.exists(p):
+              print('No DB file'); raise SystemExit
+          c = sqlite3.connect(p); cur = c.cursor()
+          try:
+              print('Pre-scan DB state:')
+              print('  snapshots:      ', cur.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0])
+              print('  alerts:         ', cur.execute('SELECT COUNT(*) FROM alerts').fetchone()[0])
+              print('  outcomes:       ', cur.execute('SELECT COUNT(*) FROM outcomes').fetchone()[0])
+              print('  trigger_results:', cur.execute('SELECT COUNT(*) FROM trigger_results').fetchone()[0])
+              rows = cur.execute('SELECT MIN(scan_date), MAX(scan_date) FROM snapshots').fetchone()
+              print('  scan_date range:', rows[0], '->', rows[1])
+          except Exception as e:
+              print('  (schema check failed:', e, ')')
+          c.close()
+          "
 
       - name: Write run_metadata.json
         run: python3 scripts/write_run_metadata.py
@@ -180,5 +231,5 @@ jobs:
         with:
           name: scan-${{ steps.date.outputs.today }}-r${{ github.run_number }}
           path: data/
-          retention-days: 30
+          retention-days: 90
           if-no-files-found: warn
