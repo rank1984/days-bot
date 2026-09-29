@@ -3,23 +3,22 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
   schedule:
-    # TARGET: 04:00-09:30 ET  =  08:00-13:30 UTC  =  11:00-16:30 IDT
+    # Target PM window: 04:00-09:30 ET
+    # Using ET timezone directly (matches Evaluator pattern).
+    # No UTC conversion needed — GitHub handles DST automatically.
     #
-    # Cron is UTC-only. Current mapping: EDT (UTC-4) → 04:00 ET = 08:00 UTC.
-    #
-    # DST NOTE: on 2026-11-01 NY switches to EST (UTC-5).
-    #           Shift all crons +1 hour: 02 9, 32 9, 02 10, ... 32 13.
-    #
-    - cron: '02 8 * * 1-5'    # 04:02 ET  |  11:02 IDT
-    - cron: '32 8 * * 1-5'    # 04:32 ET  |  11:32 IDT
-    - cron: '02 9 * * 1-5'    # 05:02 ET  |  12:02 IDT
-    - cron: '32 9 * * 1-5'    # 05:32 ET  |  12:32 IDT
-    - cron: '02 10 * * 1-5'   # 06:02 ET  |  13:02 IDT
-    - cron: '32 10 * * 1-5'   # 06:32 ET  |  13:32 IDT
-    - cron: '02 11 * * 1-5'   # 07:02 ET  |  14:02 IDT
-    - cron: '32 11 * * 1-5'   # 07:32 ET  |  14:32 IDT
-    - cron: '02 12 * * 1-5'   # 08:02 ET  |  15:02 IDT
-    - cron: '32 12 * * 1-5'   # 08:32 ET  |  15:32 IDT
+    - cron: '2 4 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '2 5 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '2 6 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '2 7 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '2 8 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '2 9 * * 1-5'
+      timezone: "America/New_York"
 
 permissions:
   contents: read
@@ -86,9 +85,6 @@ jobs:
           echo "PM window:  $IN_PM_WINDOW (now=$NOW_HHMM ET)"
           echo "=================================================="
 
-      # ============================================================
-      # CUMULATIVE DB RESTORE
-      # ============================================================
       - name: Find latest previous artifact (cumulative DB)
         id: restore
         env:
