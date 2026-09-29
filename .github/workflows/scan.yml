@@ -3,22 +3,30 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 on:
   workflow_dispatch:
   schedule:
-    # Target PM window: 04:00-09:30 ET
-    # Using ET timezone directly (matches Evaluator pattern).
-    # No UTC conversion needed — GitHub handles DST automatically.
+    # Target PM window: 04:00-09:30 ET (11:00-16:30 IDT).
     #
-    - cron: '2 4 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '2 5 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '2 6 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '2 7 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '2 8 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '2 9 * * 1-5'
-      timezone: "America/New_York"
+    # GitHub Actions delay at scheduled times has grown to ~8 hours
+    # during peak US hours (observed 2026-09-29: runs at 19:00-21:30 IDT
+    # instead of the intended 11:00-15:30 IDT).
+    #
+    # Compensation: schedule 8h earlier so actual run lands in PM.
+    #
+    # If delay = 8h:   runs at 08:00-13:00 UTC = 04:00-09:00 ET = PM ✓
+    # If delay = 4h:   runs at 04:00-09:00 UTC = 00:00-05:00 ET = too early
+    # If delay = 0h:   runs at 00:00-05:00 UTC = 20:00-00:00 ET = prev evening
+    #
+    # IN_PM_WINDOW flag in each run marks which runs actually landed in PM.
+    #
+    - cron: '02 0 * * 1-5'    # 00:02 UTC -> ~08:02 UTC -> 04:02 ET
+    - cron: '32 0 * * 1-5'    # 00:32 UTC -> ~08:32 UTC -> 04:32 ET
+    - cron: '02 1 * * 1-5'    # 01:02 UTC -> ~09:02 UTC -> 05:02 ET
+    - cron: '32 1 * * 1-5'    # 01:32 UTC -> ~09:32 UTC -> 05:32 ET
+    - cron: '02 2 * * 1-5'    # 02:02 UTC -> ~10:02 UTC -> 06:02 ET
+    - cron: '32 2 * * 1-5'    # 02:32 UTC -> ~10:32 UTC -> 06:32 ET
+    - cron: '02 3 * * 1-5'    # 03:02 UTC -> ~11:02 UTC -> 07:02 ET
+    - cron: '32 3 * * 1-5'    # 03:32 UTC -> ~11:32 UTC -> 07:32 ET
+    - cron: '02 4 * * 1-5'    # 04:02 UTC -> ~12:02 UTC -> 08:02 ET
+    - cron: '32 4 * * 1-5'    # 04:32 UTC -> ~12:32 UTC -> 08:32 ET
 
 permissions:
   contents: read
@@ -60,7 +68,6 @@ jobs:
           NOW_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           NOW_IL=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
 
-          # PM window: 04:00-09:30 ET  [0400, 0930)
           if [ "$NOW_HHMM" -ge "0400" ] && [ "$NOW_HHMM" -lt "0930" ]; then
             IN_PM_WINDOW=true
           else
@@ -92,14 +99,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "Looking for the most recent successful run of scan.yml ..."
-
           PREV_RUN=""
           PREV_RUN_NUMBER=""
           PREV_RUN_STARTED=""
 
           while IFS=$'\t' read -r RUN_ID RUN_STARTED_AT RUN_NUMBER; do
             if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
-              echo "skip current run $RUN_ID"
               continue
             fi
             PREV_RUN="$RUN_ID"
