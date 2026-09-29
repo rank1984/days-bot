@@ -1454,6 +1454,5 @@ if __name__ == "__main__":
                         help="Delete derived rows and reevaluate.")
     args = parser.parse_args()
     evaluate_all(scan_date=args.scan_date, force=args.force)
-```
 
 Commit: fix: F1 + F7 complete (R from actual fill + spread/tick cost model)
