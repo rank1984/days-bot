@@ -1,0 +1,36 @@
+name: DAYS-BOT Tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'tests/**'
+      - 'evaluate_snapshots.py'
+      - '.github/workflows/run-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run outcome engine tests
+        run: |
+          python3 tests/test_outcome_engine.py
