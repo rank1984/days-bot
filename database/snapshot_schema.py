@@ -1,5 +1,8 @@
 """
 DAYS-BOT V5.0.6 — Snapshot Schema
+
+F7 — cost model columns
+F1 — R from actual fill columns
 """
 import json
 import sqlite3
@@ -101,6 +104,9 @@ CREATE TABLE IF NOT EXISTS outcomes (
     time_to_mae_sec           INTEGER,
     absolute_move_before_trigger_pct  REAL,
     relative_move_before_trigger_pct  REAL,
+    -- HISTORICAL NAME: entry_slippage_pct now holds FULL entry cost in
+    -- percent of raw fill: spread_pct/2 + (TICK_SIZE / raw_fill) * 100.
+    -- Do NOT interpret as "slippage only".
     entry_slippage_pct                REAL,
     entry_efficiency                  REAL,
     exit_reason               TEXT,
@@ -143,10 +149,24 @@ INDEXES = [
 ]
 
 MIGRATIONS = [
+    # V5.0.6.1
     ("snapshots", "pm_bars_json", "TEXT"),
     ("trigger_results", "trigger_data_mode", "TEXT"),
     ("outcomes", "trigger_result_id", "INTEGER"),
     ("outcomes", "net_r_status", "TEXT"),
+    # F7 — cost model
+    ("outcomes", "cost_r", "REAL"),
+    ("outcomes", "net_r_x2", "REAL"),
+    ("outcomes", "spread_pct_used", "REAL"),
+    ("outcomes", "spread_source", "TEXT"),
+    ("outcomes", "quote_raw", "TEXT"),
+    ("outcomes", "quote_timestamp_utc", "TEXT"),
+    # F1 — R from actual fill
+    ("outcomes", "raw_fill", "REAL"),
+    ("outcomes", "stop_used", "REAL"),
+    ("outcomes", "t1_used", "REAL"),
+    ("outcomes", "t2_used", "REAL"),
+    ("outcomes", "risk_actual", "REAL"),
 ]
 
 
