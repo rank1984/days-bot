@@ -1,4 +1,4 @@
-```python
+python
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.6.2 — Snapshot Evaluator
@@ -1457,5 +1457,3 @@ if __name__ == "__main__":
 ```
 
 Commit: fix: F1 + F7 complete (R from actual fill + spread/tick cost model)
-
----
