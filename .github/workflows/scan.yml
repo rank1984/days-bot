@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_evaluator:
-        description: 'Run evaluator after scan? (deletes + recalculates outcomes for today)'
+        description: 'Run evaluator after scan?'
         required: false
         default: 'false'
         type: choice
@@ -12,7 +12,7 @@ on:
           - 'false'
           - 'true'
       force_evaluator:
-        description: 'Force evaluator (delete existing outcomes + triggers for today)'
+        description: 'Force evaluator (delete existing outcomes + triggers)'
         required: false
         default: 'true'
         type: choice
@@ -22,23 +22,20 @@ on:
 
   schedule:
     # Target PM window: 04:00-09:30 ET (11:00-16:30 IDT).
-    #
-    # GitHub Actions delay at scheduled times can be 0-8h depending on
-    # platform load. Compensation: schedule earlier so most runs land
-    # inside the PM window.
-    #
-    # IN_PM_WINDOW flag in each run marks which runs actually landed in PM.
-    #
-    - cron: '02 0 * * 1-5'    # 00:02 UTC
-    - cron: '32 0 * * 1-5'    # 00:32 UTC
-    - cron: '02 1 * * 1-5'    # 01:02 UTC
-    - cron: '32 1 * * 1-5'    # 01:32 UTC
-    - cron: '02 2 * * 1-5'    # 02:02 UTC
-    - cron: '32 2 * * 1-5'    # 02:32 UTC
-    - cron: '02 3 * * 1-5'    # 03:02 UTC
-    - cron: '32 3 * * 1-5'    # 03:32 UTC
-    - cron: '02 4 * * 1-5'    # 04:02 UTC
-    - cron: '32 4 * * 1-5'    # 04:32 UTC
+    # GitHub Actions delays scheduled jobs by 0-8h depending on load.
+    # We schedule 8h earlier than intended PM start so that the delay
+    # lands the actual run inside PM. Runs that land outside PM will
+    # have IN_PM_WINDOW=false and are excluded from the primary sample.
+    - cron: '02 0 * * 1-5'
+    - cron: '32 0 * * 1-5'
+    - cron: '02 1 * * 1-5'
+    - cron: '32 1 * * 1-5'
+    - cron: '02 2 * * 1-5'
+    - cron: '32 2 * * 1-5'
+    - cron: '02 3 * * 1-5'
+    - cron: '32 3 * * 1-5'
+    - cron: '02 4 * * 1-5'
+    - cron: '32 4 * * 1-5'
 
 permissions:
   contents: read
@@ -232,6 +229,17 @@ jobs:
 
       # ============================================================
       # STEP 6: Preflight check (5 assertions, non-blocking)
+      #
+      # The preflight check writes:
+      #   - preflight_exit  = exit code of preflight.py (0 or 1)
+      #   - research_day    = true/false (same as exit code)
+      #
+      # Later steps (evaluator, diagnostics) may read research_day
+      # to decide whether this run counts as a research day.
+      #
+      # The workflow is NOT blocked by preflight failures. A failed
+      # preflight means the day is not counted in the primary sample,
+      # but the scanner still runs and the DB still grows.
       # ============================================================
       - name: Preflight check
         id: preflight
@@ -243,15 +251,27 @@ jobs:
           set +e
           python3 scripts/preflight.py
           EXIT_CODE=$?
+
+          if [ "$EXIT_CODE" = "0" ]; then
+            RESEARCH_DAY=true
+          else
+            RESEARCH_DAY=false
+          fi
+
           echo "preflight_exit=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo "research_day=$RESEARCH_DAY" >> "$GITHUB_OUTPUT"
+
           echo ""
           echo "=================================================="
-          if [ "$EXIT_CODE" = "0" ]; then
+          if [ "$RESEARCH_DAY" = "true" ]; then
             echo "PREFLIGHT: PASSED (day eligible for Event counting)"
           else
             echo "PREFLIGHT: FAILED (day NOT counted as research day)"
+            echo "  Reason: one or more checks failed. See output above."
           fi
           echo "=================================================="
+
+          # Do not block the workflow
           exit 0
 
       # ============================================================
@@ -306,8 +326,9 @@ jobs:
           set -euo pipefail
           echo "=================================================="
           echo "RUNNING EVALUATOR"
-          echo "scan_date: $TODAY_ET"
-          echo "force:     ${{ inputs.force_evaluator }}"
+          echo "scan_date:    $TODAY_ET"
+          echo "force:        ${{ inputs.force_evaluator }}"
+          echo "research_day: ${{ steps.preflight.outputs.research_day }}"
           echo "=================================================="
           if [ "${{ inputs.force_evaluator }}" = "true" ]; then
             python3 evaluate_snapshots.py --scan-date "$TODAY_ET" --force
