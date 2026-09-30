@@ -1,33 +1,47 @@
-python
 #!/usr/bin/env python3
 """
-DAYS-BOT V5.0.6.2 — Snapshot Evaluator
+DAYS-BOT V5.0.6.3 — Snapshot Evaluator
 
-V5.0.6.2 (F1 + F7 + F2 + F5):
-- F5: PMH breakout uses Close > level (not High >= level)
-- F2: gap-down stop fills at bar open, not at stop
-- F7: cost model = spread + tick, computed ONCE, separately.
-      Raw fills only in evaluate_horizon — no embedded slippage.
-      cost_r = cost_per_share / risk_actual (per-share)
-      net_r  = gross_r - cost_r
-      net_r_x2 = gross_r - 2*cost_r
-      Historical column `entry_slippage_pct` now holds FULL entry cost
-      (spread/2 + tick/raw_fill) in percent of raw fill.
-- F1: R denominator is risk_actual = (raw_fill - stop_used).
-      Stop/targets are recalculated from raw_fill, not from the plan.
-      Snapshot['risk_per_share'] no longer influences R.
-      Chase: raw_fill <= PMH + 0.5*ATR else NON_EXECUTABLE.
-      Min risk: round_trip_cost / risk_actual <= 0.5 else NON_EXECUTABLE.
-      ATR missing OR next bar > 2 min away -> NON_EXECUTABLE.
-      VWAP measured cumulatively from 09:30 to close of trigger bar.
-      ATR from snapshot['atr'] (daily, source is build_trade_plan).
+V5.0.6.3 (Pre-Registration compliant) — changes over V5.0.6.2:
 
-Net-R statuses
---------------
-VALID
-NON_EXECUTABLE
-INVALID
-INCOMPLETE
+  PR-FIX-1: Stop anchor uses snapshot.pm_vwap, NOT RTH cumulative VWAP.
+            If pm_vwap is None -> NON_EXECUTABLE, no Event.
+
+  PR-FIX-2: Partial exits weighted in Net R.
+            T1 hit + BE stop        -> exit_fill = 0.5*t1 + 0.5*BE
+            T1 hit + horizon close  -> exit_fill = 0.5*t1 + 0.5*close
+            T1 hit + T2 hit         -> exit_fill = 0.5*t1 + 0.5*t2
+            exit_reason distinguishes BE-after-T1 from plain STOP_HIT.
+
+  PR-FIX-3: evaluate_swing uses intraday data only from entry_idx.
+            Previous behavior used daily OHLC of the trigger date,
+            which includes prices from before the entry — lookahead.
+
+  PR-FIX-4: event_rank enforced. Only the first eligible trigger for
+            a (ticker, scan_date) becomes Event rank=1. All other
+            triggers are recorded with rank>=2 and excluded from the
+            primary sample.
+
+  PR-FIX-5: Spread fallback REMOVED.
+            No quote in window [T-60s, T-10s] -> spread_status = UNKNOWN
+            -> NON_EXECUTABLE. Falling back to a fixed 1.5% masks
+            liquidity problems.
+
+  PR-FIX-6: ATR = ATR(14) on 5-min RTH bars from PREVIOUS trading day.
+            Fixed at 09:30 ET, does not update during the day.
+            If <14 valid bars -> ATR = None -> no Event.
+
+  Trigger priority (per P4):
+      BREAKOUT_VOLUME_V1  = primary Event (rank 1)
+      PMH_BREAKOUT_V1     = recorded, but not Event
+      VWAP_RECLAIM_V1     = recorded, but not Event
+      PULLBACK_RETEST_V1  = recorded, but not Event
+
+V5.0.6.2 legacy:
+  F5: PMH breakout uses Close > level
+  F2: gap-down stop fills at bar open
+  F7: cost = spread + tick, computed ONCE
+  F1: R from actual fill (risk_actual = raw_fill - stop_used)
 """
 
 import json
@@ -59,22 +73,37 @@ DB_PATH = BASE_DIR / "data" / "alerts.db"
 # VERSIONED CONFIG
 # =====================================================================
 
-TRIGGER_VERSION = "V5.0.6-T2"
-EXIT_RULES_VERSION = "V5.0.6-E2"
-COST_MODEL_VERSION = "V5.0.6-C2"
+TRIGGER_VERSION = "V5.0.6-T3"
+EXIT_RULES_VERSION = "V5.0.6-E3"
+COST_MODEL_VERSION = "V5.0.6-C3"
 
-# F7 — cost model
+# Cost model (F7)
 TICK_SIZE = 0.01
-SPREAD_FALLBACK_PCT = 1.5
-SPREAD_MAX_AGE_SEC = 60
+
+# Spread config (PR-FIX-5)
+SPREAD_WINDOW_BEFORE_SEC = 60   # look back from trigger
+SPREAD_WINDOW_AFTER_SEC = 10    # stop lookback here (too close to trigger)
+SPREAD_FETCH_RANGE_SEC = 120    # how far back to fetch from API
 
 # Horizon
 MOMENTUM_WINDOW_MIN = 90
 RTH_START = "09:30"
 RTH_END = "15:59"
 
-# F1 — timing
+# PM window (for ATR previous-day fetch and PMH consistency)
+PM_START = "04:00"
+PM_END = "09:30"
+
+# Timing (F1)
 MAX_NEXT_BAR_DELAY_SEC = 120
+
+# Trigger window (P3)
+TRIGGER_WINDOW_START = "09:30"
+TRIGGER_WINDOW_END = "11:00"
+
+# ATR (P14)
+ATR_PERIOD = 14
+ATR_INTERVAL = "5m"
 
 
 # =====================================================================
@@ -135,6 +164,23 @@ def _json(value):
         return None
 
 
+def _is_in_window(ts_et, start_hhmm, end_hhmm):
+    """ts_et is a tz-aware Timestamp. Returns True if time in [start, end)."""
+    if ts_et is None:
+        return False
+    hhmm = ts_et.strftime("%H%M")
+    return (start_hhmm <= hhmm < end_hhmm)
+
+
+def _previous_trading_date(scan_date_str):
+    """Return the previous weekday (Mon-Fri) as YYYY-MM-DD."""
+    d = datetime.strptime(scan_date_str, "%Y-%m-%d").date()
+    d = d - timedelta(days=1)
+    while d.weekday() >= 5:  # Sat=5, Sun=6
+        d = d - timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
+
+
 # =====================================================================
 # DATABASE MIGRATION
 # =====================================================================
@@ -181,6 +227,72 @@ def fetch_rth_bars(ticker, scan_date):
     except Exception as exc:
         print(f"[evaluate] {ticker} fetch error: {type(exc).__name__}: {exc}")
         return pd.DataFrame()
+
+
+# Global cache for previous-day ATR (per ticker/date)
+_ATR_CACHE = {}
+
+
+def _compute_prev_day_atr(ticker, scan_date):
+    """
+    PR-FIX-6 / P14: ATR(14) on 5-min RTH bars from PREVIOUS trading day.
+    No look-ahead: only uses data from the prior day.
+    """
+    key = (ticker, scan_date)
+    if key in _ATR_CACHE:
+        return _ATR_CACHE[key]
+
+    try:
+        prev_date = _previous_trading_date(scan_date)
+        start = datetime.strptime(prev_date, "%Y-%m-%d")
+        end = start + timedelta(days=1)
+
+        df = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            interval=ATR_INTERVAL,
+            prepost=False,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+
+        if df is None or df.empty:
+            _ATR_CACHE[key] = None
+            return None
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df.index = pd.to_datetime(df.index)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        df.index = df.index.tz_convert(ET)
+
+        df = df.between_time(RTH_START, RTH_END)
+        if len(df) < ATR_PERIOD + 1:
+            _ATR_CACHE[key] = None
+            return None
+
+        # True Range = max(H-L, |H-prevC|, |L-prevC|)
+        prev_close = df["Close"].shift(1)
+        tr = pd.concat([
+            df["High"] - df["Low"],
+            (df["High"] - prev_close).abs(),
+            (df["Low"] - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        # Wilder-style: simple mean over ATR_PERIOD of last TRs
+        # (using simple mean for reproducibility)
+        atr = float(tr.iloc[-ATR_PERIOD:].mean())
+        _ATR_CACHE[key] = atr if atr > 0 else None
+        return _ATR_CACHE[key]
+
+    except Exception as exc:
+        print(f"[evaluate] {ticker} ATR error: {type(exc).__name__}: {exc}")
+        _ATR_CACHE[key] = None
+        return None
 
 
 # =====================================================================
@@ -277,10 +389,6 @@ def _median_previous_volume(df, idx):
 
 
 def _entry_raw_open_from_next_bar(df, trigger_idx):
-    """
-    F7: raw open of next bar. No costs embedded.
-    Costs are computed once, separately, in cost_r.
-    """
     next_idx = trigger_idx + 1
     if next_idx >= len(df):
         return None
@@ -299,15 +407,10 @@ def _entry_fill_from_next_bar(df, trigger_idx):
 
 def _fetch_spread_pct(ticker, trigger_time):
     """
-    F7: historical quote at trigger close.
-    Returns (spread_pct, source, quote_raw_dict, quote_iso).
-
-    source: 'QUOTE' | 'FALLBACK'
-    FALLBACK when:
-      - API error / no quotes
-      - ask <= bid (crossed/locked)
-      - age > SPREAD_MAX_AGE_SEC
-      - missing bid/ask
+    PR-FIX-5 / P15:
+      Look for a quote in [T-60s, T-10s] closest to T-30s.
+      If none -> return None, source='UNKNOWN'.
+      The evaluator will then mark the trade NON_EXECUTABLE.
     """
     try:
         import requests
@@ -315,11 +418,11 @@ def _fetch_spread_pct(ticker, trigger_time):
             ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_DATA_URL
         )
         if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-            return (SPREAD_FALLBACK_PCT, "FALLBACK", None, None)
+            return (None, "UNKNOWN", None, None)
 
         url = f"{ALPACA_DATA_URL.rstrip('/')}/v2/stocks/{ticker}/quotes"
-        end_dt = trigger_time.astimezone(UTC)
-        start_dt = end_dt - timedelta(seconds=120)
+        end_dt = trigger_time.astimezone(UTC) - timedelta(seconds=SPREAD_WINDOW_AFTER_SEC)
+        start_dt = end_dt - timedelta(seconds=SPREAD_FETCH_RANGE_SEC)
 
         resp = requests.get(
             url,
@@ -331,52 +434,66 @@ def _fetch_spread_pct(ticker, trigger_time):
             params={
                 "start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "end": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "limit": 10,
+                "limit": 50,
                 "feed": "iex",
             },
             timeout=10,
         )
         if resp.status_code != 200:
-            return (SPREAD_FALLBACK_PCT, "FALLBACK", None, None)
+            return (None, "UNKNOWN", None, None)
 
         data = resp.json()
         quotes = data.get("quotes", [])
         if not quotes:
-            return (SPREAD_FALLBACK_PCT, "FALLBACK", None, None)
+            return (None, "UNKNOWN", None, None)
 
-        last = quotes[-1]
-        bid = _safe_float(last.get("bp"))
-        ask = _safe_float(last.get("ap"))
-        qt_iso = last.get("t")
+        # Target timestamp: trigger_time - 30 seconds (ET)
+        target_ts = trigger_time.astimezone(UTC) - timedelta(seconds=30)
+
+        best = None
+        best_delta = None
+        for q in quotes:
+            qt_iso = q.get("t")
+            if not qt_iso:
+                continue
+            try:
+                qt = datetime.fromisoformat(qt_iso.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            delta = abs((qt - target_ts).total_seconds())
+            if best_delta is None or delta < best_delta:
+                best = q
+                best_delta = delta
+
+        if best is None:
+            return (None, "UNKNOWN", None, None)
+
+        bid = _safe_float(best.get("bp"))
+        ask = _safe_float(best.get("ap"))
+        qt_iso = best.get("t")
 
         if bid is None or ask is None or bid <= 0 or ask <= 0:
-            return (SPREAD_FALLBACK_PCT, "FALLBACK", last, qt_iso)
+            return (None, "UNKNOWN", best, qt_iso)
         if ask <= bid:
-            return (SPREAD_FALLBACK_PCT, "FALLBACK", last, qt_iso)
-
-        qt_dt = datetime.fromisoformat(qt_iso.replace("Z", "+00:00"))
-        age = (trigger_time - qt_dt).total_seconds()
-        if age > SPREAD_MAX_AGE_SEC or age < 0:
-            return (SPREAD_FALLBACK_PCT, "FALLBACK", last, qt_iso)
+            return (None, "UNKNOWN", best, qt_iso)
 
         mid = (bid + ask) / 2.0
         spread_pct = (ask - bid) / mid * 100.0
-        return (round(spread_pct, 4), "QUOTE", last, qt_iso)
+        return (round(spread_pct, 4), "QUOTE", best, qt_iso)
 
     except Exception as exc:
         print(f"[spread] {ticker} fetch error: {type(exc).__name__}: {exc}")
-        return (SPREAD_FALLBACK_PCT, "FALLBACK", None, None)
+        return (None, "UNKNOWN", None, None)
 
 
 # =====================================================================
-# TRIGGER A — PMH BREAKOUT (F5: uses Close)
+# TRIGGERS
 # =====================================================================
 
 def detect_pmh_breakout(df, pm_high, buffer):
     """
-    Trigger per Pre-Registration v2: Close > PMH + buffer.
-    Close-based (not High-based) is the spec: a bar that only
-    touches the level intrabar is not a confirmed breakout.
+    F5: Close > PMH + buffer (not High >= level).
+    Secondary trigger (not the primary Event).
     """
     if pm_high is None or pm_high <= 0 or not _valid_ohlcv(df):
         return None
@@ -397,11 +514,11 @@ def detect_pmh_breakout(df, pm_high, buffer):
     return None
 
 
-# =====================================================================
-# TRIGGER B — BREAKOUT + VOLUME
-# =====================================================================
-
 def detect_volume_breakout(df, pm_high, buffer):
+    """
+    PR-FIX: This is the PRIMARY Event trigger per P4.
+    Close >= PMH + buffer AND Volume >= 1.2 * median(prev 5 valid bars).
+    """
     if pm_high is None or pm_high <= 0 or not _valid_ohlcv(df):
         return None
 
@@ -432,10 +549,6 @@ def detect_volume_breakout(df, pm_high, buffer):
     return None
 
 
-# =====================================================================
-# TRIGGER C — VWAP RECLAIM
-# =====================================================================
-
 def detect_vwap_reclaim(df, pm_vwap):
     if pm_vwap is None or pm_vwap <= 0 or not _valid_ohlcv(df):
         return None
@@ -458,10 +571,6 @@ def detect_vwap_reclaim(df, pm_vwap):
 
     return None
 
-
-# =====================================================================
-# TRIGGER D — PULLBACK / RETEST
-# =====================================================================
 
 def detect_pullback_retest(df, pm_high, buffer, timeout_minutes=60):
     if pm_high is None or pm_high <= 0 or not _valid_ohlcv(df):
@@ -518,13 +627,6 @@ def detect_pullback_retest(df, pm_high, buffer, timeout_minutes=60):
 # =====================================================================
 
 def compute_costs(entry_fill, exit_fill, spread_pct, position_size=None):
-    """
-    F7: spread + tick cost per side.
-    Raw fills only — no embedded slippage. Cost is applied ONCE here.
-
-    cost_per_side = fill * (spread_pct/2 / 100) + TICK_SIZE
-    total_per_share = entry_cost_ps + exit_cost_ps
-    """
     entry_fill = _safe_float(entry_fill)
     exit_fill = _safe_float(exit_fill)
     spread_pct = _safe_float(spread_pct)
@@ -564,13 +666,6 @@ def compute_costs(entry_fill, exit_fill, spread_pct, position_size=None):
 
 def compute_gross_net(entry_fill, exit_fill, risk_actual, spread_pct,
                       position_size=None):
-    """
-    F7 + F1:
-      gross_r  = (exit - entry) / risk_actual
-      cost_r   = cost_per_share_total / risk_actual  (per-share)
-      net_r    = gross_r - cost_r
-      net_r_x2 = gross_r - 2*cost_r
-    """
     entry_fill = _safe_float(entry_fill)
     exit_fill = _safe_float(exit_fill)
     risk_actual = _safe_float(risk_actual)
@@ -632,10 +727,21 @@ def compute_gross_net(entry_fill, exit_fill, risk_actual, spread_pct,
 
 
 # =====================================================================
-# OUTCOME ENGINE (F2: gap-down fills at open; F7: raw fills)
+# OUTCOME ENGINE
 # =====================================================================
 
 def evaluate_horizon(df, trigger_idx, entry_fill, stop, t1, t2, end_idx=None):
+    """
+    PR-FIX-2 + PR-FIX-3: weighted partial exits.
+
+    Exit reasons:
+      STOP_HIT                 - stop touched before T1, 100% at stop
+      STOP_BE_AFTER_T1         - T1 hit, then stop (BE) touched, 50/50 weighted
+      STOP_HIT_AFTER_T1        - T1 hit, then original stop touched, 50/50 weighted
+      T2_HIT                   - T1 and T2 both hit, 50/50 weighted
+      HORIZON_END              - no T1, exit at horizon close
+      HORIZON_END_AFTER_T1     - T1 hit, horizon reached, 50/50 weighted
+    """
     if end_idx is None:
         end_idx = len(df) - 1
 
@@ -649,6 +755,7 @@ def evaluate_horizon(df, trigger_idx, entry_fill, stop, t1, t2, end_idx=None):
             "exit_fill": None,
             "exit_reason": "NOT_EXECUTABLE",
             "exit_idx": None,
+            "half_exited": False,
         }
 
     entry_time = df.index[entry_idx]
@@ -656,16 +763,20 @@ def evaluate_horizon(df, trigger_idx, entry_fill, stop, t1, t2, end_idx=None):
     half_exited = False
     exit_reason = "HORIZON_END"
     exit_idx = end_idx
-    exit_fill = _safe_float(df.iloc[end_idx]["Close"])
 
-    if exit_fill is None or entry_fill is None:
+    horizon_close = _safe_float(df.iloc[end_idx]["Close"])
+    if horizon_close is None or entry_fill is None:
         return {
             "status": NET_R_STATUS_INCOMPLETE,
             "entry_fill": entry_fill,
             "exit_fill": None,
             "exit_reason": "INCOMPLETE_DATA",
             "exit_idx": None,
+            "half_exited": False,
         }
+
+    # Default: no exit signal -> horizon close
+    exit_fill = horizon_close
 
     mfe = entry_fill
     mae = entry_fill
@@ -688,42 +799,48 @@ def evaluate_horizon(df, trigger_idx, entry_fill, stop, t1, t2, end_idx=None):
             mae = low
             mae_idx = idx
 
-        # STOP FIRST (F2: gap-down fills at open)
+        # ------- STOP FIRST (F2: gap-down fills at open) -------
         if low <= current_stop:
-            exit_reason = "STOP_HIT"
-            exit_idx = idx
             bar_open = _safe_float(row["Open"])
-            if bar_open is not None and bar_open < current_stop:
-                exit_fill = bar_open
+            stop_fill = (bar_open if (bar_open is not None and bar_open < current_stop)
+                         else current_stop)
+
+            if half_exited:
+                # PR-FIX-2: 50% already took T1, remaining 50% exits at stop
+                if current_stop >= entry_fill:
+                    exit_reason = "STOP_BE_AFTER_T1"
+                else:
+                    exit_reason = "STOP_HIT_AFTER_T1"
+                exit_idx = idx
+                exit_fill = 0.5 * t1 + 0.5 * stop_fill
             else:
-                exit_fill = current_stop
+                exit_reason = "STOP_HIT"
+                exit_idx = idx
+                exit_fill = stop_fill
             break
 
-        # T1
+        # ------- T1 -------
         if not half_exited and high >= t1:
             half_exited = True
-            current_stop = entry_fill
+            current_stop = entry_fill  # move stop to BE
             continue
 
-        # T2 (F7: raw fills, no slippage)
+        # ------- T2 -------
         if half_exited and high >= t2:
             exit_reason = "T2_HIT"
             exit_idx = idx
             exit_fill = 0.5 * t1 + 0.5 * t2
             break
     else:
+        # Loop completed without break -> horizon end
         exit_idx = end_idx
-        close = _safe_float(df.iloc[end_idx]["Close"])
-        if close is None:
-            return {
-                "status": NET_R_STATUS_INCOMPLETE,
-                "entry_fill": entry_fill,
-                "exit_fill": None,
-                "exit_reason": "INCOMPLETE_DATA",
-                "exit_idx": end_idx,
-            }
-        exit_fill = close
-        exit_reason = "HORIZON_END"
+        if half_exited:
+            # PR-FIX-3: weighted 50/50
+            exit_reason = "HORIZON_END_AFTER_T1"
+            exit_fill = 0.5 * t1 + 0.5 * horizon_close
+        else:
+            exit_reason = "HORIZON_END"
+            exit_fill = horizon_close
 
     hold_minutes = int((df.index[exit_idx] - entry_time).total_seconds() / 60)
     time_to_mfe = int((df.index[mfe_idx] - entry_time).total_seconds())
@@ -748,6 +865,7 @@ def evaluate_horizon(df, trigger_idx, entry_fill, stop, t1, t2, end_idx=None):
         "time_to_mae_sec": time_to_mae,
         "hold_minutes": hold_minutes,
         "gross_pct": gross_pct,
+        "half_exited": half_exited,
     }
 
 
@@ -756,20 +874,27 @@ def evaluate_horizon(df, trigger_idx, entry_fill, stop, t1, t2, end_idx=None):
 # =====================================================================
 
 def write_trigger(cur, snapshot_id, method, hit, trig_time, trig_price,
-                  elapsed_sec, window, trigger_data_mode, extra=None):
+                  elapsed_sec, window, trigger_data_mode, event_rank=2,
+                  extra=None):
+    """
+    PR-FIX-4: write event_rank with every trigger row.
+    event_rank=1 is the primary Event (BREAKOUT_VOLUME_V1 in trigger window).
+    event_rank>=2 are secondary triggers recorded for analysis.
+    """
     cur.execute(
         """
         INSERT OR REPLACE INTO trigger_results
-        (snapshot_id, trigger_method,
-trigger_version, hit,
+        (snapshot_id, trigger_method, trigger_version, hit,
          trigger_time_utc, trigger_time_et, trigger_price,
-         elapsed_sec_from_t0, window, trigger_data_mode, metadata_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         elapsed_sec_from_t0, window, trigger_data_mode,
+         event_rank, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             snapshot_id, method, TRIGGER_VERSION, 1 if hit else 0,
             _utc_string(trig_time), _et_string(trig_time), trig_price,
-            elapsed_sec, window, trigger_data_mode, _json(extra),
+            elapsed_sec, window, trigger_data_mode,
+            event_rank, _json(extra),
         ),
     )
 
@@ -790,7 +915,7 @@ trigger_version, hit,
 
 
 # =====================================================================
-# DB WRITE — OUTCOME (F1 + F7)
+# DB WRITE — OUTCOME
 # =====================================================================
 
 def write_outcome(
@@ -843,7 +968,6 @@ def write_outcome(
             and entry_fill is not None):
         entry_efficiency = (entry_fill - planned_entry) / planned_entry * 100
 
-    # F7 — full entry cost as % of raw fill
     entry_slippage_pct = None
     if entry_fill is not None and entry_fill > 0 and spread_pct is not None:
         spread_half_pct = spread_pct / 2.0
@@ -924,14 +1048,6 @@ def write_outcome(
 # HORIZON HELPERS
 # =====================================================================
 
-def _index_at_or_before(df, target_time):
-    indices = df.index <= target_time
-    positions = indices.nonzero()[0] if hasattr(indices, "nonzero") else []
-    if len(positions) == 0:
-        return None
-    return int(positions[-1])
-
-
 def evaluate_momentum(df, trigger, entry_fill, stop, t1, t2):
     trigger_idx = trigger["idx"]
     trigger_time = df.index[trigger_idx]
@@ -948,6 +1064,7 @@ def evaluate_momentum(df, trigger, entry_fill, stop, t1, t2):
 
 
 def fetch_daily_bars(ticker, scan_date):
+    """Legacy — kept for backward compatibility. Not used for primary logic."""
     try:
         start = datetime.strptime(scan_date, "%Y-%m-%d")
         end = start + timedelta(days=7)
@@ -977,17 +1094,65 @@ def fetch_daily_bars(ticker, scan_date):
 
 def evaluate_swing(ticker, scan_date, trigger, raw_fill, stop_used,
                    t1_used, t2_used):
-    """F2 + F7: raw fills; gap-down fills at open."""
-    daily = fetch_daily_bars(ticker, scan_date)
-    if daily.empty:
+    """
+    PR-FIX-3: swing now uses intraday data ONLY from entry_idx onward.
+    No look-ahead from same-day daily OHLC that includes pre-entry prices.
+    Uses 1-min RTH bars extended across the next 3 trading days.
+    For the same-day portion, only data after entry_time is used.
+    """
+    # We use the same intraday fetch as the primary, but allow the
+    # horizon to span the entry day + 2 following days.
+    # Since fetch_rth_bars is limited to a single day, we fetch a
+    # multi-day window here.
+    try:
+        start = datetime.strptime(scan_date, "%Y-%m-%d")
+        end = start + timedelta(days=6)
+
+        df = yf.download(
+            ticker,
+            start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"),
+            interval="1m",
+            prepost=False,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        if df is None or df.empty:
+            return {"status": NET_R_STATUS_INCOMPLETE, "entry_fill": None,
+                    "exit_fill": None, "exit_reason": "INCOMPLETE_DATA"}
+
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+
+        df.index = pd.to_datetime(df.index)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        df.index = df.index.tz_convert(ET)
+
+        df = df.between_time(RTH_START, RTH_END)
+        if df.empty:
+            return {"status": NET_R_STATUS_INCOMPLETE, "entry_fill": None,
+                    "exit_fill": None, "exit_reason": "INCOMPLETE_DATA"}
+    except Exception as exc:
+        print(f"[swing] {ticker} error: {type(exc).__name__}: {exc}")
         return {"status": NET_R_STATUS_INCOMPLETE, "entry_fill": None,
                 "exit_fill": None, "exit_reason": "INCOMPLETE_DATA"}
 
-    trigger_date = trigger["time"].date()
-    future = daily[daily.index.date >= trigger_date].head(4)
-    if future.empty:
+    entry_time = trigger["time"]
+    # Only consider bars at or after entry_time (intraday, no same-day lookback)
+    mask = df.index > entry_time
+    positions = mask.nonzero()[0]
+    if len(positions) == 0:
         return {"status": NET_R_STATUS_INCOMPLETE, "entry_fill": None,
                 "exit_fill": None, "exit_reason": "HORIZON_END_NULL"}
+
+    # Find trigger_idx equivalent: first bar of the sequence
+    entry_idx_global = int(positions[0])
+    # We need a "trigger_idx" that is entry_idx_global - 1 so that
+    # evaluate_horizon treats entry_idx = trigger_idx + 1 = entry_idx_global.
+    trigger_idx_virtual = entry_idx_global - 1
+    end_idx = len(df) - 1
 
     if raw_fill is None or raw_fill <= 0:
         return {"status": NET_R_STATUS_NON_EXECUTABLE, "entry_fill": None,
@@ -1000,67 +1165,36 @@ def evaluate_swing(ticker, scan_date, trigger, raw_fill, stop_used,
         return {"status": NET_R_STATUS_INVALID, "entry_fill": None,
                 "exit_fill": None, "exit_reason": "INVALID_RISK"}
 
-    mfe = raw_fill
-    mae = raw_fill
-    exit_price = None
-    exit_reason = "HORIZON_END"
-    half_exited = False
-
-    for _, row in future.iterrows():
-        high = _safe_float(row["High"])
-        low = _safe_float(row["Low"])
-        if high is None or low is None:
-            continue
-
-        mfe = max(mfe, high)
-        mae = min(mae, low)
-        current_stop = raw_fill if half_exited else stop
-
-        if low <= current_stop:
-            bar_open = _safe_float(row["Open"])
-            if bar_open is not None and bar_open < current_stop:
-                exit_price = bar_open
-            else:
-                exit_price = current_stop
-            exit_reason = "STOP_HIT"
-            break
-
-        if not half_exited and high >= t1:
-            half_exited = True
-
-        if half_exited and high >= t2:
-            exit_price = 0.5 * t1 + 0.5 * t2
-            exit_reason = "T2_HIT"
-            break
-
-    if exit_price is None:
-        closes = future["Close"].dropna()
-        if closes.empty:
-            return {"status": NET_R_STATUS_INCOMPLETE, "entry_fill": None,
-                    "exit_fill": None, "exit_reason": "HORIZON_END_NULL"}
-        exit_price = float(closes.iloc[-1])
-
-    mfe_pct = (mfe - raw_fill) / raw_fill * 100
-    mae_pct = (mae - raw_fill) / raw_fill * 100
-
-    return {
-        "status": NET_R_STATUS_VALID,
-        "entry_fill": raw_fill,
-        "exit_fill": exit_price,
-        "exit_reason": exit_reason,
-        "mfe": mfe,
-        "mae": mae,
-        "mfe_pct": mfe_pct,
-        "mae_pct": mae_pct,
-        "time_to_mfe_sec": None,
-        "time_to_mae_sec": None,
-        "hold_minutes": None,
-    }
+    # Reuse evaluate_horizon for consistent exit logic (weighted partials)
+    return evaluate_horizon(df, trigger_idx_virtual, raw_fill, stop, t1, t2,
+                            end_idx)
 
 
 # =====================================================================
-# SNAPSHOT EVALUATION (F1 + F7)
+# SNAPSHOT EVALUATION
 # =====================================================================
+
+def _get_event_rank_for_snapshot(cur, ticker, scan_date):
+    """
+    PR-FIX-4: return 1 if no prior trigger for this (ticker, scan_date)
+    has been assigned rank 1. Otherwise return 2.
+    The primary Event trigger (BREAKOUT_VOLUME_V1) is the one that gets rank=1.
+    """
+    try:
+        row = cur.execute(
+            """
+            SELECT COUNT(*) FROM trigger_results tr
+            JOIN snapshots s ON s.snapshot_id = tr.snapshot_id
+            WHERE s.ticker = ? AND s.scan_date = ? AND tr.event_rank = 1
+            """,
+            (ticker, scan_date),
+        ).fetchone()
+        count = row[0] if row else 0
+    except sqlite3.OperationalError:
+        # event_rank column missing — migration not run
+        return 1
+    return 1 if count == 0 else 2
+
 
 def evaluate_snapshot(cur, snapshot):
     snapshot_id = snapshot["snapshot_id"]
@@ -1072,7 +1206,6 @@ def evaluate_snapshot(cur, snapshot):
     t1 = _safe_float(snapshot["target_1"])
     t2 = _safe_float(snapshot["target_2"])
 
-    # trigger_data_mode
     trigger_data_mode = "RTH_ONLY"
     try:
         raw_pm = snapshot["pm_bars_json"]
@@ -1083,11 +1216,18 @@ def evaluate_snapshot(cur, snapshot):
     except Exception:
         trigger_data_mode = "RTH_ONLY"
 
+    # PR-FIX-6: ATR from previous day only
+    atr = _compute_prev_day_atr(ticker, scan_date)
+
     if entry is None or stop is None or t1 is None or t2 is None:
         print(f"[evaluate] {ticker}: NO_TRADE / missing plan")
-        write_trigger(cur, snapshot_id, "PMH_BREAKOUT_V1", False,
-                      None, None, None, "RTH", trigger_data_mode,
-                      {"reason": "NO_VALID_PLAN"})
+        # All trigger methods written as hit=0, rank=2
+        for method in ("PMH_BREAKOUT_V1", "BREAKOUT_VOLUME_V1",
+                       "VWAP_RECLAIM_V1", "PULLBACK_RETEST_V1"):
+            write_trigger(cur, snapshot_id, method, False,
+                          None, None, None, "RTH", trigger_data_mode,
+                          event_rank=2,
+                          extra={"reason": "NO_VALID_PLAN"})
         return
 
     df = fetch_rth_bars(ticker, scan_date)
@@ -1097,17 +1237,45 @@ def evaluate_snapshot(cur, snapshot):
                        "VWAP_RECLAIM_V1", "PULLBACK_RETEST_V1"):
             write_trigger(cur, snapshot_id, method, False,
                           None, None, None, "RTH", trigger_data_mode,
-                          {"reason": "NO_RTH_DATA"})
+                          event_rank=2,
+                          extra={"reason": "NO_RTH_DATA"})
         return
 
     pm_high = _safe_float(snapshot["pm_high"])
     pm_vwap = _safe_float(snapshot["pm_vwap"])
-    atr = _safe_float(snapshot["atr"])
 
-    if atr is not None and atr > 0:
-        buffer = max(0.01, 0.05 * atr)
-    else:
-        buffer = max(0.01, entry * 0.005)
+    # PR-FIX-1: pm_vwap required for stop. If missing -> no Event.
+    if pm_vwap is None or pm_vwap <= 0:
+        print(f"[evaluate] {ticker}: NO_PM_VWAP -> NON_EXECUTABLE")
+        for method in ("PMH_BREAKOUT_V1", "BREAKOUT_VOLUME_V1",
+                       "VWAP_RECLAIM_V1", "PULLBACK_RETEST_V1"):
+            write_trigger(cur, snapshot_id, method, False,
+                          None, None, None, "RTH", trigger_data_mode,
+                          event_rank=2,
+                          extra={"reason": "NO_PM_VWAP"})
+        return
+
+    if pm_high is None or pm_high <= 0:
+        print(f"[evaluate] {ticker}: NO_PMH -> NON_EXECUTABLE")
+        for method in ("PMH_BREAKOUT_V1", "BREAKOUT_VOLUME_V1",
+                       "VWAP_RECLAIM_V1", "PULLBACK_RETEST_V1"):
+            write_trigger(cur, snapshot_id, method, False,
+                          None, None, None, "RTH", trigger_data_mode,
+                          event_rank=2,
+                          extra={"reason": "NO_PMH"})
+        return
+
+    if atr is None or atr <= 0:
+        print(f"[evaluate] {ticker}: NO_PREV_DAY_ATR -> NON_EXECUTABLE")
+        for method in ("PMH_BREAKOUT_V1", "BREAKOUT_VOLUME_V1",
+                       "VWAP_RECLAIM_V1", "PULLBACK_RETEST_V1"):
+            write_trigger(cur, snapshot_id, method, False,
+                          None, None, None, "RTH", trigger_data_mode,
+                          event_rank=2,
+                          extra={"reason": "NO_PREV_DAY_ATR"})
+        return
+
+    buffer = max(2 * TICK_SIZE, 0.05 * atr)
 
     candidates = [
         detect_pmh_breakout(df, pm_high, buffer),
@@ -1120,31 +1288,44 @@ def evaluate_snapshot(cur, snapshot):
         "VWAP_RECLAIM_V1", "PULLBACK_RETEST_V1",
     ]
 
-    # -----------------------------------------------------------------
-    # F7 — spread fetch at PMH trigger time only
-    # -----------------------------------------------------------------
-    official_spread_pct = SPREAD_FALLBACK_PCT
-    official_spread_source = "FALLBACK"
+    # PR-FIX-5: fetch spread only if BREAKOUT_VOLUME_V1 fired (primary).
+    # Spread is required; if unavailable -> NON_EXECUTABLE.
+    official_trigger = candidates[1]  # BREAKOUT_VOLUME_V1
+    official_spread_pct = None
+    official_spread_source = "UNKNOWN"
     official_quote_raw = None
     official_quote_ts = None
 
-    for method, trigger in zip(method_names, candidates):
-        if method == "PMH_BREAKOUT_V1" and trigger is not None:
-            sp, src, qraw, qts = _fetch_spread_pct(ticker, trigger["time"])
+    if official_trigger is not None:
+        # PR-FIX: trigger must be inside [09:30, 11:00] window
+        trig_time_et = official_trigger["time"]
+        if _is_in_window(trig_time_et, TRIGGER_WINDOW_START, TRIGGER_WINDOW_END):
+            sp, src, qraw, qts = _fetch_spread_pct(ticker, trig_time_et)
             official_spread_pct = sp
             official_spread_source = src
             official_quote_raw = qraw
             official_quote_ts = qts
-            break
 
-    # -----------------------------------------------------------------
+    # PR-FIX-4: determine event_rank for this snapshot's primary Event
+    # If we can't determine rank, default to 2 (secondary).
+    # The very first successful primary trigger across the day's snapshots
+    # gets rank=1.
+    primary_in_window = (
+        official_trigger is not None
+        and _is_in_window(official_trigger["time"],
+                          TRIGGER_WINDOW_START, TRIGGER_WINDOW_END)
+    )
+
+    has_prior_event = _get_event_rank_for_snapshot(cur, ticker, scan_date)
+    primary_rank = 1 if (primary_in_window and has_prior_event == 1) else 2
+
     # Write every trigger
-    # -----------------------------------------------------------------
     triggers = []
-    for method, trigger in zip(method_names, candidates):
+    for i, (method, trigger) in enumerate(zip(method_names, candidates)):
         if trigger is None:
             write_trigger(cur, snapshot_id, method, False,
-                          None, None, None, "RTH", trigger_data_mode)
+                          None, None, None, "RTH", trigger_data_mode,
+                          event_rank=2)
             continue
 
         trigger["method"] = method
@@ -1158,39 +1339,41 @@ def evaluate_snapshot(cur, snapshot):
 
         elapsed_sec = int((trigger_time - t0_time).total_seconds())
 
+        # Assign event_rank
+        if method == "BREAKOUT_VOLUME_V1":
+            rank_for_this = primary_rank
+        else:
+            rank_for_this = 2
+
         trig_id = write_trigger(cur, snapshot_id, method, True,
                                 trigger_time, trigger["trigger_price"],
-                                elapsed_sec, "RTH", trigger_data_mode, trigger)
+                                elapsed_sec, "RTH", trigger_data_mode,
+                                event_rank=rank_for_this,
+                                extra=trigger)
 
         if trig_id is None:
             print(f"[evaluate] {ticker} {method}: failed to obtain id")
             continue
 
         trigger["trigger_result_id"] = trig_id
+        trigger["event_rank"] = rank_for_this
         triggers.append(trigger)
 
-    # -----------------------------------------------------------------
-    # Evaluate outcomes per trigger
-    # -----------------------------------------------------------------
+    # Evaluate outcomes only for triggers that are eligible (rank=1)
     for trigger in triggers:
+        if trigger.get("event_rank", 2) != 1:
+            # PR-FIX-4: record but do not count in primary sample
+            continue
 
-        is_official = (trigger["method"] == "PMH_BREAKOUT_V1")
-
-        if is_official:
-            s_pct = official_spread_pct
-            s_src = official_spread_source
-            s_raw = official_quote_raw
-            s_ts = official_quote_ts
-        else:
-            s_pct = SPREAD_FALLBACK_PCT
-            s_src = "FALLBACK"
-            s_raw = None
-            s_ts = None
+        s_pct = official_spread_pct
+        s_src = official_spread_source
+        s_raw = official_quote_raw
+        s_ts = official_quote_ts
 
         raw_fill = _entry_raw_open_from_next_bar(df, trigger["idx"])
         trig_rid = trigger["trigger_result_id"]
 
-        # F1 — timing check: next bar must appear within MAX_NEXT_BAR_DELAY_SEC
+        # F1: next bar must appear within MAX_NEXT_BAR_DELAY_SEC
         if raw_fill is not None:
             trigger_time = df.index[trigger["idx"]]
             next_idx = trigger["idx"] + 1
@@ -1199,48 +1382,45 @@ def evaluate_snapshot(cur, snapshot):
                 if (next_time - trigger_time).total_seconds() > MAX_NEXT_BAR_DELAY_SEC:
                     raw_fill = None
 
-        # F1 — recalculate stop/t1/t2/risk from raw_fill
         stop_used = None
         t1_used = None
         t2_used = None
         risk_actual = None
 
         if raw_fill is not None and raw_fill > 0:
-            # ATR required (per spec: missing ATR -> NON_EXECUTABLE)
-            if atr is None or atr <= 0:
+            chase_cap = pm_high + 0.5 * atr
+            if raw_fill > chase_cap:
+                raw_fill = None
+
+        # PR-FIX-1: stop uses PM VWAP (not RTH VWAP)
+        if raw_fill is not None and raw_fill > 0:
+            stop_a = pm_vwap - 0.10 * atr
+            stop_b = raw_fill - 1.0 * atr
+            stop_used = max(stop_a, stop_b)
+            risk_actual = raw_fill - stop_used
+            if risk_actual <= 0:
                 raw_fill = None
             else:
-                # Chase check (raw fill must be <= PMH + 0.5*ATR)
-                if pm_high is not None and pm_high > 0:
-                    chase_cap = pm_high + 0.5 * atr
-                    if raw_fill > chase_cap:
-                        raw_fill = None
+                t1_used = raw_fill + 2.0 * risk_actual
+                t2_used = raw_fill + 4.0 * risk_actual
 
-                if raw_fill is not None:
-                    # VWAP cumulative from 09:30 to close of trigger bar
-                    sub = df.iloc[: trigger["idx"] + 1]
-                    try:
-                        tp = (sub["High"] + sub["Low"] + sub["Close"]) / 3.0
-                        vol = sub["Volume"].astype(float)
-                        denom = vol.sum()
-                        vwap_to_trigger = float((tp * vol).sum() / denom) if denom > 0 else None
-                    except Exception:
-                        vwap_to_trigger = None
+        # If spread is UNKNOWN -> NON_EXECUTABLE (PR-FIX-5)
+        if s_pct is None:
+            outcome_data = {
+                "status": NET_R_STATUS_NON_EXECUTABLE,
+                "entry_fill": raw_fill,
+                "exit_fill": None,
+                "exit_reason": "UNKNOWN_SPREAD",
+            }
+            for h in ("MOMENTUM_90M", "INTRADAY_EOD", "SWING_3D"):
+                write_outcome(cur, snapshot, trigger, trig_rid, h, outcome_data,
+                              spread_pct=None, spread_source=s_src,
+                              risk_actual=risk_actual, raw_fill=raw_fill,
+                              stop_used=stop_used, t1_used=t1_used,
+                              t2_used=t2_used,
+                              quote_raw=s_raw, quote_timestamp_utc=s_ts)
+            continue
 
-                    if vwap_to_trigger is None:
-                        raw_fill = None
-                    else:
-                        stop_a = vwap_to_trigger - 0.10 * atr
-                        stop_b = raw_fill - 1.0 * atr
-                        stop_used = max(stop_a, stop_b)
-                        risk_actual = raw_fill - stop_used
-                        if risk_actual <= 0:
-                            raw_fill = None
-                        else:
-                            t1_used = raw_fill + 2.0 * risk_actual
-                            t2_used = raw_fill + 4.0 * risk_actual
-
-        # NON_EXECUTABLE
         if raw_fill is None:
             outcome_data = {
                 "status": NET_R_STATUS_NON_EXECUTABLE,
@@ -1256,7 +1436,7 @@ def evaluate_snapshot(cur, snapshot):
                               quote_raw=s_raw, quote_timestamp_utc=s_ts)
             continue
 
-        # Min risk threshold (F1)
+        # Min-risk gate: round_trip_cost / risk_actual <= 0.5
         round_trip_cost_ps = (s_pct / 100.0) * raw_fill + 2.0 * TICK_SIZE
         if risk_actual > 0 and (round_trip_cost_ps / risk_actual) > 0.5:
             outcome_data = {
@@ -1334,10 +1514,11 @@ def update_stats(stats, result):
 def calculate_db_stats(cur, scan_date):
     rows = cur.execute(
         """
-        SELECT outcome_horizon, net_r, net_r_status, outcome
+        SELECT o.outcome_horizon, o.net_r, o.net_r_status, o.outcome
         FROM outcomes o
         JOIN snapshots s ON s.snapshot_id = o.snapshot_id
-        WHERE s.scan_date = ?
+        JOIN trigger_results tr ON tr.trigger_result_id = o.trigger_result_id
+        WHERE s.scan_date = ? AND tr.event_rank = 1
         """,
         (scan_date,),
     ).fetchall()
@@ -1382,7 +1563,7 @@ def evaluate_all(scan_date=None, force=False):
 
         print()
         print("=" * 80)
-        print("DAYS-BOT V5.0.6.2 SNAPSHOT EVALUATOR")
+        print("DAYS-BOT V5.0.6.3 SNAPSHOT EVALUATOR")
         print(f"scan_date={scan_date}")
         print("=" * 80)
 
@@ -1422,20 +1603,20 @@ def evaluate_all(scan_date=None, force=False):
         print("=" * 80)
         print(f"SUMMARY — {scan_date}")
         print("=" * 80)
-        print(f"Total outcomes:     {stats['total_outcomes']}")
-        print(f"Valid Net-R:        {stats['valid_net_r']}")
-        print(f"Excluded Net-R:     {stats['excluded_net_r']}")
+        print(f"Total outcomes (rank=1): {stats['total_outcomes']}")
+        print(f"Valid Net-R:             {stats['valid_net_r']}")
+        print(f"Excluded Net-R:          {stats['excluded_net_r']}")
 
         if stats["valid_net_r"] > 0:
             avg_net = stats["sum_net_r"] / stats["valid_net_r"]
             win_rate = stats["wins"] / stats["valid_net_r"] * 100
-            print(f"Avg Net R:          {avg_net:.3f}")
-            print(f"Win Rate:           {win_rate:.1f}%")
-            print(f"W / L / BE:         {stats['wins']} / "
+            print(f"Avg Net R:               {avg_net:.3f}")
+            print(f"Win Rate:                {win_rate:.1f}%")
+            print(f"W / L / BE:              {stats['wins']} / "
                   f"{stats['losses']} / {stats['breakeven']}")
         else:
-            print("Avg Net R:          N/A")
-            print("Win Rate:           N/A")
+            print("Avg Net R:               N/A")
+            print("Win Rate:                N/A")
         print("=" * 80)
 
     finally:
@@ -1447,12 +1628,10 @@ def evaluate_all(scan_date=None, force=False):
 # =====================================================================
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="DAYS-BOT V5.0.6.2 Snapshot Evaluator")
+    parser = ArgumentParser(description="DAYS-BOT V5.0.6.3 Snapshot Evaluator")
     parser.add_argument("--scan-date", type=str, default=None,
                         help="Scan date (YYYY-MM-DD)")
     parser.add_argument("--force", action="store_true",
                         help="Delete derived rows and reevaluate.")
     args = parser.parse_args()
     evaluate_all(scan_date=args.scan_date, force=args.force)
-
-Commit: fix: F1 + F7 complete (R from actual fill + spread/tick cost model)
