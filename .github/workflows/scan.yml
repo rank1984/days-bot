@@ -241,7 +241,7 @@ jobs:
       # preflight means the day is not counted in the primary sample,
       # but the scanner still runs and the DB still grows.
       # ============================================================
-      - name: Preflight check
+            - name: Preflight check
         id: preflight
         if: always()
         continue-on-error: true
@@ -267,17 +267,14 @@ jobs:
             echo "PREFLIGHT: PASSED (day eligible for Event counting)"
           else
             echo "PREFLIGHT: FAILED (day NOT counted as research day)"
-            echo "  Reason: one or more checks failed. See output above."
           fi
           echo "=================================================="
-
-          # Do not block the workflow
           exit 0
 
       # ============================================================
       # STEP 7: Run scanner
       # ============================================================
-      - name: Run scanner
+            - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -287,6 +284,9 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
           RESEARCH_MODE: "true"
+          IS_SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '0' }}
+          IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window == 'true' && '1' || '0' }}
+          PREFLIGHT_PASSED: ${{ steps.preflight.outputs.research_day == 'true' && '1' || '0' }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
