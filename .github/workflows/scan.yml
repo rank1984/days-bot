@@ -2,31 +2,43 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
   workflow_dispatch:
+    inputs:
+      run_evaluator:
+        description: 'Run evaluator after scan? (deletes + recalculates outcomes for today)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      force_evaluator:
+        description: 'Force evaluator (delete existing outcomes + triggers for today)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
   schedule:
     # Target PM window: 04:00-09:30 ET (11:00-16:30 IDT).
     #
-    # GitHub Actions delay at scheduled times has grown to ~8 hours
-    # during peak US hours (observed 2026-09-29: runs at 19:00-21:30 IDT
-    # instead of the intended 11:00-15:30 IDT).
-    #
-    # Compensation: schedule 8h earlier so actual run lands in PM.
-    #
-    # If delay = 8h:   runs at 08:00-13:00 UTC = 04:00-09:00 ET = PM ✓
-    # If delay = 4h:   runs at 04:00-09:00 UTC = 00:00-05:00 ET = too early
-    # If delay = 0h:   runs at 00:00-05:00 UTC = 20:00-00:00 ET = prev evening
+    # GitHub Actions delay at scheduled times can be 0-8h depending on
+    # platform load. Compensation: schedule earlier so most runs land
+    # inside the PM window.
     #
     # IN_PM_WINDOW flag in each run marks which runs actually landed in PM.
     #
-    - cron: '02 0 * * 1-5'    # 00:02 UTC -> ~08:02 UTC -> 04:02 ET
-    - cron: '32 0 * * 1-5'    # 00:32 UTC -> ~08:32 UTC -> 04:32 ET
-    - cron: '02 1 * * 1-5'    # 01:02 UTC -> ~09:02 UTC -> 05:02 ET
-    - cron: '32 1 * * 1-5'    # 01:32 UTC -> ~09:32 UTC -> 05:32 ET
-    - cron: '02 2 * * 1-5'    # 02:02 UTC -> ~10:02 UTC -> 06:02 ET
-    - cron: '32 2 * * 1-5'    # 02:32 UTC -> ~10:32 UTC -> 06:32 ET
-    - cron: '02 3 * * 1-5'    # 03:02 UTC -> ~11:02 UTC -> 07:02 ET
-    - cron: '32 3 * * 1-5'    # 03:32 UTC -> ~11:32 UTC -> 07:32 ET
-    - cron: '02 4 * * 1-5'    # 04:02 UTC -> ~12:02 UTC -> 08:02 ET
-    - cron: '32 4 * * 1-5'    # 04:32 UTC -> ~12:32 UTC -> 08:32 ET
+    - cron: '02 0 * * 1-5'    # 00:02 UTC
+    - cron: '32 0 * * 1-5'    # 00:32 UTC
+    - cron: '02 1 * * 1-5'    # 01:02 UTC
+    - cron: '32 1 * * 1-5'    # 01:32 UTC
+    - cron: '02 2 * * 1-5'    # 02:02 UTC
+    - cron: '32 2 * * 1-5'    # 02:32 UTC
+    - cron: '02 3 * * 1-5'    # 03:02 UTC
+    - cron: '32 3 * * 1-5'    # 03:32 UTC
+    - cron: '02 4 * * 1-5'    # 04:02 UTC
+    - cron: '32 4 * * 1-5'    # 04:32 UTC
 
 permissions:
   contents: read
@@ -39,7 +51,7 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -59,6 +71,9 @@ jobs:
       - name: Prepare data directory
         run: mkdir -p data
 
+      # ============================================================
+      # STEP 1: Determine scan date and PM window
+      # ============================================================
       - name: Determine scan date and PM window
         id: date
         run: |
@@ -80,7 +95,7 @@ jobs:
           echo "in_pm_window=$IN_PM_WINDOW" >> "$GITHUB_OUTPUT"
 
           echo "=================================================="
-          echo "DAYS-BOT V5.0.6 SCAN"
+          echo "DAYS-BOT V5.0.6.3 SCAN"
           echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
           echo "Event:      ${{ github.event_name }}"
           echo "Git SHA:    ${{ github.sha }}"
@@ -92,6 +107,9 @@ jobs:
           echo "PM window:  $IN_PM_WINDOW (now=$NOW_HHMM ET)"
           echo "=================================================="
 
+      # ============================================================
+      # STEP 2: Cumulative DB restore
+      # ============================================================
       - name: Find latest previous artifact (cumulative DB)
         id: restore
         env:
@@ -157,7 +175,6 @@ jobs:
           set -euo pipefail
           echo "Restoring DB from artifact: ${{ steps.restore.outputs.artifact_name }}"
           echo "From run: ${{ steps.restore.outputs.prev_run }} (#${{ steps.restore.outputs.prev_run_number }})"
-          echo "Started:  ${{ steps.restore.outputs.prev_run_started }}"
 
           if [ -f /tmp/prev/alerts.db ]; then
             cp /tmp/prev/alerts.db data/alerts.db
@@ -195,9 +212,51 @@ jobs:
           c.close()
           "
 
+      # ============================================================
+      # STEP 3: Write run metadata
+      # ============================================================
       - name: Write run_metadata.json
         run: python3 scripts/write_run_metadata.py
 
+      # ============================================================
+      # STEP 4: Run tests (fail-fast on broken code)
+      # ============================================================
+      - name: Run outcome engine tests
+        run: python3 tests/test_outcome_engine.py
+
+      # ============================================================
+      # STEP 5: Migration — add event_rank column (idempotent)
+      # ============================================================
+      - name: Migrate — ensure event_rank column
+        run: python3 scripts/migrate_event_rank.py
+
+      # ============================================================
+      # STEP 6: Preflight check (5 assertions, non-blocking)
+      # ============================================================
+      - name: Preflight check
+        id: preflight
+        if: always()
+        continue-on-error: true
+        env:
+          TODAY_ET: ${{ steps.date.outputs.today }}
+        run: |
+          set +e
+          python3 scripts/preflight.py
+          EXIT_CODE=$?
+          echo "preflight_exit=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "=================================================="
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "PREFLIGHT: PASSED (day eligible for Event counting)"
+          else
+            echo "PREFLIGHT: FAILED (day NOT counted as research day)"
+          fi
+          echo "=================================================="
+          exit 0
+
+      # ============================================================
+      # STEP 7: Run scanner
+      # ============================================================
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -216,6 +275,9 @@ jobs:
             python main.py fullscan_v34
           fi
 
+      # ============================================================
+      # STEP 8: Research diagnostics
+      # ============================================================
       - name: Run research diagnostics
         if: always()
         env:
@@ -223,6 +285,9 @@ jobs:
           IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
         run: python3 scripts/research_diagnostics.py
 
+      # ============================================================
+      # STEP 9: PM forensics
+      # ============================================================
       - name: Run PM forensics
         if: always()
         env:
@@ -230,6 +295,29 @@ jobs:
           IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
         run: python3 scripts/pm_forensics.py
 
+      # ============================================================
+      # STEP 10: Evaluator (OPTIONAL, only when manually triggered)
+      # ============================================================
+      - name: Run evaluator (optional)
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_evaluator == 'true'
+        env:
+          TODAY_ET: ${{ steps.date.outputs.today }}
+        run: |
+          set -euo pipefail
+          echo "=================================================="
+          echo "RUNNING EVALUATOR"
+          echo "scan_date: $TODAY_ET"
+          echo "force:     ${{ inputs.force_evaluator }}"
+          echo "=================================================="
+          if [ "${{ inputs.force_evaluator }}" = "true" ]; then
+            python3 evaluate_snapshots.py --scan-date "$TODAY_ET" --force
+          else
+            python3 evaluate_snapshots.py --scan-date "$TODAY_ET"
+          fi
+
+      # ============================================================
+      # STEP 11: Upload daily artifact
+      # ============================================================
       - name: Upload daily artifact
         if: always()
         uses: actions/upload-artifact@v4
