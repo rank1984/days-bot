@@ -1511,8 +1511,9 @@ def update_stats(stats, result):
         stats["excluded_net_r"] += 1
 
 
+
 def calculate_db_stats(cur, scan_date):
-        rows = cur.execute(
+    rows = cur.execute(
         """
         SELECT o.outcome_horizon, o.net_r, o.net_r_status, o.outcome
         FROM outcomes o
