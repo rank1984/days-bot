@@ -1,10 +1,18 @@
 """
-DAYS-BOT V5.0.6 — Snapshot Schema
+DAYS-BOT V5.0.6.3 — Snapshot Schema
+
+V5.0.6.3 changes:
+  - research_run metadata columns on snapshots:
+      is_scheduled, in_pm_window, preflight_passed
+    These are populated from env vars set by the workflow, and used
+    by the evaluator to filter the primary sample to research_run=1
+    (scheduled AND in PM window AND preflight passed).
 
 F7 — cost model columns
 F1 — R from actual fill columns
 """
 import json
+import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +70,10 @@ CREATE TABLE IF NOT EXISTS snapshots (
     filter_version        TEXT    NOT NULL,
     score_version         TEXT    NOT NULL,
     plan_version          TEXT    NOT NULL,
+    -- V5.0.6.3 — research_run metadata
+    is_scheduled          INTEGER DEFAULT 0,
+    in_pm_window          INTEGER DEFAULT 0,
+    preflight_passed      INTEGER DEFAULT 0,
     created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(scan_id, ticker, snapshot_time_utc)
 );
@@ -138,6 +150,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_snapshots_scan ON snapshots(scan_id);",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_ticker_date ON snapshots(ticker, scan_date);",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_time ON snapshots(snapshot_time_utc);",
+    "CREATE INDEX IF NOT EXISTS idx_snapshots_research_run ON snapshots(is_scheduled, in_pm_window, preflight_passed);",
     "CREATE INDEX IF NOT EXISTS idx_trigger_snapshot ON trigger_results(snapshot_id);",
     "CREATE INDEX IF NOT EXISTS idx_trigger_method ON trigger_results(trigger_method, hit);",
     "CREATE INDEX IF NOT EXISTS idx_trigger_data_mode ON trigger_results(trigger_data_mode);",
@@ -167,6 +180,10 @@ MIGRATIONS = [
     ("outcomes", "t1_used", "REAL"),
     ("outcomes", "t2_used", "REAL"),
     ("outcomes", "risk_actual", "REAL"),
+    # V5.0.6.3 — research_run metadata
+    ("snapshots", "is_scheduled", "INTEGER DEFAULT 0"),
+    ("snapshots", "in_pm_window", "INTEGER DEFAULT 0"),
+    ("snapshots", "preflight_passed", "INTEGER DEFAULT 0"),
 ]
 
 
@@ -214,6 +231,11 @@ def save_snapshot(candidate, scan_id, now_et):
     snapshot_time_et = now_et.strftime("%Y-%m-%d %H:%M:%S")
     snapshot_time_utc = now_et.astimezone(tz=None).strftime("%Y-%m-%d %H:%M:%S")
     scan_date = now_et.strftime("%Y-%m-%d")
+
+    # V5.0.6.3 — research_run metadata from workflow env vars
+    is_scheduled = int(os.environ.get("IS_SCHEDULED", "0"))
+    in_pm_window = int(os.environ.get("IN_PM_WINDOW", "0"))
+    preflight_passed = int(os.environ.get("PREFLIGHT_PASSED", "0"))
 
     params = {
         "scan_id": scan_id,
@@ -264,6 +286,10 @@ def save_snapshot(candidate, scan_id, now_et):
         "filter_version": "F1",
         "score_version": "S1",
         "plan_version": "P1",
+        # V5.0.6.3 — research_run metadata
+        "is_scheduled": is_scheduled,
+        "in_pm_window": in_pm_window,
+        "preflight_passed": preflight_passed,
     }
 
     conn = sqlite3.connect(DB_PATH)
@@ -282,7 +308,8 @@ def save_snapshot(candidate, scan_id, now_et):
                 entry, stop, target_1, target_2,
                 position_size, risk_per_share, max_loss, hold_type,
                 data_status, trade_type,
-                strategy_version, filter_version, score_version, plan_version
+                strategy_version, filter_version, score_version, plan_version,
+                is_scheduled, in_pm_window, preflight_passed
             ) VALUES (
                 :scan_id, :ticker, :snapshot_time_utc, :snapshot_time_et, :scan_date,
                 :price, :prev_close, :gap_pct, :gap_sign, :gap_bucket, :is_extreme_gap,
@@ -295,12 +322,19 @@ def save_snapshot(candidate, scan_id, now_et):
                 :entry, :stop, :target_1, :target_2,
                 :position_size, :risk_per_share, :max_loss, :hold_type,
                 :data_status, :trade_type,
-                :strategy_version, :filter_version, :score_version, :plan_version
+                :strategy_version, :filter_version, :score_version, :plan_version,
+                :is_scheduled, :in_pm_window, :preflight_passed
             )
         """, params)
         conn.commit()
         snap_id = cur.lastrowid
-        print("[save_snapshot] OK " + ticker + " | snapshot_id=" + str(snap_id))
+        print(
+            "[save_snapshot] OK " + ticker +
+            " | snapshot_id=" + str(snap_id) +
+            " | scheduled=" + str(is_scheduled) +
+            " in_pm=" + str(in_pm_window) +
+            " pf=" + str(preflight_passed)
+        )
         return snap_id
     except sqlite3.IntegrityError:
         print("[save_snapshot] Duplicate: " + ticker)
