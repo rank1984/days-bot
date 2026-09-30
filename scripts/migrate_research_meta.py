@@ -2,8 +2,7 @@
 """
 DAYS-BOT V5.0.6.3 — Migration: research_run metadata columns
 
-Adds 3 columns to snapshots to track whether each snapshot came from
-a "research run" (per Pre-Registration P15):
+Adds 3 columns to snapshots:
   - is_scheduled     (1 if github.event_name == 'schedule')
   - in_pm_window     (1 if snapshot_time_et in [04:00, 09:30))
   - preflight_passed (1 if preflight.py exited 0)
@@ -57,8 +56,7 @@ def main():
             conn.commit()
             print(f"  {col} added")
 
-    # Backfill: infer from scan_id and snapshot_time_et
-    # (best-effort — old rows will have default values)
+    # Best-effort backfill of in_pm_window from snapshot_time_et
     try:
         cur.execute("""
             UPDATE snapshots
@@ -72,7 +70,6 @@ def main():
     except Exception as e:
         print(f"  backfill skipped: {e}")
 
-    # Report
     total = cur.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
     pm = cur.execute("SELECT COUNT(*) FROM snapshots WHERE in_pm_window=1").fetchone()[0]
     sched = cur.execute("SELECT COUNT(*) FROM snapshots WHERE is_scheduled=1").fetchone()[0]
