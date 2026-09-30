@@ -1512,13 +1512,17 @@ def update_stats(stats, result):
 
 
 def calculate_db_stats(cur, scan_date):
-    rows = cur.execute(
+        rows = cur.execute(
         """
         SELECT o.outcome_horizon, o.net_r, o.net_r_status, o.outcome
         FROM outcomes o
         JOIN snapshots s ON s.snapshot_id = o.snapshot_id
         JOIN trigger_results tr ON tr.trigger_result_id = o.trigger_result_id
-        WHERE s.scan_date = ? AND tr.event_rank = 1
+        WHERE s.scan_date = ?
+          AND tr.event_rank = 1
+          AND s.is_scheduled = 1
+          AND s.in_pm_window = 1
+          AND s.preflight_passed = 1
         """,
         (scan_date,),
     ).fetchall()
