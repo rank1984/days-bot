@@ -228,20 +228,24 @@ jobs:
         run: python3 scripts/migrate_event_rank.py
 
       # ============================================================
+      # STEP 5b: Migration — research_run metadata columns
+      # ============================================================
+      - name: Migrate — ensure research_run metadata columns
+        run: python3 scripts/migrate_research_meta.py
+
+      # ============================================================
       # STEP 6: Preflight check (5 assertions, non-blocking)
       #
-      # The preflight check writes:
-      #   - preflight_exit  = exit code of preflight.py (0 or 1)
-      #   - research_day    = true/false (same as exit code)
+      # Preflight writes:
+      #   - preflight_exit = exit code of preflight.py (0 or 1)
+      #   - research_day   = true/false
       #
-      # Later steps (evaluator, diagnostics) may read research_day
-      # to decide whether this run counts as a research day.
-      #
-      # The workflow is NOT blocked by preflight failures. A failed
-      # preflight means the day is not counted in the primary sample,
-      # but the scanner still runs and the DB still grows.
+      # If research_day=false:
+      #   - this day is NOT counted in the primary sample
+      #   - snapshots are still recorded (with preflight_passed=0)
+      #   - the scanner still runs
       # ============================================================
-            - name: Preflight check
+      - name: Preflight check
         id: preflight
         if: always()
         continue-on-error: true
@@ -267,14 +271,21 @@ jobs:
             echo "PREFLIGHT: PASSED (day eligible for Event counting)"
           else
             echo "PREFLIGHT: FAILED (day NOT counted as research day)"
+            echo "  Reason: one or more assertions failed. See output above."
+            echo "  Note:   scanner will run, but Events from this day"
+            echo "          are excluded from the primary sample."
           fi
           echo "=================================================="
           exit 0
 
       # ============================================================
       # STEP 7: Run scanner
+      #
+      # IS_SCHEDULED / IN_PM_WINDOW / PREFLIGHT_PASSED are persisted
+      # on every snapshot row so that the evaluator can later filter
+      # the primary sample to research_run=1 only.
       # ============================================================
-            - name: Run scanner
+      - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -289,6 +300,12 @@ jobs:
           PREFLIGHT_PASSED: ${{ steps.preflight.outputs.research_day == 'true' && '1' || '0' }}
         run: |
           set -euo pipefail
+          echo "=================================================="
+          echo "SCANNER CONTEXT"
+          echo "  IS_SCHEDULED:     $IS_SCHEDULED"
+          echo "  IN_PM_WINDOW:     $IN_PM_WINDOW"
+          echo "  PREFLIGHT_PASSED: $PREFLIGHT_PASSED"
+          echo "=================================================="
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             python main.py fullscan_v34 --manual
           else
