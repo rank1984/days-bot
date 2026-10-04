@@ -1,14 +1,14 @@
 """
-DAYS-BOT V4.2 – Dynamic Universe Builder
+DAYS-BOT V4.3 – Dynamic Universe Builder
 
-V4.2 changes (P0-FIX-3):
-- ADD Alpaca active US equities whitelist validation.
-- Every symbol must exist in Alpaca's active assets before being
-  added to the universe. This eliminates English-word contamination
-  from the news regex (e.g. "IPO", "NIKE", "NASA", "SHORT", ...).
-- Whitelist is cached in data/alpaca_whitelist.json (24h TTL).
-- If Alpaca whitelist cannot be loaded, the builder FAILS SAFE:
-  it returns an empty universe rather than a contaminated one.
+V4.3 changes (P0-FIX-3):
+- Alpaca whitelist is OPTIONAL ENHANCEMENT, not required.
+- If Alpaca trading API returns 401 (common with data-only keys),
+  we fall back to Nasdaq-only universe with aggressive word filtering.
+- News symbols are ONLY added when Alpaca whitelist is available,
+  because they need whitelist validation to be safe.
+- Never returns empty universe if Nasdaq is reachable.
+- Tries both live and paper Alpaca API endpoints.
 """
 import json
 import os
@@ -25,7 +25,6 @@ from utils.config import (
     FINNHUB_API_KEY,
     ALPACA_API_KEY,
     ALPACA_SECRET_KEY,
-    ALPACA_DATA_URL,
 )
 
 
@@ -39,7 +38,8 @@ NASDAQ_URL = (
     "nasdaqtraded.txt"
 )
 
-ALPACA_ASSETS_URL = "https://api.alpaca.markets/v2/assets"
+ALPACA_LIVE_ASSETS_URL = "https://api.alpaca.markets/v2/assets"
+ALPACA_PAPER_ASSETS_URL = "https://paper-api.alpaca.markets/v2/assets"
 
 
 EXCLUDED_SYMBOLS = {
@@ -58,16 +58,48 @@ COMMON_WORDS = {
     "TOO", "TWO", "US", "WALL", "WATCH", "WHAT", "WHITE",
     "HIGH", "LOW", "UP", "DOWN", "BUY", "SELL", "HOLD",
     "USD", "ETF", "AI", "CO", "GROUP", "HOLDINGS", "TECH",
-    "GLOBAL", "HEALTH", "BIO", "TECH", "ENERGY", "FOOD",
+    "GLOBAL", "HEALTH", "BIO", "ENERGY", "FOOD", "MAJOR",
+    "MINOR", "BEST", "GOOD", "BAD", "NEW", "OLD", "YES",
+    "NO", "ANY", "ALL", "ONE", "DAY", "WEEK", "MONTH", "YEAR",
+    "NOW", "THEN", "HERE", "THERE", "WHEN", "WHERE", "WHY",
+    "HOW", "MAY", "CAN", "MUST", "SHALL", "COULD", "WOULD",
+    "TOP", "BIG", "SMALL", "MID", "CAP", "RATE", "COST",
+    "GAIN", "LOSS", "RISK", "CASH", "BOND", "FUND", "TRUST",
 }
 
 
 # ---------------------------------------------------------------------------
-# Alpaca whitelist (P0-FIX-3)
+# Symbol format validation
+# ---------------------------------------------------------------------------
+
+def _clean_symbol(symbol: str) -> str | None:
+    if not symbol:
+        return None
+
+    s = str(symbol).strip().upper()
+    if not s:
+        return None
+    if len(s) < 1 or len(s) > 5:
+        return None
+    if s in EXCLUDED_SYMBOLS:
+        return None
+    if any(c in s for c in [".", "$", "-", "/", "^", " "]):
+        return None
+    if not re.fullmatch(r"[A-Z]+", s):
+        return None
+
+    return s
+
+
+def _is_common_word(symbol: str) -> bool:
+    return symbol in COMMON_WORDS
+
+
+# ---------------------------------------------------------------------------
+# Alpaca whitelist (OPTIONAL)
 # ---------------------------------------------------------------------------
 
 def _load_alpaca_whitelist_from_cache() -> set | None:
-    """Load cached whitelist if it exists and is not expired."""
     if not WHITELIST_PATH.exists():
         return None
     try:
@@ -97,18 +129,10 @@ def _save_alpaca_whitelist_to_cache(symbols: set) -> None:
         print(f"[Universe] Whitelist cache write warning: {e}")
 
 
-def _fetch_alpaca_whitelist() -> set | None:
-    """
-    Fetch active US equities from Alpaca.
-    Returns None on failure (do not fall back to contaminated list).
-    """
-    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
-        print("[Universe] No Alpaca credentials — cannot build whitelist")
-        return None
-
+def _try_alpaca_endpoint(url: str) -> set | None:
     try:
         resp = requests.get(
-            ALPACA_ASSETS_URL,
+            url,
             headers={
                 "APCA-API-KEY-ID": ALPACA_API_KEY,
                 "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY,
@@ -121,7 +145,7 @@ def _fetch_alpaca_whitelist() -> set | None:
             timeout=20,
         )
         if resp.status_code != 200:
-            print(f"[Universe] Alpaca assets HTTP {resp.status_code}")
+            print(f"[Universe] {url} → HTTP {resp.status_code}")
             return None
 
         assets = resp.json()
@@ -133,28 +157,38 @@ def _fetch_alpaca_whitelist() -> set | None:
             if not isinstance(a, dict):
                 continue
             sym = a.get("symbol")
-            tradable = a.get("tradable", True)
-            exchange = a.get("exchange", "")
-            if not sym or not tradable:
+            if not sym or not a.get("tradable", True):
                 continue
-            # Exclude OTC and non-US exchanges if listed
-            if exchange in ("OTC", "CRYPTO", "ARCA", ""):
-                # Keep ARCA for ETFs? For our strategy, exclude for now.
-                # Only keep NASDAQ, NYSE, AMEX, BATS
-                if exchange == "" or exchange == "OTC" or exchange == "CRYPTO":
-                    continue
+            ex = a.get("exchange", "")
+            if ex in ("OTC", "CRYPTO", ""):
+                continue
             symbols.add(str(sym).strip().upper())
 
-        print(f"[Universe] Alpaca whitelist loaded: {len(symbols)} symbols")
-        return symbols
+        return symbols if symbols else None
 
     except Exception as e:
-        print(f"[Universe] Alpaca whitelist error: {e}")
+        print(f"[Universe] {url} error: {e}")
         return None
 
 
+def _fetch_alpaca_whitelist() -> set | None:
+    if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        print("[Universe] No Alpaca credentials — whitelist skipped")
+        return None
+
+    # Try live first, then paper
+    for url in (ALPACA_LIVE_ASSETS_URL, ALPACA_PAPER_ASSETS_URL):
+        result = _try_alpaca_endpoint(url)
+        if result:
+            print(f"[Universe] Alpaca whitelist loaded from {url}: {len(result)} symbols")
+            return result
+
+    print("[Universe] Alpaca whitelist unavailable (both live and paper failed)")
+    return None
+
+
 def get_alpaca_whitelist(force_refresh: bool = False) -> set | None:
-    """Return whitelist (cached if fresh). Returns None on failure."""
+    """Return whitelist or None. Never raises. Never blocks discovery."""
     if not force_refresh:
         cached = _load_alpaca_whitelist_from_cache()
         if cached is not None:
@@ -168,41 +202,6 @@ def get_alpaca_whitelist(force_refresh: bool = False) -> set | None:
 
 
 # ---------------------------------------------------------------------------
-# Symbol cleaning (unchanged — format only)
-# ---------------------------------------------------------------------------
-
-def _clean_symbol(symbol: str) -> str | None:
-    if not symbol:
-        return None
-
-    s = str(symbol).strip().upper()
-    if not s:
-        return None
-    if len(s) < 1 or len(s) > 5:
-        return None
-    if s in EXCLUDED_SYMBOLS:
-        return None
-    if any(c in s for c in [".", "$", "-", "/", "^", " "]):
-        return None
-    if not re.fullmatch(r"[A-Z]+", s):
-        return None
-
-    return s
-
-
-def _is_valid_symbol(symbol: str, whitelist: set) -> bool:
-    """Format OK + in Alpaca whitelist + not a common word."""
-    cleaned = _clean_symbol(symbol)
-    if cleaned is None:
-        return False
-    if cleaned in COMMON_WORDS:
-        return False
-    if whitelist is not None and cleaned not in whitelist:
-        return False
-    return True
-
-
-# ---------------------------------------------------------------------------
 # Sources
 # ---------------------------------------------------------------------------
 
@@ -211,7 +210,7 @@ def get_nasdaq_universe() -> List[str]:
         response = requests.get(
             NASDAQ_URL,
             timeout=20,
-            headers={"User-Agent": "DAYS-BOT/4.2"},
+            headers={"User-Agent": "DAYS-BOT/4.3"},
         )
         response.raise_for_status()
 
@@ -263,7 +262,7 @@ def get_news_symbols() -> List[str]:
             found = re.findall(r"\b[A-Z]{2,5}\b", text)
             for raw in found:
                 symbol = _clean_symbol(raw)
-                if symbol and symbol not in COMMON_WORDS:
+                if symbol and not _is_common_word(symbol):
                     symbols.add(symbol)
 
         result = sorted(symbols)
@@ -285,37 +284,59 @@ def _static_fallback() -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Builder (with whitelist enforcement)
+# Builder (whitelist is OPTIONAL)
 # ---------------------------------------------------------------------------
 
 def build_universe(max_symbols: int = 500) -> List[str]:
     print("[Universe] Building clean dynamic universe...")
 
-    whitelist = get_alpaca_whitelist()
-    if whitelist is None or len(whitelist) == 0:
-        print("[Universe] FAIL-SAFE: whitelist unavailable — returning empty universe")
-        return []
+    alpaca_whitelist = get_alpaca_whitelist()
+    use_alpaca = alpaca_whitelist is not None and len(alpaca_whitelist) > 0
+
+    if use_alpaca:
+        print(f"[Universe] Mode: Nasdaq + News + Alpaca whitelist ({len(alpaca_whitelist)} symbols)")
+    else:
+        print("[Universe] Mode: Nasdaq-only (Alpaca whitelist unavailable)")
+        print("[Universe] News symbols will NOT be added (require whitelist for safety)")
+
+    # 1. Nasdaq base (always required)
+    base = get_nasdaq_universe()
+    if not base:
+        print("[Universe] Nasdaq unavailable — using static fallback")
+        return _static_fallback()
 
     symbols: Set[str] = set()
-
-    base = get_nasdaq_universe()
     symbols.update(base[:3000])
 
-    news_symbols = get_news_symbols()
-    symbols.update(news_symbols)
+    # 2. News symbols ONLY if whitelist is available
+    if use_alpaca:
+        news_symbols = get_news_symbols()
+        symbols.update(news_symbols)
+    else:
+        print("[Universe] Skipping news symbols (no whitelist to validate them)")
 
-    if len(symbols) < 100:
-        symbols.update(_static_fallback())
+    # 3. Filter
+    cleaned: List[str] = []
+    rejected_format = 0
+    rejected_word = 0
+    rejected_whitelist = 0
 
-    # P0-FIX-3: filter every candidate through whitelist
-    cleaned = []
-    rejected_contamination = 0
     for symbol in symbols:
-        if _is_valid_symbol(symbol, whitelist):
-            if symbol not in cleaned:
-                cleaned.append(symbol)
-        else:
-            rejected_contamination += 1
+        clean = _clean_symbol(symbol)
+        if clean is None:
+            rejected_format += 1
+            continue
+
+        if _is_common_word(clean):
+            rejected_word += 1
+            continue
+
+        if use_alpaca and clean not in alpaca_whitelist:
+            rejected_whitelist += 1
+            continue
+
+        if clean not in cleaned:
+            cleaned.append(clean)
 
         if len(cleaned) >= max_symbols:
             break
@@ -323,8 +344,13 @@ def build_universe(max_symbols: int = 500) -> List[str]:
     cleaned = sorted(cleaned)
     print(
         f"[Universe] Final: {len(cleaned)} symbols | "
-        f"rejected (whitelist/format/word): {rejected_contamination}"
+        f"rejected: format={rejected_format}, common_word={rejected_word}, "
+        f"not_in_whitelist={rejected_whitelist}"
     )
+
+    if not cleaned:
+        print("[Universe] WARNING: empty after filtering — using static fallback")
+        return _static_fallback()
 
     try:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -343,25 +369,21 @@ def load_universe() -> List[str]:
     except Exception as e:
         print(f"[Universe] Build failed: {e}")
 
-    # Cache fallback — but still validate against whitelist
-    whitelist = get_alpaca_whitelist()
-    if whitelist is None or not whitelist:
-        return []
-
+    # Cache fallback
     try:
         if CACHE_PATH.exists():
             df = pd.read_csv(CACHE_PATH)
             if "symbol" in df.columns:
                 symbols = []
                 for raw in df["symbol"].dropna():
-                    if _is_valid_symbol(raw, whitelist):
-                        clean = _clean_symbol(raw)
-                        if clean and clean not in symbols:
-                            symbols.append(clean)
+                    clean = _clean_symbol(raw)
+                    if clean and not _is_common_word(clean) and clean not in symbols:
+                        symbols.append(clean)
                 if symbols:
-                    print(f"[Universe] Loaded {len(symbols)} symbols from cache (whitelisted)")
+                    print(f"[Universe] Loaded {len(symbols)} symbols from cache")
                     return symbols[:500]
     except Exception as e:
         print(f"[Universe] Cache read warning: {e}")
 
-    return []
+    print("[Universe] Emergency fallback")
+    return _static_fallback()
