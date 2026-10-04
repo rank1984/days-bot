@@ -577,20 +577,51 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             scored.append(c)
             continue
 
+                # ============================================================
+        # ACTIONABLE — build plan + validate + score
+        #
+        # P0-FIX #4: ACTIONABLE requires a COMPLETE trade plan.
+        # If any of {entry, stop, target_1, target_2} is missing,
+        # downgrade to WATCH and skip scoring.
         # ============================================================
-        # ACTIONABLE — build plan + score
-        # ============================================================
-        c['qualified'] = True
-
         plan = _safe_call(build_trade_plan, {}, c, ACCOUNT_SIZE,
                           MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
                           expected_type=dict, name=f"tradeplan:{ticker}")
         if plan:
             c.update(plan)
-        else:
-            c['plan_valid'] = False
-            c['plan_error'] = 'Trade plan build failed'
 
+        # Validate plan completeness
+        missing_plan_fields = []
+        for field in ("entry", "stop", "target_1", "target_2"):
+            v = _safe_float(c.get(field))
+            if v is None or v <= 0:
+                missing_plan_fields.append(field)
+
+        if missing_plan_fields:
+            c['qualified'] = False
+            c['trade_type'] = 'WATCH'
+            c['plan_valid'] = False
+            c['plan_error'] = 'MISSING_PLAN_FIELDS: ' + ', '.join(missing_plan_fields)
+            c['composite_score'] = None
+            c['score_status'] = 'BLOCKED_INCOMPLETE_PLAN'
+            c['data_status'] = 'WATCH'
+            c['diagnostics'] = {
+                'pm': c.get('pm_data_quality'),
+                'pm_volume_status': c.get('pm_volume_status'),
+                'pm_vwap_status': c.get('pm_vwap_status'),
+                'early': c.get('early_data_quality'),
+                'rvol': c.get('rvol_status'),
+                'catalyst': c.get('catalyst_type'),
+                'sec': c.get('sec_risk_level'),
+                'score': 'BLOCKED_INCOMPLETE_PLAN',
+                'missing_plan_fields': missing_plan_fields,
+            }
+            c['analysis'] = analysis
+            scored.append(c)
+            continue
+
+        c['qualified'] = True
+        c['plan_valid'] = True
         c['account_size'] = ACCOUNT_SIZE
         c['risk_pct'] = MAX_RISK_PER_TRADE_V31
 
