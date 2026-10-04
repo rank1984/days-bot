@@ -1,17 +1,13 @@
 """
-DAYS-BOT V5.0.6 – Full Scan Engine
+DAYS-BOT V5.0.6 — Full Scan Engine
 
-V5.0.6-prep.3 changes:
-- DATA QUALITY GATE rebalanced:
-    * HARD:  price, gap, PM High, pm_volume_status=UNAVAILABLE
-    * SOFT:  VWAP, catalyst, sec_risk_level
-  Rationale: VWAP depends on PM volume which requires Alpaca SIP.
-  With IEX feed, VWAP is always NULL, blocking all candidates.
-  Catalyst/SEC depend on external APIs that often return UNAVAILABLE.
-- RESEARCH_MODE env flag (default: false):
-    * false → soft flags block scoring (production behavior)
-    * true  → soft flags are recorded but do NOT block scoring
-  Set RESEARCH_MODE=true in workflow env during data-collection phase.
+V5.0.6 P0-FIX-4:
+- ACTIONABLE requires a COMPLETE trade plan (entry, stop, T1, T2).
+- If any field is missing → downgrade to WATCH, block scoring.
+
+V5.0.6-prep.3:
+- DATA QUALITY GATE rebalanced (HARD vs SOFT).
+- RESEARCH_MODE env flag (default: false).
 """
 import json
 import os
@@ -41,7 +37,6 @@ LIQUIDITY_MAX_SPREAD_PCT = 8.0
 LIQUIDITY_MIN_PRICE = 1.0
 FLOAT_MAX_HARD_GATE = 20_000_000
 
-# Read once at import; workflow sets this env var.
 RESEARCH_MODE = os.environ.get("RESEARCH_MODE", "false").strip().lower() == "true"
 
 
@@ -58,7 +53,7 @@ def _safe_call(func, default, *args, expected_type=None, name=None, **kwargs):
         return default
 
 
-def _safe_float(value, default=0.0):
+def _safe_float(value, default=None):
     try:
         if value is None:
             return default
@@ -70,7 +65,7 @@ def _safe_float(value, default=0.0):
 def _check_liquidity_gate(candidate):
     hard = []
     soft = []
-    price = _safe_float(candidate.get('price', 0))
+    price = _safe_float(candidate.get('price', 0)) or 0.0
     spread = candidate.get('spread_pct')
 
     if price < LIQUIDITY_MIN_PRICE:
@@ -90,37 +85,21 @@ def _check_liquidity_gate(candidate):
 
 
 def _check_data_completeness(candidate, research_mode=None):
-    """
-    Data quality gate.
-
-    HARD (block scoring always):
-      - price > 0
-      - gap_pct present
-      - pm_high > 0
-      - pm_volume_status == UNAVAILABLE  (no PM data at all)
-
-    SOFT (record only, block only when research_mode=False):
-      - pm_vwap       (depends on PM volume → requires Alpaca SIP)
-      - catalyst_type (external news API)
-      - sec_risk_level (external SEC API)
-      - pm_volume_status == VOLUME_UNAVAILABLE (yfinance: bars but no vol)
-    """
     if research_mode is None:
         research_mode = RESEARCH_MODE
 
-    missing = []          # hard
-    soft_flags = []       # soft
+    missing = []
+    soft_flags = []
 
-    # ---------- HARD ----------
     price = candidate.get('price')
-    if price is None or _safe_float(price) <= 0:
+    if price is None or (_safe_float(price) or 0) <= 0:
         missing.append("price")
 
     if candidate.get('gap_pct') is None:
         missing.append("gap")
 
     pm_high = candidate.get('pm_high')
-    if pm_high is None or _safe_float(pm_high) <= 0:
+    if pm_high is None or (_safe_float(pm_high) or 0) <= 0:
         missing.append("PM High")
 
     pm_vol_status = candidate.get('pm_volume_status', 'UNAVAILABLE')
@@ -129,9 +108,8 @@ def _check_data_completeness(candidate, research_mode=None):
     elif pm_vol_status == "VOLUME_UNAVAILABLE":
         soft_flags.append("pm_volume_yfinance")
 
-    # ---------- SOFT ----------
     pm_vwap = candidate.get('pm_vwap')
-    if pm_vwap is None or _safe_float(pm_vwap) <= 0:
+    if pm_vwap is None or (_safe_float(pm_vwap) or 0) <= 0:
         soft_flags.append("VWAP")
 
     cat_type = candidate.get('catalyst_type')
@@ -142,13 +120,9 @@ def _check_data_completeness(candidate, research_mode=None):
     if sec_level in (None, "UNAVAILABLE", ""):
         soft_flags.append("sec")
 
-    # ---------- Status ----------
     if len(missing) == 0 and len(soft_flags) == 0:
         status = "ACTIONABLE"
     elif len(missing) == 0:
-        # All hard requirements met; some soft flags.
-        # In research mode we still score (record + score).
-        # In production we downgrade to WATCH.
         status = "ACTIONABLE" if research_mode else "WATCH"
     elif len(missing) <= 2:
         status = "WATCH"
@@ -196,7 +170,7 @@ def _reject_candidate(c, scored, analysis, gate_name, trade_type, reason,
 
 
 def _classify_gap(gap_pct):
-    gap = _safe_float(gap_pct, 0.0)
+    gap = _safe_float(gap_pct) or 0.0
     abs_gap = abs(gap)
     if gap > 0.05:
         sign = "POS"
@@ -248,15 +222,12 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         analysis = {}
 
-        # V5.0.5.2.5 – gap tags
         gap_tags = _classify_gap(c.get('gap_pct', 0))
         c['gap_sign'] = gap_tags['gap_sign']
         c['gap_bucket'] = gap_tags['gap_bucket']
         c['is_extreme_gap'] = gap_tags['is_extreme_gap']
 
-        # ============================================================
         # GATE 1: Corporate Action
-        # ============================================================
         corp_action = _safe_call(check_corporate_action, {}, ticker,
                                  expected_type=dict, name=f"corp_action:{ticker}")
         c['corporate_action'] = corp_action.get('corporate_action', False)
@@ -277,9 +248,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             scored.append(c)
             continue
 
-        # ============================================================
         # GATE 2: Liquidity
-        # ============================================================
         liquidity = _check_liquidity_gate(c)
         c['liquidity_gate'] = liquidity
 
@@ -302,9 +271,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
 
         passed_gates += 1
 
-        # ============================================================
-        # PM DATA — V5.0.6: preserve None, pass through statuses
-        # ============================================================
+        # PM DATA
         pm_data = _safe_call(get_premarket_minute_data, {}, ticker,
                              expected_type=dict, name=f"pm:{ticker}")
 
@@ -340,8 +307,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                     c['pm_volume_status'] = 'VOLUME_UNAVAILABLE'
 
             c['pm_dist_signed'] = (
-                ((_safe_float(c['price']) - _safe_float(c['pm_high'])) / _safe_float(c['pm_high'])) * 100.0
-                if c['pm_high'] and _safe_float(c['pm_high']) > 0 else None
+                ((_safe_float(c['price'], 0) - _safe_float(c['pm_high'], 0)) / _safe_float(c['pm_high'], 1)) * 100.0
+                if c['pm_high'] and (_safe_float(c['pm_high']) or 0) > 0 else None
             )
 
             c['pm_bars_json'] = json.dumps(
@@ -364,9 +331,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         analysis['pm_bars_received'] = pm_bars_received
         analysis['pm_source'] = pm_source
 
-        # ============================================================
         # Early Move
-        # ============================================================
         early_data = _safe_call(calculate_early_move_score,
             {"early_score": 0, "state": "UNKNOWN", "components": {}, "data_quality": "UNKNOWN"},
             ticker, c.get('pm_high'), c.get('pm_vwap'),
@@ -377,8 +342,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['early_data_quality'] = early_data.get('data_quality', 'UNKNOWN')
         analysis['early'] = early_data
 
-        c['price'] = _safe_float(c.get('price', 0))
-        c['gap_pct'] = _safe_float(c.get('gap_pct', 0))
+        c['price'] = _safe_float(c.get('price', 0)) or 0.0
+        c['gap_pct'] = _safe_float(c.get('gap_pct', 0)) or 0.0
 
         spread = c.get('spread_pct')
         if spread is None or spread == "UNAVAILABLE":
@@ -424,9 +389,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['sec_has_offering'] = sec_risk.get('has_offering', False)
         analysis['sec_risk'] = sec_risk
 
-        # ============================================================
-        # FLOAT: reuse from Discovery if injected
-        # ============================================================
+        # FLOAT
         float_from_discovery = c.get('float')
         float_source_from_discovery = c.get('float_source')
 
@@ -453,9 +416,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             analysis['float'] = c['float']
             analysis['short_interest'] = c['short_interest']
 
-        # ============================================================
         # GATE 3: FLOAT HARD GATE
-        # ============================================================
         raw_float = c.get('float')
         float_num = None
         if raw_float is not None:
@@ -500,13 +461,13 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         c['personality_failure_rate'] = personality.get('failure_rate', 0) if isinstance(personality, dict) else 0
         analysis['personality'] = personality
 
-        if c.get('pm_high') is not None and _safe_float(c['pm_high']) > 0:
+        if c.get('pm_high') is not None and (_safe_float(c['pm_high']) or 0) > 0:
             vwap_data = {
                 "vwap": c.get('pm_vwap'),
                 "vwap_high": c.get('pm_high'),
                 "vwap_low": c.get('pm_low'),
-                "vwap_support": _safe_float(c.get('pm_vwap')) * 0.995 if c.get('pm_vwap') else None,
-                "vwap_resistance": _safe_float(c.get('pm_vwap')) * 1.005 if c.get('pm_vwap') else None,
+                "vwap_support": (_safe_float(c.get('pm_vwap')) or 0) * 0.995 if c.get('pm_vwap') else None,
+                "vwap_resistance": (_safe_float(c.get('pm_vwap')) or 0) * 1.005 if c.get('pm_vwap') else None,
                 "source": "premarket"
             }
         else:
@@ -520,9 +481,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                                           expected_type=list, name=f"sympathy:{ticker}")
         c['sympathy'] = analysis['sympathy']
 
-        # ============================================================
-        # V5.0.6-prep.3 — DATA QUALITY GATE (with RESEARCH_MODE)
-        # ============================================================
+        # DATA QUALITY GATE
         completeness = _check_data_completeness(c, research_mode=RESEARCH_MODE)
         c['data_completeness'] = completeness
         c['data_status'] = completeness['status']
@@ -577,12 +536,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             scored.append(c)
             continue
 
-                # ============================================================
-        # ACTIONABLE — build plan + validate + score
-        #
-        # P0-FIX #4: ACTIONABLE requires a COMPLETE trade plan.
-        # If any of {entry, stop, target_1, target_2} is missing,
-        # downgrade to WATCH and skip scoring.
+        # ============================================================
+        # P0-FIX-4: ACTIONABLE requires a COMPLETE trade plan.
         # ============================================================
         plan = _safe_call(build_trade_plan, {}, c, ACCOUNT_SIZE,
                           MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT,
@@ -590,7 +545,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
         if plan:
             c.update(plan)
 
-        # Validate plan completeness
         missing_plan_fields = []
         for field in ("entry", "stop", "target_1", "target_2"):
             v = _safe_float(c.get(field))
