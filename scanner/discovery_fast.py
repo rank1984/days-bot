@@ -1,13 +1,17 @@
 """
-DAYS-BOT V5.0.5.2.4 – Fast Discovery (Alpaca Snapshots)
-FIXES:
+DAYS-BOT V5.0.6 — Fast Discovery (Alpaca Snapshots)
+
+V5.0.6 P0-FIX-1:
+- Gap direction is now ONE-SIDED: only gap_pct >= +3% is a candidate.
+- Gap-downs are recorded in a separate diagnostic list and excluded
+  from strict/fallback candidates.
+- Scoring no longer rewards negative gaps.
+- Sort key uses positive gap only.
+
+Historical:
 - V5.0.5.2.2: Float fetched once per ticker, stored on candidate
-- V5.0.5.2.3: Reorder — strict check FIRST, float fetch only for strict passes
-              (saves ~110s per run — was fetching float for all 500 tickers)
-- V5.0.5.2.4: Per-source float counters (yfinance OK / NONE / FMP / avg ms)
-              to detect silent yfinance failures for micro-caps
-- Removed dead code (_get_float_from_alpaca_snapshot)
-- Diagnostics split: reject_float_over_20m vs float_unknown
+- V5.0.5.2.3: Strict check FIRST, float fetch only for strict passes
+- V5.0.5.2.4: Per-source float counters
 """
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -90,11 +94,14 @@ def _calculate_spread(bid: float, ask: float) -> Optional[float]:
 
 def _score_snapshot(price: float, gap_pct: float, volume: int,
                     spread_pct: Optional[float]) -> float:
+    """
+    P0-FIX-1: score rewards only POSITIVE gaps.
+    Negative gaps receive 0 gap points (they are diagnostic-only).
+    """
     score = 0.0
     if gap_pct > 0:
         score += min(gap_pct * 2.0, 35.0)
-    elif gap_pct < 0:
-        score += min(abs(gap_pct) * 0.75, 12.0)
+    # No bonus for negative gaps
     if volume > 0:
         score += min((volume / 100_000.0) * 10.0, 30.0)
     if DISCOVERY_MIN_PRICE <= price <= DISCOVERY_MAX_PRICE:
@@ -139,8 +146,12 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime,
         rejection_reasons.append("PRICE_TOO_LOW")
     if price > DISCOVERY_MAX_PRICE:
         rejection_reasons.append("PRICE_TOO_HIGH")
-    if abs(gap_pct) < DISCOVERY_MIN_GAP:
-        rejection_reasons.append("GAP_TOO_SMALL")
+    # P0-FIX-1: gap must be POSITIVE and >= DISCOVERY_MIN_GAP
+    if gap_pct < DISCOVERY_MIN_GAP:
+        if gap_pct <= -DISCOVERY_MIN_GAP:
+            rejection_reasons.append("GAP_DOWN")
+        else:
+            rejection_reasons.append("GAP_TOO_SMALL")
     if volume < DISCOVERY_MIN_VOLUME:
         rejection_reasons.append("VOLUME_TOO_LOW")
 
@@ -149,9 +160,10 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime,
             return None
         if price > DISCOVERY_MAX_PRICE:
             return None
-        if abs(gap_pct) < DISCOVERY_MIN_GAP:
+        # P0-FIX-1: hard reject gap-down and small gaps
+        if gap_pct < DISCOVERY_MIN_GAP:
             return None
-        if volume < DISCOVERY_MIN_VOLUME and abs(gap_pct) < 10:
+        if volume < DISCOVERY_MIN_VOLUME and gap_pct < 10:
             return None
 
     score = _score_snapshot(price, gap_pct, volume, spread_pct)
@@ -175,8 +187,8 @@ def _parse_snapshot(ticker: str, snapshot: dict, now_et: datetime,
         "rejection_reasons": rejection_reasons,
         "pm_data_quality": "SNAPSHOT_DATA",
         "mode": "LIVE",
-        "strategy_version": "V5.0.5.2.4",
-        "data_version": "ALPACA_IEX_V5052",
+        "strategy_version": "V5.0.6",
+        "data_version": "ALPACA_IEX_V506",
         "scan_date": now_et.strftime("%Y-%m-%d"),
         "source": "ALPACA_SNAPSHOT",
     }
@@ -217,25 +229,25 @@ def fast_discovery() -> Tuple[List[dict], dict]:
         seen.add(symbol)
         clean_universe.append(symbol)
 
-    print("\n[FastDiscovery] V5.0.5.2.4 ALPACA DISCOVERY (Float Hard Gate)")
+    print("\n[FastDiscovery] V5.0.6 ALPACA DISCOVERY (Gap-Up Hard Gate)")
     print(f"[FastDiscovery] Universe symbols: {len(clean_universe)}")
     print(f"[FastDiscovery] Float Hard Gate: {FLOAT_HARD_LIMIT:,}")
-    print(f"[FastDiscovery] NOTE: Float fetched only for strict-pass tickers")
+    print(f"[FastDiscovery] Gap Hard Gate: gap_pct >= +{DISCOVERY_MIN_GAP}% (one-sided)")
 
     batches = successful_batches = failed_batches = 0
     requested_symbols = returned_snapshots = 0
     valid_price = valid_prev_close = parsed_raw = 0
     strict_candidates = []
     fallback_candidates = []
+    gap_down_diagnostics = []   # P0-FIX-1: separate list
     reject_price_low = reject_price_high = 0
     reject_gap = reject_volume = reject_invalid = 0
+    reject_gap_down = 0
 
-    # Float diagnostics
     reject_float_over_20m = 0
     float_unknown = 0
     strict_passed_pre_float = 0
     float_fetches = 0
-    # Per-source (V5.0.5.2.4)
     float_yfinance_ok = 0
     float_yfinance_none = 0
     float_fmp_ok = 0
@@ -264,9 +276,6 @@ def fast_discovery() -> Tuple[List[dict], dict]:
 
         for ticker, snapshot in snapshots.items():
             try:
-                # ==================================================
-                # 1. Cheap: price/prev_close counters
-                # ==================================================
                 raw_price = _safe_float(
                     snapshot.get("latestTrade", {}).get("p"),
                     _safe_float(snapshot.get("dailyBar", {}).get("c")),
@@ -277,14 +286,19 @@ def fast_discovery() -> Tuple[List[dict], dict]:
                 if raw_prev_close > 0:
                     valid_prev_close += 1
 
-                # ==================================================
-                # 2. Cheap: fallback parse (diagnostics counters)
-                # ==================================================
                 fallback = _parse_snapshot(ticker, snapshot, now_et, strict=False)
                 if fallback is None:
                     reject_invalid += 1
                     continue
                 parsed_raw += 1
+
+                # P0-FIX-1: route gap-downs to diagnostic list only
+                gap_val = fallback.get("gap_pct", 0) or 0
+                if gap_val < 0:
+                    gap_down_diagnostics.append(fallback)
+                    reject_gap_down += 1
+                    continue
+
                 fallback_candidates.append(fallback)
 
                 reasons = set(fallback.get("rejection_reasons", []))
@@ -297,19 +311,12 @@ def fast_discovery() -> Tuple[List[dict], dict]:
                 if "VOLUME_TOO_LOW" in reasons:
                     reject_volume += 1
 
-                # ==================================================
-                # 3. Cheap: STRICT parse FIRST
-                #    If fails price/gap/volume → skip (no float fetch)
-                # ==================================================
                 strict_candidate = _parse_snapshot(ticker, snapshot, now_et, strict=True)
                 if not strict_candidate:
                     continue
 
                 strict_passed_pre_float += 1
 
-                # ==================================================
-                # 4. Expensive: float fetch ONLY for strict-pass tickers
-                # ==================================================
                 float_val = None
                 float_source = "none"
                 float_fetches += 1
@@ -332,14 +339,10 @@ def fast_discovery() -> Tuple[List[dict], dict]:
 
                 if float_val is None:
                     float_unknown += 1
-                    # Pass through to FullScan; FullScan will WATCH it.
                 elif float_val > FLOAT_HARD_LIMIT:
                     reject_float_over_20m += 1
-                    continue  # hard reject at Discovery level
+                    continue
 
-                # ==================================================
-                # 5. Attach float and accept
-                # ==================================================
                 strict_candidate["float"] = float_val
                 strict_candidate["float_source"] = float_source
                 strict_candidates.append(strict_candidate)
@@ -351,7 +354,7 @@ def fast_discovery() -> Tuple[List[dict], dict]:
         time.sleep(0.5)
 
     strict_candidates.sort(
-        key=lambda x: (x.get("discovery_score", 0), abs(x.get("gap_pct", 0)),
+        key=lambda x: (x.get("discovery_score", 0), x.get("gap_pct", 0),
                        x.get("pm_volume", 0)),
         reverse=True,
     )
@@ -365,24 +368,23 @@ def fast_discovery() -> Tuple[List[dict], dict]:
         "parsed_raw": parsed_raw,
         "strict_candidates": len(strict_candidates),
         "fallback_candidates": len(fallback_candidates),
+        "gap_down_diagnostics": len(gap_down_diagnostics),
+        "reject_gap_down": reject_gap_down,
         "reject_price_low": reject_price_low,
         "reject_price_high": reject_price_high,
         "reject_gap": reject_gap,
         "reject_volume": reject_volume,
         "reject_invalid": reject_invalid,
-        # Float diagnostics
         "reject_float_over_20m": reject_float_over_20m,
         "float_unknown": float_unknown,
         "strict_passed_pre_float": strict_passed_pre_float,
         "float_fetches": float_fetches,
-        # Per-source (V5.0.5.2.4)
         "float_yfinance_ok": float_yfinance_ok,
         "float_yfinance_none": float_yfinance_none,
         "float_fmp_ok": float_fmp_ok,
         "float_yfinance_avg_ms": avg_yf_ms,
     }
 
-    # Summary print
     print(f"[FastDiscovery] Strict-passed (pre-float): {strict_passed_pre_float}")
     print(f"[FastDiscovery] Float fetches performed:   {float_fetches}")
     print(f"[FastDiscovery]   ├─ yfinance OK:          {float_yfinance_ok}")
@@ -391,6 +393,7 @@ def fast_discovery() -> Tuple[List[dict], dict]:
     print(f"[FastDiscovery]   └─ avg yfinance call:    {avg_yf_ms}ms")
     print(f"[FastDiscovery] Float > 20M rejected:      {reject_float_over_20m}")
     print(f"[FastDiscovery] Float unknown:             {float_unknown}")
+    print(f"[FastDiscovery] Gap-down (diagnostic only): {reject_gap_down}")
 
     if strict_candidates:
         return strict_candidates[:MAX_DISCOVERY_CANDIDATES], diagnostics
@@ -401,7 +404,7 @@ def fast_discovery() -> Tuple[List[dict], dict]:
         return [], diagnostics
 
     fallback_candidates.sort(
-        key=lambda x: (x.get("discovery_score", 0), abs(x.get("gap_pct", 0)),
+        key=lambda x: (x.get("discovery_score", 0), x.get("gap_pct", 0),
                        x.get("pm_volume", 0)),
         reverse=True,
     )
