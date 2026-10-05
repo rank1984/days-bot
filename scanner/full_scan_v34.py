@@ -4,6 +4,7 @@ DAYS-BOT V5.0.6 — Full Scan Engine
 V5.0.6 P0-FIX-4:
 - ACTIONABLE requires a COMPLETE trade plan (entry, stop, T1, T2).
 - If any field is missing → downgrade to WATCH, block scoring.
+- P0-FIX-4b (diagnostic): preserve original plan_error for forensics.
 
 V5.0.6-prep.3:
 - DATA QUALITY GATE rebalanced (HARD vs SOFT).
@@ -551,9 +552,8 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             if v is None or v <= 0:
                 missing_plan_fields.append(field)
 
-                if missing_plan_fields:
-            # P0-FIX-4 diagnostic: preserve the original plan_error
-            # (e.g. MISSING_PM_VWAP) so we know WHY the plan failed.
+        if missing_plan_fields:
+            # P0-FIX-4b: preserve original plan_error for forensics
             original_error = c.get('plan_error') or 'UNKNOWN'
             c['qualified'] = False
             c['trade_type'] = 'WATCH'
@@ -563,7 +563,6 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             c['score_status'] = 'BLOCKED_INCOMPLETE_PLAN'
             c['data_status'] = 'WATCH'
 
-            # P0-FIX-4 diagnostic print (no logic change)
             print(
                 f"[FullScan] PLAN_BLOCKED {ticker} | "
                 f"reason={original_error} | "
@@ -577,6 +576,7 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
                 f"pm_data_quality={c.get('pm_data_quality')} | "
                 f"spread_pct={c.get('spread_pct')}"
             )
+
             c['diagnostics'] = {
                 'pm': c.get('pm_data_quality'),
                 'pm_volume_status': c.get('pm_volume_status'),
