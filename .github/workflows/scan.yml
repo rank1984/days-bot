@@ -222,28 +222,19 @@ jobs:
         run: python3 tests/test_outcome_engine.py
 
       # ============================================================
-      # STEP 5: Migration — add event_rank column (idempotent)
+      # STEP 5: Migrations (idempotent)
       # ============================================================
       - name: Migrate — ensure event_rank column
         run: python3 scripts/migrate_event_rank.py
 
-      # ============================================================
-      # STEP 5b: Migration — research_run metadata columns
-      # ============================================================
       - name: Migrate — ensure research_run metadata columns
         run: python3 scripts/migrate_research_meta.py
 
+      - name: Migrate — ensure cost logging columns
+        run: python3 scripts/migrate_cost_columns.py
+
       # ============================================================
       # STEP 6: Preflight check (5 assertions, non-blocking)
-      #
-      # Preflight writes:
-      #   - preflight_exit = exit code of preflight.py (0 or 1)
-      #   - research_day   = true/false
-      #
-      # If research_day=false:
-      #   - this day is NOT counted in the primary sample
-      #   - snapshots are still recorded (with preflight_passed=0)
-      #   - the scanner still runs
       # ============================================================
       - name: Preflight check
         id: preflight
@@ -280,10 +271,6 @@ jobs:
 
       # ============================================================
       # STEP 7: Run scanner
-      #
-      # IS_SCHEDULED / IN_PM_WINDOW / PREFLIGHT_PASSED are persisted
-      # on every snapshot row so that the evaluator can later filter
-      # the primary sample to research_run=1 only.
       # ============================================================
       - name: Run scanner
         env:
@@ -333,7 +320,7 @@ jobs:
         run: python3 scripts/pm_forensics.py
 
       # ============================================================
-      # STEP 10: Evaluator (OPTIONAL, only when manually triggered)
+      # STEP 10: Evaluator (optional, when manually triggered)
       # ============================================================
       - name: Run evaluator (optional)
         if: always() && github.event_name == 'workflow_dispatch' && inputs.run_evaluator == 'true'
@@ -354,7 +341,25 @@ jobs:
           fi
 
       # ============================================================
-      # STEP 11: Upload daily artifact
+      # STEP 11: Cost decomposition (log-only, never affects decisions)
+      #
+      # Reads outcomes and writes to the new *_pct and *_score columns.
+      # NEVER touches net_r, net_r_status, or event_rank.
+      # Runs after the evaluator so it can process fresh outcomes.
+      # ============================================================
+      - name: Compute cost decomposition (log-only)
+        if: always()
+        run: python3 scripts/cost_analyzer.py
+
+      # ============================================================
+      # STEP 12: Research comparison (RAW vs NET EDGE >= 80)
+      # ============================================================
+      - name: Research comparison report (log-only)
+        if: always()
+        run: python3 scripts/research_comparison.py
+
+      # ============================================================
+      # STEP 13: Upload daily artifact
       # ============================================================
       - name: Upload daily artifact
         if: always()
