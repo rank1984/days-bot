@@ -551,14 +551,32 @@ def full_scan_v34(candidates: List[dict], manual: bool = False) -> List[dict]:
             if v is None or v <= 0:
                 missing_plan_fields.append(field)
 
-        if missing_plan_fields:
+                if missing_plan_fields:
+            # P0-FIX-4 diagnostic: preserve the original plan_error
+            # (e.g. MISSING_PM_VWAP) so we know WHY the plan failed.
+            original_error = c.get('plan_error') or 'UNKNOWN'
             c['qualified'] = False
             c['trade_type'] = 'WATCH'
             c['plan_valid'] = False
-            c['plan_error'] = 'MISSING_PLAN_FIELDS: ' + ', '.join(missing_plan_fields)
+            c['plan_error'] = f"{original_error} | MISSING_FIELDS: {', '.join(missing_plan_fields)}"
             c['composite_score'] = None
             c['score_status'] = 'BLOCKED_INCOMPLETE_PLAN'
             c['data_status'] = 'WATCH'
+
+            # P0-FIX-4 diagnostic print (no logic change)
+            print(
+                f"[FullScan] PLAN_BLOCKED {ticker} | "
+                f"reason={original_error} | "
+                f"pm_bars={c.get('pm_bars')} | "
+                f"pm_high={c.get('pm_high')} | "
+                f"pm_low={c.get('pm_low')} | "
+                f"pm_vwap={c.get('pm_vwap')} | "
+                f"pm_volume={c.get('pm_volume')} | "
+                f"pm_volume_status={c.get('pm_volume_status')} | "
+                f"pm_source={c.get('pm_source')} | "
+                f"pm_data_quality={c.get('pm_data_quality')} | "
+                f"spread_pct={c.get('spread_pct')}"
+            )
             c['diagnostics'] = {
                 'pm': c.get('pm_data_quality'),
                 'pm_volume_status': c.get('pm_volume_status'),
