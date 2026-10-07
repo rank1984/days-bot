@@ -23,9 +23,6 @@ on:
   schedule:
     # Target PM window: 04:00-09:30 ET (11:00-16:30 IDT).
     # GitHub Actions delays scheduled jobs by 0-8h depending on load.
-    # We schedule 8h earlier than intended PM start so that the delay
-    # lands the actual run inside PM. Runs that land outside PM will
-    # have IN_PM_WINDOW=false and are excluded from the primary sample.
     - cron: '02 0 * * 1-5'
     - cron: '32 0 * * 1-5'
     - cron: '02 1 * * 1-5'
@@ -92,7 +89,7 @@ jobs:
           echo "in_pm_window=$IN_PM_WINDOW" >> "$GITHUB_OUTPUT"
 
           echo "=================================================="
-          echo "DAYS-BOT V5.0.6.3 SCAN"
+          echo "DAYS-BOT V5.0.6.4 SCAN"
           echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
           echo "Event:      ${{ github.event_name }}"
           echo "Git SHA:    ${{ github.sha }}"
@@ -105,7 +102,43 @@ jobs:
           echo "=================================================="
 
       # ============================================================
-      # STEP 2: Cumulative DB restore
+      # STEP 2a: DIAGNOSTIC — inspect GitHub API output
+      # (helps debug why the wrong run is selected)
+      # ============================================================
+      - name: Diagnostic — inspect GitHub API runs
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          echo "=================================================="
+          echo "DIAGNOSTIC: First 10 runs (any status)"
+          echo "=================================================="
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=10" \
+            --jq '.workflow_runs[] | [.id, .run_started_at, .run_number, .status, (.conclusion // "null")] | @tsv' \
+            || echo "(failed)"
+          echo ""
+          echo "=================================================="
+          echo "DIAGNOSTIC: First 10 runs (completed + success)"
+          echo "=================================================="
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=10&status=completed" \
+            --jq '.workflow_runs[] | select(.conclusion == "success") | [.id, .run_started_at, .run_number, .status, .conclusion] | @tsv' \
+            || echo "(failed)"
+          echo "=================================================="
+          exit 0
+
+      # ============================================================
+      # STEP 2b: Cumulative DB restore
+      #
+      # Iterate through the most recent successful runs.
+      # For each run, check whether it has a usable scan-* artifact.
+      # Use the FIRST run with a valid artifact.
+      #
+      # Bug fix (07/10): previous logic took the most recent run,
+      # and if it had no artifact -> gave up entirely (fresh DB).
+      # New logic walks backward until it finds a valid artifact.
       # ============================================================
       - name: Find latest previous artifact (cumulative DB)
         id: restore
@@ -113,44 +146,64 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "Looking for the most recent successful run of scan.yml ..."
+          echo "Looking for the most recent successful run with a valid artifact ..."
+
           PREV_RUN=""
           PREV_RUN_NUMBER=""
           PREV_RUN_STARTED=""
+          ARTIFACT_NAME=""
 
+          # Get up to 30 most recent completed runs with conclusion=success
+          RUNS_TSV=$(gh api -H "Accept: application/vnd.github+json" \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=30&status=completed" \
+            --jq '.workflow_runs[] | select(.conclusion == "success") | [.id, .run_started_at, .run_number] | @tsv')
+
+          if [ -z "$RUNS_TSV" ]; then
+            echo "has_prev=false" >> "$GITHUB_OUTPUT"
+            echo "No completed+success runs found — starting fresh DB."
+            exit 0
+          fi
+
+          # Iterate: newest to oldest
           while IFS=$'\t' read -r RUN_ID RUN_STARTED_AT RUN_NUMBER; do
-            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
+            if [ -z "$RUN_ID" ]; then
               continue
             fi
-            PREV_RUN="$RUN_ID"
-            PREV_RUN_NUMBER="$RUN_NUMBER"
-            PREV_RUN_STARTED="$RUN_STARTED_AT"
-            break
-          done < <(
-            gh api -H "Accept: application/vnd.github+json" \
-              "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=50&status=success" \
-              --jq '.workflow_runs[] | [.id, .run_started_at, .run_number] | @tsv'
-          )
+            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
+              echo "  skip current run $RUN_ID"
+              continue
+            fi
 
-          if [ -z "${PREV_RUN:-}" ]; then
+            echo "  checking run #$RUN_NUMBER ($RUN_ID) at $RUN_STARTED_AT ..."
+
+            CANDIDATE_ARTIFACT=$(gh api -H "Accept: application/vnd.github+json" \
+              "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts?per_page=100" \
+              --jq '[.artifacts[] | select((.name | startswith("scan-")) and (.expired == false))] | sort_by(.created_at) | reverse | .[0].name // empty' 2>/dev/null || echo "")
+
+            if [ -n "$CANDIDATE_ARTIFACT" ]; then
+              PREV_RUN="$RUN_ID"
+              PREV_RUN_NUMBER="$RUN_NUMBER"
+              PREV_RUN_STARTED="$RUN_STARTED_AT"
+              ARTIFACT_NAME="$CANDIDATE_ARTIFACT"
+              echo "  -> found valid artifact: $ARTIFACT_NAME"
+              break
+            else
+              echo "  -> no valid artifact; trying older run"
+            fi
+          done <<< "$RUNS_TSV"
+
+          if [ -z "$PREV_RUN" ] || [ -z "$ARTIFACT_NAME" ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
-            echo "No previous successful run found - starting fresh DB."
+            echo "No usable artifact found in the last 30 successful runs — starting fresh DB."
             exit 0
           fi
 
-          echo "Most recent successful run: $PREV_RUN (#$PREV_RUN_NUMBER) at $PREV_RUN_STARTED"
+          echo ""
+          echo "Selected:"
+          echo "  run=$PREV_RUN (#$PREV_RUN_NUMBER)"
+          echo "  started=$PREV_RUN_STARTED"
+          echo "  artifact=$ARTIFACT_NAME"
 
-          ARTIFACT_NAME=$(gh api -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/runs/$PREV_RUN/artifacts?per_page=100" \
-            --jq '[.artifacts[] | select((.name | startswith("scan-")) and (.expired == false))] | sort_by(.created_at) | reverse | .[0].name // empty')
-
-          if [ -z "$ARTIFACT_NAME" ]; then
-            echo "has_prev=false" >> "$GITHUB_OUTPUT"
-            echo "No usable artifact on run $PREV_RUN - starting fresh DB."
-            exit 0
-          fi
-
-          echo "Selected artifact: $ARTIFACT_NAME"
           echo "has_prev=true" >> "$GITHUB_OUTPUT"
           echo "prev_run=$PREV_RUN" >> "$GITHUB_OUTPUT"
           echo "prev_run_number=$PREV_RUN_NUMBER" >> "$GITHUB_OUTPUT"
@@ -320,7 +373,7 @@ jobs:
         run: python3 scripts/pm_forensics.py
 
       # ============================================================
-      # STEP 10: Evaluator (optional, when manually triggered)
+      # STEP 10: Evaluator (optional)
       # ============================================================
       - name: Run evaluator (optional)
         if: always() && github.event_name == 'workflow_dispatch' && inputs.run_evaluator == 'true'
@@ -341,18 +394,14 @@ jobs:
           fi
 
       # ============================================================
-      # STEP 11: Cost decomposition (log-only, never affects decisions)
-      #
-      # Reads outcomes and writes to the new *_pct and *_score columns.
-      # NEVER touches net_r, net_r_status, or event_rank.
-      # Runs after the evaluator so it can process fresh outcomes.
+      # STEP 11: Cost decomposition (log-only)
       # ============================================================
       - name: Compute cost decomposition (log-only)
         if: always()
         run: python3 scripts/cost_analyzer.py
 
       # ============================================================
-      # STEP 12: Research comparison (RAW vs NET EDGE >= 80)
+      # STEP 12: Research comparison (log-only)
       # ============================================================
       - name: Research comparison report (log-only)
         if: always()
@@ -369,3 +418,4 @@ jobs:
           path: data/
           retention-days: 90
           if-no-files-found: warn
+          
