@@ -21,8 +21,6 @@ on:
           - 'false'
 
   schedule:
-    # Target PM window: 04:00-09:30 ET (11:00-16:30 IDT).
-    # GitHub Actions delays scheduled jobs by 0-8h depending on load.
     - cron: '02 0 * * 1-5'
     - cron: '32 0 * * 1-5'
     - cron: '02 1 * * 1-5'
@@ -89,7 +87,7 @@ jobs:
           echo "in_pm_window=$IN_PM_WINDOW" >> "$GITHUB_OUTPUT"
 
           echo "=================================================="
-          echo "DAYS-BOT V5.0.6.4 SCAN"
+          echo "DAYS-BOT V5.0.6.5 SCAN"
           echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
           echo "Event:      ${{ github.event_name }}"
           echo "Git SHA:    ${{ github.sha }}"
@@ -103,7 +101,11 @@ jobs:
 
       # ============================================================
       # STEP 2a: DIAGNOSTIC — inspect GitHub API output
-      # (helps debug why the wrong run is selected)
+      #
+      # V5.0.6.5 — critical fix:
+      # The GitHub API filter ?status=completed returns OLD runs
+      # from weeks ago (e.g., Sept 7) instead of recent runs from
+      # today. This diagnostic documents that behavior.
       # ============================================================
       - name: Diagnostic — inspect GitHub API runs
         if: always()
@@ -112,7 +114,7 @@ jobs:
         run: |
           set +e
           echo "=================================================="
-          echo "DIAGNOSTIC: First 10 runs (any status)"
+          echo "DIAGNOSTIC: First 10 runs (no status filter)"
           echo "=================================================="
           gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=10" \
@@ -120,11 +122,13 @@ jobs:
             || echo "(failed)"
           echo ""
           echo "=================================================="
-          echo "DIAGNOSTIC: First 10 runs (completed + success)"
+          echo "DIAGNOSTIC: First 10 runs with ?status=completed"
+          echo "(NOTE: this filter is BROKEN in GitHub API —"
+          echo " returns old runs from weeks ago, not recent runs)"
           echo "=================================================="
           gh api -H "Accept: application/vnd.github+json" \
             "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=10&status=completed" \
-            --jq '.workflow_runs[] | select(.conclusion == "success") | [.id, .run_started_at, .run_number, .status, .conclusion] | @tsv' \
+            --jq '.workflow_runs[] | [.id, .run_started_at, .run_number, .status, .conclusion] | @tsv' \
             || echo "(failed)"
           echo "=================================================="
           exit 0
@@ -132,13 +136,11 @@ jobs:
       # ============================================================
       # STEP 2b: Cumulative DB restore
       #
-      # Iterate through the most recent successful runs.
-      # For each run, check whether it has a usable scan-* artifact.
-      # Use the FIRST run with a valid artifact.
+      # V5.0.6.5 — fetch runs WITHOUT any status filter.
+      # Filter conclusion=success in jq.
       #
-      # Bug fix (07/10): previous logic took the most recent run,
-      # and if it had no artifact -> gave up entirely (fresh DB).
-      # New logic walks backward until it finds a valid artifact.
+      # Iterate from newest to oldest, find the first run that has
+      # a valid scan-* artifact (not expired), and use that.
       # ============================================================
       - name: Find latest previous artifact (cumulative DB)
         id: restore
@@ -153,14 +155,15 @@ jobs:
           PREV_RUN_STARTED=""
           ARTIFACT_NAME=""
 
-          # Get up to 30 most recent completed runs with conclusion=success
+          # Fetch last 100 runs (any status), filter conclusion=success in jq.
+          # DO NOT use &status=completed — that filter is broken on GitHub API.
           RUNS_TSV=$(gh api -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=30&status=completed" \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.conclusion == "success") | [.id, .run_started_at, .run_number] | @tsv')
 
           if [ -z "$RUNS_TSV" ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
-            echo "No completed+success runs found — starting fresh DB."
+            echo "No successful runs found — starting fresh DB."
             exit 0
           fi
 
@@ -194,7 +197,7 @@ jobs:
 
           if [ -z "$PREV_RUN" ] || [ -z "$ARTIFACT_NAME" ]; then
             echo "has_prev=false" >> "$GITHUB_OUTPUT"
-            echo "No usable artifact found in the last 30 successful runs — starting fresh DB."
+            echo "No usable artifact found — starting fresh DB."
             exit 0
           fi
 
@@ -269,7 +272,7 @@ jobs:
         run: python3 scripts/write_run_metadata.py
 
       # ============================================================
-      # STEP 4: Run tests (fail-fast on broken code)
+      # STEP 4: Run tests
       # ============================================================
       - name: Run outcome engine tests
         run: python3 tests/test_outcome_engine.py
@@ -287,7 +290,7 @@ jobs:
         run: python3 scripts/migrate_cost_columns.py
 
       # ============================================================
-      # STEP 6: Preflight check (5 assertions, non-blocking)
+      # STEP 6: Preflight check
       # ============================================================
       - name: Preflight check
         id: preflight
@@ -316,8 +319,6 @@ jobs:
           else
             echo "PREFLIGHT: FAILED (day NOT counted as research day)"
             echo "  Reason: one or more assertions failed. See output above."
-            echo "  Note:   scanner will run, but Events from this day"
-            echo "          are excluded from the primary sample."
           fi
           echo "=================================================="
           exit 0
@@ -418,4 +419,3 @@ jobs:
           path: data/
           retention-days: 90
           if-no-files-found: warn
-          
