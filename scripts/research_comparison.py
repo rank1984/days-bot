@@ -8,12 +8,31 @@ After 50+ Events, compares two cohorts:
 
 Prints a side-by-side table.
 Read-only. Never writes to the DB.
+
+V5.0.6.4 — schema-aware:
+  - Probes for required columns before querying.
+  - If columns are missing, prints a clear message and exits 0
+    (does NOT fail the workflow).
 """
 import os
 import sys
 import sqlite3
 
 DB_PATH = "data/alerts.db"
+
+REQUIRED_OUTCOMES_COLS = {
+    "net_after_tax_pct",
+    "spread_at_trigger_pct",
+    "estimated_slippage_pct",
+    "net_edge_score",
+}
+
+
+def _cols(cur, table):
+    try:
+        return {r[1] for r in cur.execute("PRAGMA table_info(" + table + ")")}
+    except sqlite3.OperationalError:
+        return set()
 
 
 def _stats(rows):
@@ -37,7 +56,6 @@ def _stats(rows):
     gross_loss = abs(sum(losses)) if losses else 0
     pf = (gross_win / gross_loss) if gross_loss > 0 else None
 
-    # Simple max drawdown on cumulative sum
     cumsum = 0
     peak = 0
     max_dd = 0
@@ -83,6 +101,33 @@ def main():
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
+    print()
+    print("=" * 74)
+    print("RESEARCH COMPARISON — RAW vs NET EDGE >= 80")
+    print("=" * 74)
+
+    # Schema probe — do NOT fail if columns missing
+    cols = _cols(cur, "outcomes")
+    if not cols:
+        print("  outcomes table not found")
+        print("  Skipping comparison.")
+        print("=" * 74)
+        conn.close()
+        return 0
+
+    missing = REQUIRED_OUTCOMES_COLS - cols
+    if missing:
+        print(f"  MISSING columns: {sorted(missing)}")
+        print("  This means migration_cost_columns.py has not run on this DB yet.")
+        print("  The DB will be migrated on the next run.")
+        print("  Skipping comparison.")
+        print("=" * 74)
+        conn.close()
+        return 0
+
+    print("  Cost columns present.")
+    print()
+
     try:
         all_valid = cur.execute("""
             SELECT net_r, net_after_tax_pct, spread_at_trigger_pct,
@@ -101,19 +146,16 @@ def main():
               AND net_edge_score >= 80
         """).fetchall()
     except sqlite3.OperationalError as e:
-        print(f"Query failed: {e}")
+        print(f"  Query failed (non-fatal): {e}")
+        print("=" * 74)
         conn.close()
-        return 1
+        return 0
 
     conn.close()
 
     s_all = _stats(all_valid)
     s_edge = _stats(net_edge_80)
 
-    print()
-    print("=" * 74)
-    print("RESEARCH COMPARISON — RAW vs NET EDGE >= 80")
-    print("=" * 74)
     print(f"  {'Metric':<22} {'ALL 50':>14} {'NET EDGE >= 80':>18}")
     print("  " + "-" * 60)
     print(f"  {'N events':<22} {s_all['n']:>14} {s_edge['n']:>18}")
