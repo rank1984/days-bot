@@ -77,7 +77,7 @@ jobs:
           ls -la scripts/ 2>/dev/null || true
           exit 1
 
-      # ---------- 2. מצא ריצה קודמת (רך — לא מפיל) ----------
+      # ---------- 2. מצא ריצה קודמת (רך) ----------
       - name: Find previous run with valid artifact
         id: prev
         continue-on-error: true
@@ -112,7 +112,6 @@ jobs:
           echo "artifact=$ART" >> $GITHUB_OUTPUT
           echo "Selected: run=$PREV artifact=$ART"
 
-      # ---------- 2b. הורדה — רך, לא מפיל ----------
       - name: Download previous artifact
         if: steps.prev.outputs.artifact != ''
         continue-on-error: true
@@ -178,15 +177,22 @@ jobs:
         continue-on-error: true
         run: python3 scripts/preflight.py || true
 
-      # ---------- 6. Scanner (רך, אבל לוכד שגיאה) ----------
+      # ---------- 6. Scanner (המתוקן!) ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
         run: |
           set -o pipefail
           ENTRY="${{ steps.entry.outputs.entry }}"
-          echo ">>> running: python3 $ENTRY"
-          if python3 "$ENTRY" 2>&1 | tee -a scan.log; then
+          SUBCOMMAND="fullscan_v34"
+
+          EXTRA=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            EXTRA="--manual"
+          fi
+
+          echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
+          if python3 "$ENTRY" "$SUBCOMMAND" $EXTRA 2>&1 | tee -a scan.log; then
             echo "scanner_exit=0" >> $GITHUB_OUTPUT
           else
             EXIT_CODE=$?
