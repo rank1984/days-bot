@@ -2,7 +2,8 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
   schedule:
-    # UTC. 08:00–13:30 UTC ≈ 04:00–09:30 ET (EDT). מתאים לחלון PM.
+    # UTC. 08:00–13:30 UTC ≈ 04:00–09:30 ET (EDT)
+    # בחורף (EST) שנה ל: '*/30 9-14 * * 1-5'
     - cron: '*/30 8-13 * * 1-5'
   workflow_dispatch:
 
@@ -114,7 +115,7 @@ jobs:
           echo "artifact=$ART" >> $GITHUB_OUTPUT
           echo "Selected: run=$PREV artifact=$ART"
 
-      # ---------- 2b. הורדת ארטיפקט מ-Run אחר (מתוקן) ----------
+      # ---------- 2b. הורדת ארטיפקט מ-Run אחר ----------
       - name: Download previous artifact
         if: steps.prev.outputs.artifact != ''
         uses: actions/download-artifact@v4
@@ -148,8 +149,7 @@ jobs:
           fi
 
           if [ "$restored_db" -eq 0 ] && [ "$restored_csv" -eq 0 ]; then
-            echo "::error::Artifact '${{
-              steps.prev.outputs.artifact }}' downloaded but contains neither data/alerts.db nor summaries/all_runs.csv"
+            echo "::error::Artifact '${{ steps.prev.outputs.artifact }}' downloaded but contains neither data/alerts.db nor summaries/all_runs.csv"
             echo "--- contents of /tmp/prev ---"
             find /tmp/prev -type f | head -20 || echo "(empty)"
             exit 1
@@ -197,19 +197,26 @@ jobs:
         continue-on-error: true
         run: python3 scripts/preflight.py || true
 
-      # ---------- 6. Scanner (עם secrets!) ----------
+      # ---------- 6. Scanner (עם כל ה-Secrets) ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
         env:
-          # >>> החלף לשמות שהקוד שלך באמת קורא להם <<<
-          APCA_API_KEY_ID:      ${{ secrets.APCA_API_KEY_ID }}
-          APCA_API_SECRET_KEY:  ${{ secrets.APCA_API_SECRET_KEY }}
-          APCA_API_BASE_URL:    https://paper-api.alpaca.markets
-          ALPACA_API_KEY:       ${{ secrets.APCA_API_KEY_ID }}
-          ALPACA_SECRET_KEY:    ${{ secrets.APCA_API_SECRET_KEY }}
+          # Alpaca — השמות המדויקים מה-Secrets שלך
+          ALPACA_API_KEY:       ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY:    ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL:      https://paper-api.alpaca.markets
+          APCA_API_BASE_URL:    https://paper-api.alpaca.markets
+
+          # ספקי נתונים משניים
+          FINNHUB_API_KEY:      ${{ secrets.FINNHUB_API_KEY }}
           FMP_API_KEY:          ${{ secrets.FMP_API_KEY }}
+          GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
+          POLYGON_API_KEY:      ${{ secrets.POLYGON_API_KEY }}
+
+          # טלגרם
+          TELEGRAM_TOKEN:       ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -o pipefail
           ENTRY="${{ steps.entry.outputs.entry }}"
@@ -222,8 +229,9 @@ jobs:
 
           echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
 
-          # הצג נוכחות credentials בלי לחשוף אותם
-          for v in APCA_API_KEY_ID APCA_API_SECRET_KEY ALPACA_API_KEY ALPACA_SECRET_KEY FMP_API_KEY; do
+          # הצג נוכחות בלי לחשוף ערכים
+          for v in ALPACA_API_KEY ALPACA_SECRET_KEY FINNHUB_API_KEY FMP_API_KEY \
+                   GEMINI_API_KEY POLYGON_API_KEY TELEGRAM_TOKEN TELEGRAM_CHAT_ID; do
             if [ -n "${!v:-}" ]; then
               echo "  env $v = SET"
             else
