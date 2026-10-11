@@ -173,7 +173,7 @@ jobs:
             exit 1
           fi
 
-      # ---------- 3. Pre-scan state ----------
+      # ---------- 3. Pre-scan state (עם כותרת קבועה ל-parsing) ----------
       - name: Pre-scan DB state
         continue-on-error: true
         run: |
@@ -181,8 +181,10 @@ jobs:
           import sqlite3, os
           p = os.environ.get('DB_PATH', 'data/alerts.db')
           if not os.path.exists(p):
-              print('Pre-scan DB state: no DB yet')
+              print('Pre-scan DB state:')
+              print('  snapshots: 0')
           else:
+              print('Pre-scan DB state:')
               con = sqlite3.connect(p)
               cur = con.cursor()
               for t in ['snapshots','alerts','outcomes','trigger_results']:
@@ -235,7 +237,7 @@ jobs:
         id: scan
         continue-on-error: true
         env:
-          # Alpaca — השמות המדויקים מה-Secrets שלך
+          # Alpaca
           ALPACA_API_KEY:       ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY:    ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL:      https://paper-api.alpaca.markets
@@ -262,7 +264,6 @@ jobs:
 
           echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
 
-          # הצג נוכחות בלי לחשוף ערכים
           for v in ALPACA_API_KEY ALPACA_SECRET_KEY FINNHUB_API_KEY FMP_API_KEY \
                    GEMINI_API_KEY POLYGON_API_KEY TELEGRAM_TOKEN TELEGRAM_CHAT_ID; do
             if [ -n "${!v:-}" ]; then
@@ -297,7 +298,7 @@ jobs:
           fi
           echo "Discovery produced snapshots — OK."
 
-      # ---------- 7. Build run summary (עם env fallback) ----------
+      # ---------- 7. Build run summary ----------
       - name: Build run_summary.json
         if: always()
         env:
