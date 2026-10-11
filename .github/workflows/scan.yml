@@ -23,23 +23,25 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- 0. זמן + באנר ----------
+      # ---------- 0. זמן + באנר (כותב ל-scan.log) ----------
       - name: Compute TODAY_ET
         run: echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
 
       - name: Banner
         run: |
-          echo "=================================================="
-          echo "DAYS-BOT V5.0.6.5 SCAN"
-          echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
-          echo "Event:      ${{ github.event_name }}"
-          echo "Git SHA:    ${{ github.sha }}"
-          echo "Branch:     ${{ github.ref_name }}"
-          echo "UTC:        $(date -u +%FT%TZ)"
-          echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
-          echo "Israel:     $(TZ=Asia/Jerusalem date '+%F %T %Z')"
-          echo "Scan date:  $TODAY_ET"
-          echo "=================================================="
+          {
+            echo "=================================================="
+            echo "DAYS-BOT V5.0.6.5 SCAN"
+            echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
+            echo "Event:      ${{ github.event_name }}"
+            echo "Git SHA:    ${{ github.sha }}"
+            echo "Branch:     ${{ github.ref_name }}"
+            echo "UTC:        $(date -u +%FT%TZ)"
+            echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
+            echo "Israel:     $(TZ=Asia/Jerusalem date '+%F %T %Z')"
+            echo "Scan date:  $TODAY_ET"
+            echo "=================================================="
+          } | tee scan.log
 
       # ---------- 1. Checkout + Python ----------
       - uses: actions/checkout@v4
@@ -158,17 +160,23 @@ jobs:
         continue-on-error: true
         run: python3 scripts/preflight.py || true
 
-      # ---------- 6. Scanner (with log capture) ----------
+      # ---------- 6. Scanner (append to scan.log) ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
         run: |
           set -o pipefail
-          python3 scan.py 2>&1 | tee scan.log
+          python3 scan.py 2>&1 | tee -a scan.log
 
       # ---------- 7. Build run summary ----------
       - name: Build run_summary.json
         if: always()
+        env:
+          RUN_ID:       ${{ github.run_id }}
+          RUN_NUMBER:   ${{ github.run_number }}
+          EVENT:        ${{ github.event_name }}
+          SCAN_DATE:    ${{ env.TODAY_ET }}
+          TIME_ET:      ${{ env.TODAY_ET }}
         run: |
           if [ -f scan.log ]; then
             python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
