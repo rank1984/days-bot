@@ -64,8 +64,12 @@ def extract(log: str) -> dict:
         log,
     )
 
-    # --- Pre/Post snapshots ---
-    pre = find(r"Pre-scan DB state:\s*\n\s*snapshots:\s*(\d+)", log, 0, int)
+        # --- Pre/Post snapshots ---
+    # תומך גם ב-"Pre-scan DB state:\n  snapshots: N" (DB קיים)
+    # וגם ב-סתם "  snapshots: N" (DB קיים, בלי כותרת)
+    pre = find(r"Pre-scan DB state:.*?\n\s*snapshots:\s*(\d+)", log, None, int)
+    if pre is None:
+        pre = find(r"^\s*snapshots:\s*(\d+)", log, 0, int)
     saved = find(r"V5\.0\.6 snapshots saved:\s*(\d+)", log, 0, int)
 
     # --- שדות מזוהים: קודם מלוג, אחר כך env ---
