@@ -2,12 +2,16 @@ name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
   schedule:
-    - cron: '*/30 4-11 * * 1-5'   # 04:00–11:59 UTC = 00:00–07:59 ET
+    - cron: '*/30 4-11 * * 1-5'
   workflow_dispatch:
 
 permissions:
   contents: read
   actions: read
+
+concurrency:
+  group: days-bot-scan
+  cancel-in-progress: false
 
 env:
   PYTHONUNBUFFERED: "1"
@@ -19,10 +23,9 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- 0. זמן ----------
+      # ---------- 0. זמן + באנר ----------
       - name: Compute TODAY_ET
-        run: |
-          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+        run: echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
 
       - name: Banner
         run: |
@@ -30,14 +33,15 @@ jobs:
           echo "DAYS-BOT V5.0.6.5 SCAN"
           echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
           echo "Event:      ${{ github.event_name }}"
-          echo "SHA:        ${{ github.sha }}"
+          echo "Git SHA:    ${{ github.sha }}"
+          echo "Branch:     ${{ github.ref_name }}"
           echo "UTC:        $(date -u +%FT%TZ)"
           echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
           echo "Israel:     $(TZ=Asia/Jerusalem date '+%F %T %Z')"
           echo "Scan date:  $TODAY_ET"
           echo "=================================================="
 
-      # ---------- 1. Checkout ----------
+      # ---------- 1. Checkout + Python ----------
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -52,7 +56,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ---------- 2. Restore previous run artifact ----------
+      # ---------- 2. מצא ריצה קודמת עם ארטיפקט ----------
       - name: Find previous run with valid artifact
         id: prev
         env:
@@ -60,27 +64,34 @@ jobs:
         run: |
           set -euo pipefail
           echo "Looking for the most recent successful run with a valid artifact ..."
+
+          WF_FILE=$(basename "${{ github.workflow_ref }}" | cut -d@ -f1)
+          echo "workflow file: $WF_FILE"
+
           PREV=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}/runs?per_page=15" \
+            "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=15" \
             --jq ".workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status==\"completed\") | .id" \
-            | head -n 1)
+            | head -n 1 || true)
+
           if [ -z "$PREV" ]; then
             echo "No previous run — starting fresh."
             echo "artifact=" >> $GITHUB_OUTPUT
             exit 0
           fi
+
           ART=$(gh api \
             "repos/${{ github.repository }}/actions/runs/$PREV/artifacts" \
             --jq '.artifacts[] | select(.name | startswith("scan-")) | .name' \
-            | head -n 1)
-          echo "run=$PREV"        >> $GITHUB_OUTPUT
-          echo "artifact=$ART"    >> $GITHUB_OUTPUT
+            | head -n 1 || true)
+
+          echo "run=$PREV"     >> $GITHUB_OUTPUT
+          echo "artifact=$ART" >> $GITHUB_OUTPUT
           echo "Selected: run=$PREV artifact=$ART"
 
-      - name: Download previous artifact (DB + all_runs.csv)
+      - name: Download previous artifact
         if: steps.prev.outputs.artifact != ''
-        uses: actions/download-artifact@v4
         continue-on-error: true
+        uses: actions/download-artifact@v4
         with:
           name: ${{ steps.prev.outputs.artifact }}
           path: /tmp/prev
@@ -93,6 +104,7 @@ jobs:
           if [ -f /tmp/prev/data/alerts.db ]; then
             cp /tmp/prev/data/alerts.db data/alerts.db
             echo "DB restored."
+            ls -l data/alerts.db
           fi
           if [ -f /tmp/prev/summaries/all_runs.csv ]; then
             cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
@@ -101,7 +113,37 @@ jobs:
             echo "No prior all_runs.csv — will create new."
           fi
 
-      # ---------- 3. Tests & migrations ----------
+      # ---------- 3. Pre-scan state ----------
+      - name: Pre-scan DB state
+        continue-on-error: true
+        run: |
+          python3 -c "
+          import sqlite3, os
+          p = os.environ.get('DB_PATH', 'data/alerts.db')
+          if not os.path.exists(p):
+              print('Pre-scan DB state: no DB yet')
+          else:
+              con = sqlite3.connect(p)
+              cur = con.cursor()
+              for t in ['snapshots','alerts','outcomes','trigger_results']:
+                  try:
+                      n = cur.execute(f'SELECT COUNT(*) FROM {t}').fetchone()[0]
+                      print(f'  {t}: {n}')
+                  except Exception as e:
+                      print(f'  {t}: ERR {e}')
+              try:
+                  rng = cur.execute('SELECT MIN(scan_date), MAX(scan_date) FROM snapshots').fetchone()
+                  print(f'  scan_date range: {rng[0]} -> {rng[1]}')
+              except Exception:
+                  pass
+              con.close()
+          "
+
+      # ---------- 4. Metadata + tests + migrations ----------
+      - name: Write run metadata
+        continue-on-error: true
+        run: python3 scripts/write_run_metadata.py
+
       - name: Outcome engine tests
         run: python3 tests/test_outcome_engine.py
 
@@ -111,21 +153,20 @@ jobs:
           python3 scripts/migrate_research_meta.py
           python3 scripts/migrate_cost_columns.py
 
-      # ---------- 4. Preflight (soft) ----------
+      # ---------- 5. Preflight (soft) ----------
       - name: Preflight check
         continue-on-error: true
         run: python3 scripts/preflight.py || true
 
-      # ---------- 5. Scanner (with log capture) ----------
+      # ---------- 6. Scanner (with log capture) ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
         run: |
           set -o pipefail
           python3 scan.py 2>&1 | tee scan.log
-          echo "exit=$?" >> $GITHUB_OUTPUT
 
-      # ---------- 6. Build run summary ----------
+      # ---------- 7. Build run summary ----------
       - name: Build run_summary.json
         if: always()
         run: |
@@ -137,30 +178,16 @@ jobs:
           echo "----- run_summary.json -----"
           cat run_summary.json || true
 
-      # ---------- 7. Append to all_runs.csv ----------
+      # ---------- 8. Append to all_runs.csv ----------
       - name: Append to all_runs.csv
         if: always()
         run: |
           mkdir -p summaries
-          if [ ! -f summaries/all_runs.csv ]; then
-            # header only
-            python3 - <<'PY'
-import csv, os
-fields = ["run_number","run_id","time_et","scan_date","event",
-          "is_scheduled","in_pm_window","preflight_passed","universe",
-          "strict","liquidity_rejects","dataquality_blocked","plan_blocked",
-          "plan_blocked_list","top5_returned","pre_scan_snapshots",
-          "post_scan_snapshots","generated_at_utc"]
-if not os.path.exists("summaries/all_runs.csv"):
-    with open("summaries/all_runs.csv","w",newline="",encoding="utf-8") as f:
-        csv.DictWriter(f, fieldnames=fields).writeheader()
-PY
-          fi
           python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
           echo "----- all_runs.csv -----"
           cat summaries/all_runs.csv || true
 
-      # ---------- 8. Diagnostics ----------
+      # ---------- 9. Diagnostics (soft) ----------
       - name: Research diagnostics
         if: always()
         continue-on-error: true
@@ -171,7 +198,7 @@ PY
         continue-on-error: true
         run: python3 scripts/pm_forensics.py || true
 
-      # ---------- 9. Upload ----------
+      # ---------- 10. Upload ----------
       - name: Upload scan artifact (DB + summary + CSV)
         if: always()
         uses: actions/upload-artifact@v4
@@ -185,7 +212,7 @@ PY
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload daily aggregate (rolling, overwrite)
+      - name: Upload daily aggregate (rolling)
         if: always()
         uses: actions/upload-artifact@v4
         with:
