@@ -1,0 +1,22 @@
+name: Lint workflow files
+on: [push, pull_request]
+jobs:
+  yaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: pip install yamllint
+      - run: yamllint .github/workflows/
+      - run: |
+          python3 - <<'PY'
+          import glob, yaml, sys
+          for f in glob.glob(".github/workflows/*.yml"):
+              try:
+                  yaml.safe_load(open(f))
+                  print(f"OK  {f}")
+              except Exception as e:
+                  print(f"ERR {f}: {e}")
+                  sys.exit(1)
+          PY
