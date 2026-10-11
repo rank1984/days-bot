@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT — Run Summary Extractor (v2)
+DAYS-BOT — Run Summary Extractor (v3)
 -------------------------------------
 קורא scan.log ומייצר run_summary.json.
-שדות זיהוי נלקחים מ-env vars אם לא נמצאו בלוג.
+
+תיקון v3:
+  שלושת השדות (is_scheduled, in_pm_window, preflight_passed) נחלצים
+  קודם מהלוג, אחר כך מ-env vars, ואם אין — ברירת מחדל 0 (FAIL בטוח).
 
 Env vars אופציונליים:
-    RUN_ID, RUN_NUMBER, EVENT, SCAN_DATE, TIME_ET
+    RUN_ID, RUN_NUMBER, EVENT, SCAN_DATE, TIME_ET,
+    IS_SCHEDULED, IN_PM_WINDOW, PREFLIGHT_PASSED
 """
 import re
 import json
@@ -23,6 +27,7 @@ def load(path: str) -> str:
 
 
 def find(pat: str, text: str, default=None, cast=str):
+    """מחזיר את group(1) של ההתאמה הראשונה, או default אם אין."""
     m = re.search(pat, text, re.MULTILINE)
     if not m:
         return default
@@ -39,10 +44,21 @@ def first_not_none(*values):
     return None
 
 
+def _env_int(name: str, default: int = 0) -> int:
+    """קורא env var כמספר שלם, מחזיר default אם ריק או לא תקין."""
+    raw = os.environ.get(name, "")
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        return int(str(raw).strip())
+    except (ValueError, TypeError):
+        return default
+
+
 def extract(log: str) -> dict:
     env = os.environ
 
-    # --- PLAN_BLOCKED ---
+    # --- PLAN_BLOCKED entries ---
     pairs = re.findall(
         r"PLAN_BLOCKED\s+([A-Z0-9\.\-]+)\s*\|\s*reason=([A-Z_]+)",
         log,
@@ -83,24 +99,49 @@ def extract(log: str) -> dict:
         env.get("EVENT"),
     )
 
+    # --- שלושת השדות הרגישים: לוג → env → 0 (FAIL בטוח) ---
+    is_scheduled = find(
+        r"IS_SCHEDULED:\s+(\d)", log,
+        _env_int("IS_SCHEDULED", 0), int,
+    )
+    in_pm_window = find(
+        r"IN_PM_WINDOW:\s+(\d)", log,
+        _env_int("IN_PM_WINDOW", 0), int,
+    )
+    preflight_passed = find(
+        r"PREFLIGHT_PASSED:\s+(\d)", log,
+        _env_int("PREFLIGHT_PASSED", 0), int,
+    )
+
     summary = {
+        # זיהוי הריצה
         "run_number":          run_number,
         "run_id":              run_id,
         "time_et":             time_et,
         "scan_date":           scan_date,
         "event":               event,
-        "is_scheduled":        find(r"IS_SCHEDULED:\s+(\d)", log, 0, int),
-        "in_pm_window":        find(r"IN_PM_WINDOW:\s+(\d)", log, 0, int),
-        "preflight_passed":    find(r"PREFLIGHT_PASSED:\s+(\d)", log, 0, int),
+
+        # דגלי context — 0 = FAIL בטוח
+        "is_scheduled":        is_scheduled,
+        "in_pm_window":        in_pm_window,
+        "preflight_passed":    preflight_passed,
+
+        # שלבי Discovery
         "universe":            find(r"Final:\s+(\d+)\s+symbols", log, cast=int),
         "strict":              find(r"Discovery returned\s+(\d+)\s+candidates", log, 0, int),
+
+        # שלבי FullScan / Gates
         "liquidity_rejects":   find(r"Liquidity rejects:\s+(\d+)", log, 0, int),
         "dataquality_blocked": find(r"DataQuality blocked:\s+(\d+)", log, 0, int),
         "plan_blocked":        len(pairs),
         "plan_blocked_list":   [f"{t} ({r})" for t, r in pairs],
         "top5_returned":       find(r"Top 5 returned:\s+(\d+)", log, 0, int),
+
+        # גדילת ה-chain
         "pre_scan_snapshots":  pre,
         "post_scan_snapshots": pre + saved,
+
+        # מטא
         "generated_at_utc":    datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     return summary
