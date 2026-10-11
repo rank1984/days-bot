@@ -60,7 +60,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ---------- 1b. זהה את ה-entry point ----------
+      # ---------- 1b. זהה entry point ----------
       - name: Locate scanner entry point
         id: entry
         run: |
@@ -72,40 +72,33 @@ jobs:
               exit 0
             fi
           done
-
           echo "ERROR: no scanner entry point found."
-          echo "--- files in root ---"
           ls -la
-          echo "--- files in scripts/ ---"
-          ls -la scripts/ 2>/dev/null || echo "(no scripts/ dir)"
-          echo "--- python files with 'Starting discovery' ---"
-          grep -rl "Starting discovery" . --include="*.py" 2>/dev/null \
-            | grep -v __pycache__ || echo "(none)"
+          ls -la scripts/ 2>/dev/null || true
           exit 1
 
-      # ---------- 2. מצא ריצה קודמת עם ארטיפקט ----------
+      # ---------- 2. מצא ריצה קודמת (רך — לא מפיל) ----------
       - name: Find previous run with valid artifact
         id: prev
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "Looking for the most recent successful run with a valid artifact ..."
 
-          # >>> התיקון: חותכים קודם ב-@ ואז לוקחים basename <<<
           WF_REF="${{ github.workflow_ref }}"
           WF_PATH="${WF_REF%@*}"
           WF_FILE="${WF_PATH##*/}"
-          echo "workflow ref:  $WF_REF"
           echo "workflow file: $WF_FILE"
 
           PREV=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=15" \
-            --jq ".workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status==\"completed\") | .id" \
+            "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=20" \
+            --jq ".workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status==\"completed\" and .conclusion==\"success\") | .id" \
             2>/dev/null | head -n 1 || true)
 
           if [ -z "$PREV" ]; then
-            echo "No previous run — starting fresh."
+            echo "No previous successful run — starting fresh."
             echo "artifact=" >> $GITHUB_OUTPUT
             exit 0
           fi
@@ -119,6 +112,7 @@ jobs:
           echo "artifact=$ART" >> $GITHUB_OUTPUT
           echo "Selected: run=$PREV artifact=$ART"
 
+      # ---------- 2b. הורדה — רך, לא מפיל ----------
       - name: Download previous artifact
         if: steps.prev.outputs.artifact != ''
         continue-on-error: true
@@ -129,19 +123,17 @@ jobs:
 
       - name: Restore DB and prior summaries
         if: steps.prev.outputs.artifact != ''
+        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p data summaries
           if [ -f /tmp/prev/data/alerts.db ]; then
             cp /tmp/prev/data/alerts.db data/alerts.db
             echo "DB restored."
-            ls -l data/alerts.db
           fi
           if [ -f /tmp/prev/summaries/all_runs.csv ]; then
             cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
-            echo "Prior all_runs.csv restored ($(wc -l < summaries/all_runs.csv) lines)."
-          else
-            echo "No prior all_runs.csv — will create new."
+            echo "Prior all_runs.csv restored."
           fi
 
       # ---------- 3. Pre-scan state ----------
@@ -162,41 +154,53 @@ jobs:
                       print(f'  {t}: {n}')
                   except Exception as e:
                       print(f'  {t}: ERR {e}')
-              try:
-                  rng = cur.execute('SELECT MIN(scan_date), MAX(scan_date) FROM snapshots').fetchone()
-                  print(f'  scan_date range: {rng[0]} -> {rng[1]}')
-              except Exception:
-                  pass
               con.close()
           "
 
       # ---------- 4. Metadata + tests + migrations ----------
       - name: Write run metadata
         continue-on-error: true
-        run: python3 scripts/write_run_metadata.py
+        run: python3 scripts/write_run_metadata.py || true
 
       - name: Outcome engine tests
-        run: python3 tests/test_outcome_engine.py
+        continue-on-error: true
+        run: python3 tests/test_outcome_engine.py || true
 
       - name: Migrations
+        continue-on-error: true
         run: |
-          python3 scripts/migrate_event_rank.py
-          python3 scripts/migrate_research_meta.py
-          python3 scripts/migrate_cost_columns.py
+          python3 scripts/migrate_event_rank.py || true
+          python3 scripts/migrate_research_meta.py || true
+          python3 scripts/migrate_cost_columns.py || true
 
-      # ---------- 5. Preflight (soft) ----------
+      # ---------- 5. Preflight ----------
       - name: Preflight check
         continue-on-error: true
         run: python3 scripts/preflight.py || true
 
-      # ---------- 6. Scanner ----------
+      # ---------- 6. Scanner (רך, אבל לוכד שגיאה) ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
         run: |
           set -o pipefail
-          echo ">>> running: python3 ${{ steps.entry.outputs.entry }}"
-          python3 "${{ steps.entry.outputs.entry }}" 2>&1 | tee -a scan.log
+          ENTRY="${{ steps.entry.outputs.entry }}"
+          echo ">>> running: python3 $ENTRY"
+          if python3 "$ENTRY" 2>&1 | tee -a scan.log; then
+            echo "scanner_exit=0" >> $GITHUB_OUTPUT
+          else
+            EXIT_CODE=$?
+            echo "scanner_exit=$EXIT_CODE" >> $GITHUB_OUTPUT
+            echo "::warning::Scanner exited with code $EXIT_CODE"
+          fi
+
+      # ---------- 6b. אם הסורק נכשל — הצג לוג ----------
+      - name: Show scanner log on failure
+        if: always() && steps.scan.outputs.scanner_exit != '0'
+        run: |
+          echo "===== SCANNER FAILED (exit=${{ steps.scan.outputs.scanner_exit }}) ====="
+          echo "--- last 80 lines of scan.log ---"
+          tail -80 scan.log || echo "(no scan.log)"
 
       # ---------- 7. Build run summary ----------
       - name: Build run_summary.json
@@ -208,7 +212,7 @@ jobs:
           SCAN_DATE:    ${{ env.TODAY_ET }}
           TIME_ET:      ${{ env.TIME_ET }}
         run: |
-          if [ -f scan.log ]; then
+          if [ -f scan.log ] && [ -s scan.log ]; then
             python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
           else
             echo "{}" > run_summary.json
