@@ -1,22 +1,50 @@
 name: Lint workflow files
-on: [push, pull_request]
+
+on:
+  push:
+    paths:
+      - '.github/workflows/**'
+      - '.yamllint'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - '.yamllint'
+
 jobs:
   yaml:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - run: pip install yamllint
-      - run: yamllint .github/workflows/
-      - run: |
+        with:
+          python-version: '3.11'
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Show .yamllint config
+        run: |
+          echo "----- .yamllint -----"
+          cat .yamllint || echo "MISSING .yamllint file!"
+
+      - name: yamllint (parsable, so errors are readable)
+        run: |
+          yamllint -f parsable -c .yamllint .github/workflows/
+
+      - name: Validate YAML syntax (Python)
+        if: always()
+        run: |
           python3 - <<'PY'
           import glob, yaml, sys
-          for f in glob.glob(".github/workflows/*.yml"):
+          failed = False
+          for f in sorted(glob.glob(".github/workflows/*.yml")):
               try:
-                  yaml.safe_load(open(f))
+                  with open(f, encoding="utf-8") as fh:
+                      yaml.safe_load(fh)
                   print(f"OK  {f}")
               except Exception as e:
                   print(f"ERR {f}: {e}")
-                  sys.exit(1)
+                  failed = True
+          sys.exit(1 if failed else 0)
           PY
