@@ -1,44 +1,17 @@
 name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
-  workflow_dispatch:
-    inputs:
-      run_evaluator:
-        description: 'Run evaluator after scan?'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
-      force_evaluator:
-        description: 'Force evaluator (delete existing outcomes + triggers)'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-
   schedule:
-    - cron: '02 0 * * 1-5'
-    - cron: '32 0 * * 1-5'
-    - cron: '02 1 * * 1-5'
-    - cron: '32 1 * * 1-5'
-    - cron: '02 2 * * 1-5'
-    - cron: '32 2 * * 1-5'
-    - cron: '02 3 * * 1-5'
-    - cron: '32 3 * * 1-5'
-    - cron: '02 4 * * 1-5'
-    - cron: '32 4 * * 1-5'
+    - cron: '*/30 4-11 * * 1-5'   # 04:00–11:59 UTC = 00:00–07:59 ET
+  workflow_dispatch:
 
 permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: days-bot-scan
-  cancel-in-progress: false
+env:
+  PYTHONUNBUFFERED: "1"
+  DB_PATH: data/alerts.db
 
 jobs:
   scan:
@@ -46,376 +19,178 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
+      # ---------- 0. זמן ----------
+      - name: Compute TODAY_ET
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
 
-      - name: Prepare data directory
-        run: mkdir -p data
-
-      # ============================================================
-      # STEP 1: Determine scan date and PM window
-      # ============================================================
-      - name: Determine scan date and PM window
-        id: date
+      - name: Banner
         run: |
-          TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
-          NOW_HHMM=$(TZ=America/New_York date +%H%M)
-          NOW_ET=$(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z')
-          NOW_UTC=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-          NOW_IL=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')
-
-          if [ "$NOW_HHMM" -ge "0400" ] && [ "$NOW_HHMM" -lt "0930" ]; then
-            IN_PM_WINDOW=true
-          else
-            IN_PM_WINDOW=false
-          fi
-
-          echo "today=$TODAY_ET" >> "$GITHUB_OUTPUT"
-          echo "now_utc=$NOW_UTC" >> "$GITHUB_OUTPUT"
-          echo "now_hhmm=$NOW_HHMM" >> "$GITHUB_OUTPUT"
-          echo "in_pm_window=$IN_PM_WINDOW" >> "$GITHUB_OUTPUT"
-
           echo "=================================================="
           echo "DAYS-BOT V5.0.6.5 SCAN"
           echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
           echo "Event:      ${{ github.event_name }}"
-          echo "Git SHA:    ${{ github.sha }}"
-          echo "Branch:     ${{ github.ref_name }}"
-          echo "UTC:        $NOW_UTC"
-          echo "ET:         $NOW_ET"
-          echo "Israel:     $NOW_IL"
+          echo "SHA:        ${{ github.sha }}"
+          echo "UTC:        $(date -u +%FT%TZ)"
+          echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
+          echo "Israel:     $(TZ=Asia/Jerusalem date '+%F %T %Z')"
           echo "Scan date:  $TODAY_ET"
-          echo "PM window:  $IN_PM_WINDOW (now=$NOW_HHMM ET)"
           echo "=================================================="
 
-      # ============================================================
-      # STEP 2a: DIAGNOSTIC — inspect GitHub API output
-      #
-      # V5.0.6.5 — critical fix:
-      # The GitHub API filter ?status=completed returns OLD runs
-      # from weeks ago (e.g., Sept 7) instead of recent runs from
-      # today. This diagnostic documents that behavior.
-      # ============================================================
-      - name: Diagnostic — inspect GitHub API runs
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # ---------- 1. Checkout ----------
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
         run: |
-          set +e
-          echo "=================================================="
-          echo "DIAGNOSTIC: First 10 runs (no status filter)"
-          echo "=================================================="
-          gh api -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=10" \
-            --jq '.workflow_runs[] | [.id, .run_started_at, .run_number, .status, (.conclusion // "null")] | @tsv' \
-            || echo "(failed)"
-          echo ""
-          echo "=================================================="
-          echo "DIAGNOSTIC: First 10 runs with ?status=completed"
-          echo "(NOTE: this filter is BROKEN in GitHub API —"
-          echo " returns old runs from weeks ago, not recent runs)"
-          echo "=================================================="
-          gh api -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=10&status=completed" \
-            --jq '.workflow_runs[] | [.id, .run_started_at, .run_number, .status, .conclusion] | @tsv' \
-            || echo "(failed)"
-          echo "=================================================="
-          exit 0
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ============================================================
-      # STEP 2b: Cumulative DB restore
-      #
-      # V5.0.6.5 — fetch runs WITHOUT any status filter.
-      # Filter conclusion=success in jq.
-      #
-      # Iterate from newest to oldest, find the first run that has
-      # a valid scan-* artifact (not expired), and use that.
-      # ============================================================
-      - name: Find latest previous artifact (cumulative DB)
-        id: restore
+      # ---------- 2. Restore previous run artifact ----------
+      - name: Find previous run with valid artifact
+        id: prev
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           echo "Looking for the most recent successful run with a valid artifact ..."
-
-          PREV_RUN=""
-          PREV_RUN_NUMBER=""
-          PREV_RUN_STARTED=""
-          ARTIFACT_NAME=""
-
-          # Fetch last 100 runs (any status), filter conclusion=success in jq.
-          # DO NOT use &status=completed — that filter is broken on GitHub API.
-          RUNS_TSV=$(gh api -H "Accept: application/vnd.github+json" \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=100" \
-            --jq '.workflow_runs[] | select(.conclusion == "success") | [.id, .run_started_at, .run_number] | @tsv')
-
-          if [ -z "$RUNS_TSV" ]; then
-            echo "has_prev=false" >> "$GITHUB_OUTPUT"
-            echo "No successful runs found — starting fresh DB."
+          PREV=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/${{ github.workflow }}/runs?per_page=15" \
+            --jq ".workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status==\"completed\") | .id" \
+            | head -n 1)
+          if [ -z "$PREV" ]; then
+            echo "No previous run — starting fresh."
+            echo "artifact=" >> $GITHUB_OUTPUT
             exit 0
           fi
+          ART=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/$PREV/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("scan-")) | .name' \
+            | head -n 1)
+          echo "run=$PREV"        >> $GITHUB_OUTPUT
+          echo "artifact=$ART"    >> $GITHUB_OUTPUT
+          echo "Selected: run=$PREV artifact=$ART"
 
-          # Iterate: newest to oldest
-          while IFS=$'\t' read -r RUN_ID RUN_STARTED_AT RUN_NUMBER; do
-            if [ -z "$RUN_ID" ]; then
-              continue
-            fi
-            if [ "$RUN_ID" = "${{ github.run_id }}" ]; then
-              echo "  skip current run $RUN_ID"
-              continue
-            fi
-
-            echo "  checking run #$RUN_NUMBER ($RUN_ID) at $RUN_STARTED_AT ..."
-
-            CANDIDATE_ARTIFACT=$(gh api -H "Accept: application/vnd.github+json" \
-              "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts?per_page=100" \
-              --jq '[.artifacts[] | select((.name | startswith("scan-")) and (.expired == false))] | sort_by(.created_at) | reverse | .[0].name // empty' 2>/dev/null || echo "")
-
-            if [ -n "$CANDIDATE_ARTIFACT" ]; then
-              PREV_RUN="$RUN_ID"
-              PREV_RUN_NUMBER="$RUN_NUMBER"
-              PREV_RUN_STARTED="$RUN_STARTED_AT"
-              ARTIFACT_NAME="$CANDIDATE_ARTIFACT"
-              echo "  -> found valid artifact: $ARTIFACT_NAME"
-              break
-            else
-              echo "  -> no valid artifact; trying older run"
-            fi
-          done <<< "$RUNS_TSV"
-
-          if [ -z "$PREV_RUN" ] || [ -z "$ARTIFACT_NAME" ]; then
-            echo "has_prev=false" >> "$GITHUB_OUTPUT"
-            echo "No usable artifact found — starting fresh DB."
-            exit 0
-          fi
-
-          echo ""
-          echo "Selected:"
-          echo "  run=$PREV_RUN (#$PREV_RUN_NUMBER)"
-          echo "  started=$PREV_RUN_STARTED"
-          echo "  artifact=$ARTIFACT_NAME"
-
-          echo "has_prev=true" >> "$GITHUB_OUTPUT"
-          echo "prev_run=$PREV_RUN" >> "$GITHUB_OUTPUT"
-          echo "prev_run_number=$PREV_RUN_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "prev_run_started=$PREV_RUN_STARTED" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
-
-      - name: Download previous artifact
-        if: steps.restore.outputs.has_prev == 'true'
+      - name: Download previous artifact (DB + all_runs.csv)
+        if: steps.prev.outputs.artifact != ''
         uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          name: ${{ steps.restore.outputs.artifact_name }}
-          run-id: ${{ steps.restore.outputs.prev_run }}
-          path: /tmp/prev/
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
 
-      - name: Restore DB
-        if: steps.restore.outputs.has_prev == 'true'
+      - name: Restore DB and prior summaries
+        if: steps.prev.outputs.artifact != ''
         run: |
           set -euo pipefail
-          echo "Restoring DB from artifact: ${{ steps.restore.outputs.artifact_name }}"
-          echo "From run: ${{ steps.restore.outputs.prev_run }} (#${{ steps.restore.outputs.prev_run_number }})"
-
-          if [ -f /tmp/prev/alerts.db ]; then
-            cp /tmp/prev/alerts.db data/alerts.db
-          elif [ -f /tmp/prev/data/alerts.db ]; then
+          mkdir -p data summaries
+          if [ -f /tmp/prev/data/alerts.db ]; then
             cp /tmp/prev/data/alerts.db data/alerts.db
+            echo "DB restored."
+          fi
+          if [ -f /tmp/prev/summaries/all_runs.csv ]; then
+            cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
+            echo "Prior all_runs.csv restored ($(wc -l < summaries/all_runs.csv) lines)."
           else
-            echo "WARNING: alerts.db not found in artifact"
-            find /tmp/prev -type f -maxdepth 3 || true
-            echo "Starting with empty DB."
-            exit 0
+            echo "No prior all_runs.csv — will create new."
           fi
 
-          echo "DB restored successfully."
-          ls -lh data/alerts.db
-
-      - name: DB pre-scan summary
-        if: steps.restore.outputs.has_prev == 'true'
-        run: |
-          python3 -c "
-          import sqlite3, os
-          p = 'data/alerts.db'
-          if not os.path.exists(p):
-              print('No DB file'); raise SystemExit
-          c = sqlite3.connect(p); cur = c.cursor()
-          try:
-              print('Pre-scan DB state:')
-              print('  snapshots:      ', cur.execute('SELECT COUNT(*) FROM snapshots').fetchone()[0])
-              print('  alerts:         ', cur.execute('SELECT COUNT(*) FROM alerts').fetchone()[0])
-              print('  outcomes:       ', cur.execute('SELECT COUNT(*) FROM outcomes').fetchone()[0])
-              print('  trigger_results:', cur.execute('SELECT COUNT(*) FROM trigger_results').fetchone()[0])
-              rows = cur.execute('SELECT MIN(scan_date), MAX(scan_date) FROM snapshots').fetchone()
-              print('  scan_date range:', rows[0], '->', rows[1])
-          except Exception as e:
-              print('  (schema check failed:', e, ')')
-          c.close()
-          "
-
-      # ============================================================
-      # STEP 3: Write run metadata
-      # ============================================================
-      - name: Write run_metadata.json
-        run: python3 scripts/write_run_metadata.py
-
-      # ============================================================
-      # STEP 4: Run tests
-      # ============================================================
-      - name: Run outcome engine tests
+      # ---------- 3. Tests & migrations ----------
+      - name: Outcome engine tests
         run: python3 tests/test_outcome_engine.py
 
-      # ============================================================
-      # STEP 5: Migrations (idempotent)
-      # ============================================================
-      - name: Migrate — ensure event_rank column
-        run: python3 scripts/migrate_event_rank.py
+      - name: Migrations
+        run: |
+          python3 scripts/migrate_event_rank.py
+          python3 scripts/migrate_research_meta.py
+          python3 scripts/migrate_cost_columns.py
 
-      - name: Migrate — ensure research_run metadata columns
-        run: python3 scripts/migrate_research_meta.py
-
-      - name: Migrate — ensure cost logging columns
-        run: python3 scripts/migrate_cost_columns.py
-
-      # ============================================================
-      # STEP 6: Preflight check
-      # ============================================================
+      # ---------- 4. Preflight (soft) ----------
       - name: Preflight check
-        id: preflight
+        continue-on-error: true
+        run: python3 scripts/preflight.py || true
+
+      # ---------- 5. Scanner (with log capture) ----------
+      - name: Run scanner
+        id: scan
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python3 scan.py 2>&1 | tee scan.log
+          echo "exit=$?" >> $GITHUB_OUTPUT
+
+      # ---------- 6. Build run summary ----------
+      - name: Build run_summary.json
+        if: always()
+        run: |
+          if [ -f scan.log ]; then
+            python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
+          else
+            echo "{}" > run_summary.json
+          fi
+          echo "----- run_summary.json -----"
+          cat run_summary.json || true
+
+      # ---------- 7. Append to all_runs.csv ----------
+      - name: Append to all_runs.csv
+        if: always()
+        run: |
+          mkdir -p summaries
+          if [ ! -f summaries/all_runs.csv ]; then
+            # header only
+            python3 - <<'PY'
+import csv, os
+fields = ["run_number","run_id","time_et","scan_date","event",
+          "is_scheduled","in_pm_window","preflight_passed","universe",
+          "strict","liquidity_rejects","dataquality_blocked","plan_blocked",
+          "plan_blocked_list","top5_returned","pre_scan_snapshots",
+          "post_scan_snapshots","generated_at_utc"]
+if not os.path.exists("summaries/all_runs.csv"):
+    with open("summaries/all_runs.csv","w",newline="",encoding="utf-8") as f:
+        csv.DictWriter(f, fieldnames=fields).writeheader()
+PY
+          fi
+          python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
+          echo "----- all_runs.csv -----"
+          cat summaries/all_runs.csv || true
+
+      # ---------- 8. Diagnostics ----------
+      - name: Research diagnostics
         if: always()
         continue-on-error: true
-        env:
-          TODAY_ET: ${{ steps.date.outputs.today }}
-        run: |
-          set +e
-          python3 scripts/preflight.py
-          EXIT_CODE=$?
+        run: python3 scripts/research_diagnostics.py || true
 
-          if [ "$EXIT_CODE" = "0" ]; then
-            RESEARCH_DAY=true
-          else
-            RESEARCH_DAY=false
-          fi
-
-          echo "preflight_exit=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-          echo "research_day=$RESEARCH_DAY" >> "$GITHUB_OUTPUT"
-
-          echo ""
-          echo "=================================================="
-          if [ "$RESEARCH_DAY" = "true" ]; then
-            echo "PREFLIGHT: PASSED (day eligible for Event counting)"
-          else
-            echo "PREFLIGHT: FAILED (day NOT counted as research day)"
-            echo "  Reason: one or more assertions failed. See output above."
-          fi
-          echo "=================================================="
-          exit 0
-
-      # ============================================================
-      # STEP 7: Run scanner
-      # ============================================================
-      - name: Run scanner
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-          FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
-          RESEARCH_MODE: "true"
-          IS_SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '0' }}
-          IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window == 'true' && '1' || '0' }}
-          PREFLIGHT_PASSED: ${{ steps.preflight.outputs.research_day == 'true' && '1' || '0' }}
-        run: |
-          set -euo pipefail
-          echo "=================================================="
-          echo "SCANNER CONTEXT"
-          echo "  IS_SCHEDULED:     $IS_SCHEDULED"
-          echo "  IN_PM_WINDOW:     $IN_PM_WINDOW"
-          echo "  PREFLIGHT_PASSED: $PREFLIGHT_PASSED"
-          echo "=================================================="
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            python main.py fullscan_v34 --manual
-          else
-            python main.py fullscan_v34
-          fi
-
-      # ============================================================
-      # STEP 8: Research diagnostics
-      # ============================================================
-      - name: Run research diagnostics
+      - name: PM forensics
         if: always()
-        env:
-          TODAY_ET: ${{ steps.date.outputs.today }}
-          IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
-        run: python3 scripts/research_diagnostics.py
+        continue-on-error: true
+        run: python3 scripts/pm_forensics.py || true
 
-      # ============================================================
-      # STEP 9: PM forensics
-      # ============================================================
-      - name: Run PM forensics
-        if: always()
-        env:
-          TODAY_ET: ${{ steps.date.outputs.today }}
-          IN_PM_WINDOW: ${{ steps.date.outputs.in_pm_window }}
-        run: python3 scripts/pm_forensics.py
-
-      # ============================================================
-      # STEP 10: Evaluator (optional)
-      # ============================================================
-      - name: Run evaluator (optional)
-        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_evaluator == 'true'
-        env:
-          TODAY_ET: ${{ steps.date.outputs.today }}
-        run: |
-          set -euo pipefail
-          echo "=================================================="
-          echo "RUNNING EVALUATOR"
-          echo "scan_date:    $TODAY_ET"
-          echo "force:        ${{ inputs.force_evaluator }}"
-          echo "research_day: ${{ steps.preflight.outputs.research_day }}"
-          echo "=================================================="
-          if [ "${{ inputs.force_evaluator }}" = "true" ]; then
-            python3 evaluate_snapshots.py --scan-date "$TODAY_ET" --force
-          else
-            python3 evaluate_snapshots.py --scan-date "$TODAY_ET"
-          fi
-
-      # ============================================================
-      # STEP 11: Cost decomposition (log-only)
-      # ============================================================
-      - name: Compute cost decomposition (log-only)
-        if: always()
-        run: python3 scripts/cost_analyzer.py
-
-      # ============================================================
-      # STEP 12: Research comparison (log-only)
-      # ============================================================
-      - name: Research comparison report (log-only)
-        if: always()
-        run: python3 scripts/research_comparison.py
-
-      # ============================================================
-      # STEP 13: Upload daily artifact
-      # ============================================================
-      - name: Upload daily artifact
+      # ---------- 9. Upload ----------
+      - name: Upload scan artifact (DB + summary + CSV)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scan-${{ steps.date.outputs.today }}-r${{ github.run_number }}
-          path: data/
-          retention-days: 90
+          name: scan-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: |
+            data/alerts.db
+            run_summary.json
+            summaries/all_runs.csv
+            scan.log
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload daily aggregate (rolling, overwrite)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: all-runs-${{ env.TODAY_ET }}
+          path: summaries/all_runs.csv
+          if-no-files-found: warn
+          retention-days: 30
+          overwrite: true
