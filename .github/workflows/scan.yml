@@ -23,9 +23,11 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- 0. זמן + באנר (כותב ל-scan.log) ----------
-      - name: Compute TODAY_ET
-        run: echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+      # ---------- 0. זמן + באנר ----------
+      - name: Compute time env
+        run: |
+          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+          echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
 
       - name: Banner
         run: |
@@ -57,6 +59,29 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      # ---------- 1b. זהה את ה-entry point ----------
+      - name: Locate scanner entry point
+        id: entry
+        run: |
+          for f in scan.py main.py app.py bot.py scanner.py days_bot.py run_scan.py \
+                   scripts/scan.py scripts/main.py scripts/run_scan.py src/scan.py; do
+            if [ -f "$f" ]; then
+              echo "entry=$f" >> $GITHUB_OUTPUT
+              echo "FOUND entry point: $f"
+              exit 0
+            fi
+          done
+
+          echo "ERROR: no scanner entry point found."
+          echo "--- files in root ---"
+          ls -la
+          echo "--- files in scripts/ ---"
+          ls -la scripts/ 2>/dev/null || echo "(no scripts/ dir)"
+          echo "--- python files with 'Starting discovery' ---"
+          grep -rl "Starting discovery" . --include="*.py" 2>/dev/null \
+            | grep -v __pycache__ || echo "(none)"
+          exit 1
 
       # ---------- 2. מצא ריצה קודמת עם ארטיפקט ----------
       - name: Find previous run with valid artifact
@@ -160,13 +185,14 @@ jobs:
         continue-on-error: true
         run: python3 scripts/preflight.py || true
 
-      # ---------- 6. Scanner (append to scan.log) ----------
+      # ---------- 6. Scanner ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
         run: |
           set -o pipefail
-          python3 scan.py 2>&1 | tee -a scan.log
+          echo ">>> running: python3 ${{ steps.entry.outputs.entry }}"
+          python3 "${{ steps.entry.outputs.entry }}" 2>&1 | tee -a scan.log
 
       # ---------- 7. Build run summary ----------
       - name: Build run_summary.json
@@ -176,7 +202,7 @@ jobs:
           RUN_NUMBER:   ${{ github.run_number }}
           EVENT:        ${{ github.event_name }}
           SCAN_DATE:    ${{ env.TODAY_ET }}
-          TIME_ET:      ${{ env.TODAY_ET }}
+          TIME_ET:      ${{ env.TIME_ET }}
         run: |
           if [ -f scan.log ]; then
             python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
@@ -195,7 +221,7 @@ jobs:
           echo "----- all_runs.csv -----"
           cat summaries/all_runs.csv || true
 
-      # ---------- 9. Diagnostics (soft) ----------
+      # ---------- 9. Diagnostics ----------
       - name: Research diagnostics
         if: always()
         continue-on-error: true
@@ -207,7 +233,7 @@ jobs:
         run: python3 scripts/pm_forensics.py || true
 
       # ---------- 10. Upload ----------
-      - name: Upload scan artifact (DB + summary + CSV)
+      - name: Upload scan artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -220,7 +246,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Upload daily aggregate (rolling)
+      - name: Upload daily aggregate
         if: always()
         uses: actions/upload-artifact@v4
         with:
