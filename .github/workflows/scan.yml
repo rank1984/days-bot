@@ -64,8 +64,8 @@ jobs:
       - name: Locate scanner entry point
         id: entry
         run: |
-          for f in scan.py main.py app.py bot.py scanner.py days_bot.py run_scan.py \
-                   scripts/scan.py scripts/main.py scripts/run_scan.py src/scan.py; do
+          for f in main.py scan.py app.py bot.py scanner.py days_bot.py run_scan.py \
+                   scripts/main.py scripts/scan.py scripts/run_scan.py src/main.py src/scan.py; do
             if [ -f "$f" ]; then
               echo "entry=$f" >> $GITHUB_OUTPUT
               echo "FOUND entry point: $f"
@@ -92,13 +92,17 @@ jobs:
           set -euo pipefail
           echo "Looking for the most recent successful run with a valid artifact ..."
 
-          WF_FILE=$(basename "${{ github.workflow_ref }}" | cut -d@ -f1)
+          # >>> התיקון: חותכים קודם ב-@ ואז לוקחים basename <<<
+          WF_REF="${{ github.workflow_ref }}"
+          WF_PATH="${WF_REF%@*}"
+          WF_FILE="${WF_PATH##*/}"
+          echo "workflow ref:  $WF_REF"
           echo "workflow file: $WF_FILE"
 
           PREV=$(gh api \
             "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=15" \
             --jq ".workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status==\"completed\") | .id" \
-            | head -n 1 || true)
+            2>/dev/null | head -n 1 || true)
 
           if [ -z "$PREV" ]; then
             echo "No previous run — starting fresh."
@@ -109,7 +113,7 @@ jobs:
           ART=$(gh api \
             "repos/${{ github.repository }}/actions/runs/$PREV/artifacts" \
             --jq '.artifacts[] | select(.name | startswith("scan-")) | .name' \
-            | head -n 1 || true)
+            2>/dev/null | head -n 1 || true)
 
           echo "run=$PREV"     >> $GITHUB_OUTPUT
           echo "artifact=$ART" >> $GITHUB_OUTPUT
