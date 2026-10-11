@@ -25,11 +25,30 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- 0. זמן + באנר ----------
+      # ---------- 0. זמן + חישוב IN_PM_WINDOW + IS_SCHEDULED ----------
       - name: Compute time env
         run: |
           echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
           echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
+
+          # IN_PM_WINDOW: 04:00–09:30 ET
+          HOUR=$(TZ=America/New_York date +%H)
+          MIN=$(TZ=America/New_York date +%M)
+          NOW_MIN=$((10#$HOUR * 60 + 10#$MIN))
+          if [ "$NOW_MIN" -ge 240 ] && [ "$NOW_MIN" -lt 570 ]; then
+            echo "IN_PM_WINDOW=1" >> $GITHUB_ENV
+            echo "PM window: IN ($HOUR:$MIN ET)"
+          else
+            echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
+            echo "PM window: OUT ($HOUR:$MIN ET)"
+          fi
+
+          # IS_SCHEDULED: schedule vs workflow_dispatch
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "IS_SCHEDULED=1" >> $GITHUB_ENV
+          else
+            echo "IS_SCHEDULED=0" >> $GITHUB_ENV
+          fi
 
       - name: Banner
         run: |
@@ -150,7 +169,6 @@ jobs:
 
           if [ "$restored_db" -eq 0 ] && [ "$restored_csv" -eq 0 ]; then
             echo "::error::Artifact '${{ steps.prev.outputs.artifact }}' downloaded but contains neither data/alerts.db nor summaries/all_runs.csv"
-            echo "--- contents of /tmp/prev ---"
             find /tmp/prev -type f | head -20 || echo "(empty)"
             exit 1
           fi
@@ -192,12 +210,27 @@ jobs:
           python3 scripts/migrate_research_meta.py || true
           python3 scripts/migrate_cost_columns.py || true
 
-      # ---------- 5. Preflight ----------
+      # ---------- 5. Preflight — לוכד exit code אמיתי ----------
       - name: Preflight check
+        id: preflight
         continue-on-error: true
-        run: python3 scripts/preflight.py || true
+        run: |
+          set +e
+          python3 scripts/preflight.py > preflight.log 2>&1
+          PF_EXIT=$?
+          cat preflight.log
 
-      # ---------- 6. Scanner (עם כל ה-Secrets) ----------
+          if [ "$PF_EXIT" -eq 0 ]; then
+            echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV
+            echo "preflight_passed=1" >> $GITHUB_OUTPUT
+            echo "Preflight OK"
+          else
+            echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
+            echo "preflight_passed=0" >> $GITHUB_OUTPUT
+            echo "::warning::Preflight exited with code $PF_EXIT — day NOT eligible for Event counting"
+          fi
+
+      # ---------- 6. Scanner ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
@@ -252,7 +285,6 @@ jobs:
         if: always() && steps.scan.outputs.scanner_exit != '0'
         run: |
           echo "===== SCANNER FAILED (exit=${{ steps.scan.outputs.scanner_exit }}) ====="
-          echo "--- last 80 lines of scan.log ---"
           tail -80 scan.log || echo "(no scan.log)"
 
       # ---------- 6c. בדיקת איכות discovery ----------
@@ -265,15 +297,18 @@ jobs:
           fi
           echo "Discovery produced snapshots — OK."
 
-      # ---------- 7. Build run summary ----------
+      # ---------- 7. Build run summary (עם env fallback) ----------
       - name: Build run_summary.json
         if: always()
         env:
-          RUN_ID:       ${{ github.run_id }}
-          RUN_NUMBER:   ${{ github.run_number }}
-          EVENT:        ${{ github.event_name }}
-          SCAN_DATE:    ${{ env.TODAY_ET }}
-          TIME_ET:      ${{ env.TIME_ET }}
+          RUN_ID:            ${{ github.run_id }}
+          RUN_NUMBER:        ${{ github.run_number }}
+          EVENT:             ${{ github.event_name }}
+          SCAN_DATE:         ${{ env.TODAY_ET }}
+          TIME_ET:           ${{ env.TIME_ET }}
+          IS_SCHEDULED:      ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:      ${{ env.IN_PM_WINDOW }}
+          PREFLIGHT_PASSED:  ${{ env.PREFLIGHT_PASSED }}
         run: |
           if [ -f scan.log ] && [ -s scan.log ]; then
             python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
@@ -314,6 +349,7 @@ jobs:
             run_summary.json
             summaries/all_runs.csv
             scan.log
+            preflight.log
           if-no-files-found: warn
           retention-days: 14
 
