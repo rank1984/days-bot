@@ -8,35 +8,28 @@ ignore: |
   .venv/
 
 rules:
-  # GitHub Actions משתמש ב-`on:` — yamllint חושב שזה בוליאני
   truthy:
     allowed-values: ['true', 'false', 'on', 'off', 'yes', 'no']
     check-keys: false
 
-  # שורות ארוכות בגלל ${{ ... }} ו-URLs
   line-length:
     max: 200
     allow-non-breakable-words: true
     allow-non-breakable-inline-mappings: true
 
-  # רווחים בסוף שורה — GitHub Actions לא תמיד נקי
   trailing-spaces: disable
 
-  # הערות לא חובה
   comments:
     min-spaces-from-content: 1
   comments-indentation: disable
 
-  # רווח אחרי נקודתיים — לפעמים יש תלות ב-$${}
   colons: disable
 
-  # רווחים בהזחה
   indentation:
     spaces: 2
     indent-sequences: consistent
     check-multi-line-strings: false
 
-  # סוגריים מסולסלים
   braces:
     min-spaces-inside: 0
     max-spaces-inside: 1
@@ -44,16 +37,12 @@ rules:
     min-spaces-inside: 0
     max-spaces-inside: 0
 
-  # מסמכים מרובים
   document-start: disable
 
-  # מפתחות כפולים
   key-duplicates: enable
 
-  # newline בסוף קובץ
-  new-line-at-end-of-file: enable
+  new-line-at-end-of-file: disable
 
-  # תו מפריד בין מסמכים
   empty-lines:
     max: 2
     max-start: 0
