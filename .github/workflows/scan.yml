@@ -169,7 +169,7 @@ jobs:
             exit 1
           fi
 
-      # ---------- 3. Pre-scan state ----------
+      # ---------- 3. Pre-scan state (כותב גם ל-scan.log) ----------
       - name: Pre-scan DB state
         continue-on-error: true
         run: |
@@ -190,7 +190,7 @@ jobs:
                   except Exception as e:
                       print(f'  {t}: ERR {e}')
               con.close()
-          "
+          " 2>&1 | tee -a scan.log
 
       # ---------- 4. Metadata + tests + migrations ----------
       - name: Write run metadata
