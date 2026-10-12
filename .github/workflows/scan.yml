@@ -173,7 +173,7 @@ jobs:
             exit 1
           fi
 
-      # ---------- 3. Pre-scan state (עם כותרת קבועה ל-parsing) ----------
+      # ---------- 3. Pre-scan state ----------
       - name: Pre-scan DB state
         continue-on-error: true
         run: |
@@ -237,6 +237,9 @@ jobs:
         id: scan
         continue-on-error: true
         env:
+          # >>> הקריטי: מפעיל את לוגיקת המחקר <<<
+          RESEARCH_MODE:        "true"
+
           # Alpaca
           ALPACA_API_KEY:       ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY:    ${{ secrets.ALPACA_SECRET_KEY }}
@@ -264,7 +267,7 @@ jobs:
 
           echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
 
-          for v in ALPACA_API_KEY ALPACA_SECRET_KEY FINNHUB_API_KEY FMP_API_KEY \
+          for v in RESEARCH_MODE ALPACA_API_KEY ALPACA_SECRET_KEY FINNHUB_API_KEY FMP_API_KEY \
                    GEMINI_API_KEY POLYGON_API_KEY TELEGRAM_TOKEN TELEGRAM_CHAT_ID; do
             if [ -n "${!v:-}" ]; then
               echo "  env $v = SET"
