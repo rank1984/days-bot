@@ -1,9 +1,9 @@
 name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
+  # UTC. 08:00–13:30 UTC ≈ 04:00–09:30 ET (EDT)
+  # בחורף (EST) שנה ל: '*/30 9-14 * * 1-5'
   schedule:
-    # UTC. 08:00–13:30 UTC ≈ 04:00–09:30 ET (EDT)
-    # בחורף (EST) שנה ל: '*/30 9-14 * * 1-5'
     - cron: '*/30 8-13 * * 1-5'
   workflow_dispatch:
 
@@ -31,7 +31,6 @@ jobs:
           echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
           echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
 
-          # IN_PM_WINDOW: 04:00–09:30 ET
           HOUR=$(TZ=America/New_York date +%H)
           MIN=$(TZ=America/New_York date +%M)
           NOW_MIN=$((10#$HOUR * 60 + 10#$MIN))
@@ -43,7 +42,6 @@ jobs:
             echo "PM window: OUT ($HOUR:$MIN ET)"
           fi
 
-          # IS_SCHEDULED: schedule vs workflow_dispatch
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "IS_SCHEDULED=1" >> $GITHUB_ENV
           else
@@ -134,7 +132,6 @@ jobs:
           echo "artifact=$ART" >> $GITHUB_OUTPUT
           echo "Selected: run=$PREV artifact=$ART"
 
-      # ---------- 2b. הורדת ארטיפקט מ-Run אחר ----------
       - name: Download previous artifact
         if: steps.prev.outputs.artifact != ''
         uses: actions/download-artifact@v4
@@ -145,7 +142,6 @@ jobs:
           run-id: ${{ steps.prev.outputs.run }}
           repository: ${{ github.repository }}
 
-      # ---------- 2c. שחזור מפורש עם בדיקה ----------
       - name: Restore DB and prior summaries
         if: steps.prev.outputs.artifact != ''
         run: |
@@ -212,7 +208,7 @@ jobs:
           python3 scripts/migrate_research_meta.py || true
           python3 scripts/migrate_cost_columns.py || true
 
-      # ---------- 5. Preflight — לוכד exit code אמיתי ----------
+      # ---------- 5. Preflight ----------
       - name: Preflight check
         id: preflight
         continue-on-error: true
@@ -237,22 +233,18 @@ jobs:
         id: scan
         continue-on-error: true
         env:
-          # >>> הקריטי: מפעיל את לוגיקת המחקר <<<
           RESEARCH_MODE:        "true"
 
-          # Alpaca
           ALPACA_API_KEY:       ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY:    ${{ secrets.ALPACA_SECRET_KEY }}
           ALPACA_BASE_URL:      https://paper-api.alpaca.markets
           APCA_API_BASE_URL:    https://paper-api.alpaca.markets
 
-          # ספקי נתונים משניים
           FINNHUB_API_KEY:      ${{ secrets.FINNHUB_API_KEY }}
           FMP_API_KEY:          ${{ secrets.FMP_API_KEY }}
           GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
           POLYGON_API_KEY:      ${{ secrets.POLYGON_API_KEY }}
 
-          # טלגרם
           TELEGRAM_TOKEN:       ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
@@ -267,8 +259,8 @@ jobs:
 
           echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
 
-          for v in RESEARCH_MODE ALPACA_API_KEY ALPACA_SECRET_KEY FINNHUB_API_KEY FMP_API_KEY \
-                   GEMINI_API_KEY POLYGON_API_KEY TELEGRAM_TOKEN TELEGRAM_CHAT_ID; do
+          for v in RESEARCH_MODE ALPACA_API_KEY ALPACA_SECRET_KEY FINNHUB_API_KEY \
+                   FMP_API_KEY GEMINI_API_KEY POLYGON_API_KEY TELEGRAM_TOKEN TELEGRAM_CHAT_ID; do
             if [ -n "${!v:-}" ]; then
               echo "  env $v = SET"
             else
@@ -284,19 +276,17 @@ jobs:
             echo "::warning::Scanner exited with code $EXIT_CODE"
           fi
 
-      # ---------- 6b. הצג לוג אם הסורק נכשל ----------
       - name: Show scanner log on failure
         if: always() && steps.scan.outputs.scanner_exit != '0'
         run: |
           echo "===== SCANNER FAILED (exit=${{ steps.scan.outputs.scanner_exit }}) ====="
           tail -80 scan.log || echo "(no scan.log)"
 
-      # ---------- 6c. בדיקת איכות discovery ----------
       - name: Validate discovery produced snapshots
         if: always()
         run: |
           if grep -q "snapshots_received': 0" scan.log 2>/dev/null; then
-            echo "::error::Discovery returned 0 snapshots — credentials missing or API failure. Not a valid research run."
+            echo "::error::Discovery returned 0 snapshots — credentials missing or API failure."
             exit 1
           fi
           echo "Discovery produced snapshots — OK."
