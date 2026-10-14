@@ -1,10 +1,11 @@
 name: DAYS-BOT V5.0.6 Trading Scanner
 
 on:
-  # UTC. 08:00–13:30 UTC ≈ 04:00–09:30 ET (EDT)
-  # בחורף (EST) שנה ל: '*/30 9-14 * * 1-5'
+  # UTC. 04:00–20:00 = ET 00:00–16:00 (EDT)
+  # IN_PM_WINDOW יסנן ריצות מחוץ ל-04:00–09:30 ET
+  # בחורף (EST) שנה ל: '*/30 5-21 * * 1-5'
   schedule:
-    - cron: '*/30 8-13 * * 1-5'
+    - cron: '*/30 4-20 * * 1-5'
   workflow_dispatch:
 
 permissions:
