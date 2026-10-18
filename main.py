@@ -106,10 +106,9 @@ def _build_swing_plan(candidate: dict) -> dict:
     """
     תוכנית מסחר ייעודית ל-Swing:
       Entry  = price
-      Stop   = price - 1.5 * ATR
+      Stop   = price - (1.5 * ATR) OR price - 2.5%, whichever is wider
       T1     = price + 2.0 * risk
       T2     = price + 4.0 * risk
-      Risk%  = MAX_RISK_PER_TRADE_V31
     """
     price = float(candidate.get('price', 0) or 0)
     atr = float(candidate.get('atr', 0) or 0)
@@ -120,22 +119,24 @@ def _build_swing_plan(candidate: dict) -> dict:
             "plan_error": "INVALID_PRICE_OR_ATR",
         }
 
-    # Stop = 1.5 ATR מתחת לכניסה (מאפשר תנודתיות swing)
-    stop = price - (1.5 * atr)
+    # Stop = 1.5 ATR, אבל לפחות 2.5% מהמחיר (כדי למנוע סטופים צמודים מדי)
+    atr_stop = price - (1.5 * atr)
+    min_pct_stop = price * 0.975  # 2.5% minimum stop distance
+    stop = min(atr_stop, min_pct_stop)  # min = lower price = wider stop
+
     if stop <= 0:
         return {
             "plan_valid": False,
             "plan_error": "STOP_BELOW_ZERO",
         }
 
-    risk_per_share = price - stop   # = 1.5 * ATR
+    risk_per_share = price - stop
     if risk_per_share <= 0:
         return {
             "plan_valid": False,
             "plan_error": "INVALID_RISK_PER_SHARE",
         }
 
-    # יעדים מבוססי R
     t1 = price + (2.0 * risk_per_share)
     t2 = price + (4.0 * risk_per_share)
 
@@ -170,7 +171,6 @@ def _build_swing_plan(candidate: dict) -> dict:
         "risk_pct": MAX_RISK_PER_TRADE_V31,
         "hold_type": "SWING_1_3D",
     }
-
 
 # ---------------------------------------------------------------------------
 # Legacy Normalization (for fullscan_v34)
