@@ -8,6 +8,9 @@ V5.0.6.3 changes:
     by the evaluator to filter the primary sample to research_run=1
     (scheduled AND in PM window AND preflight passed).
 
+V5.0.6.4 changes:
+  - Added pm_vwap_status to snapshots to distinguish real VWAP from TWAP fallback.
+
 F7 — cost model columns
 F1 — R from actual fill columns
 """
@@ -42,6 +45,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
     pm_source             TEXT,
     pm_data_quality       TEXT,
     pm_volume_status      TEXT,
+    pm_vwap_status        TEXT,  -- NEW V5.0.6.4
     float                 REAL,
     float_source          TEXT,
     short_interest        REAL,
@@ -116,9 +120,6 @@ CREATE TABLE IF NOT EXISTS outcomes (
     time_to_mae_sec           INTEGER,
     absolute_move_before_trigger_pct  REAL,
     relative_move_before_trigger_pct  REAL,
-    -- HISTORICAL NAME: entry_slippage_pct now holds FULL entry cost in
-    -- percent of raw fill: spread_pct/2 + (TICK_SIZE / raw_fill) * 100.
-    -- Do NOT interpret as "slippage only".
     entry_slippage_pct                REAL,
     entry_efficiency                  REAL,
     exit_reason               TEXT,
@@ -184,6 +185,8 @@ MIGRATIONS = [
     ("snapshots", "is_scheduled", "INTEGER DEFAULT 0"),
     ("snapshots", "in_pm_window", "INTEGER DEFAULT 0"),
     ("snapshots", "preflight_passed", "INTEGER DEFAULT 0"),
+    # V5.0.6.4 — VWAP / TWAP distinction
+    ("snapshots", "pm_vwap_status", "TEXT"),
 ]
 
 
@@ -258,6 +261,7 @@ def save_snapshot(candidate, scan_id, now_et):
         "pm_source": candidate.get("pm_source"),
         "pm_data_quality": candidate.get("pm_data_quality"),
         "pm_volume_status": candidate.get("pm_volume_status"),
+        "pm_vwap_status": candidate.get("pm_vwap_status"),  # NEW
         "float": candidate.get("float"),
         "float_source": candidate.get("float_source"),
         "short_interest": candidate.get("short_interest"),
@@ -300,7 +304,7 @@ def save_snapshot(candidate, scan_id, now_et):
                 scan_id, ticker, snapshot_time_utc, snapshot_time_et, scan_date,
                 price, prev_close, gap_pct, gap_sign, gap_bucket, is_extreme_gap,
                 pm_high, pm_low, pm_vwap, pm_volume, pm_bars, pm_bars_json,
-                pm_source, pm_data_quality, pm_volume_status,
+                pm_source, pm_data_quality, pm_volume_status, pm_vwap_status,
                 float, float_source, short_interest, short_ratio,
                 spread_pct, atr, rs_score, regime,
                 catalyst_type, catalyst_score, catalyst_summary,
@@ -314,7 +318,7 @@ def save_snapshot(candidate, scan_id, now_et):
                 :scan_id, :ticker, :snapshot_time_utc, :snapshot_time_et, :scan_date,
                 :price, :prev_close, :gap_pct, :gap_sign, :gap_bucket, :is_extreme_gap,
                 :pm_high, :pm_low, :pm_vwap, :pm_volume, :pm_bars, :pm_bars_json,
-                :pm_source, :pm_data_quality, :pm_volume_status,
+                :pm_source, :pm_data_quality, :pm_volume_status, :pm_vwap_status,
                 :float, :float_source, :short_interest, :short_ratio,
                 :spread_pct, :atr, :rs_score, :regime,
                 :catalyst_type, :catalyst_score, :catalyst_summary,
