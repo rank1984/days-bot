@@ -1,14 +1,12 @@
-name: DAYS-BOT V5.0.6 Trading Scanner
+name: DAYS-BOT V5.0.7 Swing Scanner
 
 on:
-  # כיבינו את ה-schedule של GitHub כי הוא לא אמין.
-  # התזמון יופעל ע"י cron-job.org חיצוני דרך workflow_dispatch.
+  # UTC. 13:30 UTC = 09:30 ET (פתיחת השוק)
+  # UTC. 20:30 UTC = 16:30 ET (סגירת השוק)
+  schedule:
+    - cron: '30 13 * * 1-5'
+    - cron: '30 20 * * 1-5'
   workflow_dispatch:
-    inputs:
-      is_cron:
-        description: 'Triggered by external cron'
-        required: false
-        default: 'false'
 
 permissions:
   contents: read
@@ -28,6 +26,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
+      # ---------- 0. זמן + חישוב משתני סביבה ----------
       - name: Compute time env
         run: |
           echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
@@ -36,7 +35,8 @@ jobs:
           HOUR=$(TZ=America/New_York date +%H)
           MIN=$(TZ=America/New_York date +%M)
           NOW_MIN=$((10#$HOUR * 60 + 10#$MIN))
-          if [ "$NOW_MIN" -ge 240 ] && [ "$NOW_MIN" -lt 570 ]; then
+          # חלון מסחר RTH
+          if [ "$NOW_MIN" -ge 570 ] && [ "$NOW_MIN" -lt 960 ]; then
             echo "IN_PM_WINDOW=1" >> $GITHUB_ENV
             echo "PM window: IN ($HOUR:$MIN ET)"
           else
@@ -44,8 +44,7 @@ jobs:
             echo "PM window: OUT ($HOUR:$MIN ET)"
           fi
 
-          # זיהוי האם זו ריצת מחקר אוטומטית
-          if [ "${{ github.event.inputs.is_cron }}" = "true" ] || [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "IS_SCHEDULED=1" >> $GITHUB_ENV
           else
             echo "IS_SCHEDULED=0" >> $GITHUB_ENV
@@ -55,18 +54,16 @@ jobs:
         run: |
           {
             echo "=================================================="
-            echo "DAYS-BOT V5.0.6.5 SCAN"
+            echo "DAYS-BOT V5.0.7 SWING SCAN"
             echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
             echo "Event:      ${{ github.event_name }}"
             echo "Git SHA:    ${{ github.sha }}"
-            echo "Branch:     ${{ github.ref_name }}"
             echo "UTC:        $(date -u +%FT%TZ)"
             echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
-            echo "Israel:     $(TZ=Asia/Jerusalem date '+%F %T %Z')"
-            echo "Scan date:  $TODAY_ET"
             echo "=================================================="
           } | tee scan.log
 
+      # ---------- 1. Checkout + Python ----------
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -84,47 +81,47 @@ jobs:
       - name: Locate scanner entry point
         id: entry
         run: |
-          for f in main.py scan.py app.py bot.py scanner.py days_bot.py run_scan.py \
-                   scripts/main.py scripts/scan.py scripts/run_scan.py src/main.py src/scan.py; do
+          for f in main.py scan.py app.py; do
             if [ -f "$f" ]; then
               echo "entry=$f" >> $GITHUB_OUTPUT
               echo "FOUND entry point: $f"
               exit 0
             fi
           done
-          echo "ERROR: no scanner entry point found."
           exit 1
 
-      # --- המשך השלבים בדיוק כמו שהיו (שחזור DB, Preflight, סורק וכו') ---
-      # (השארתי את כולם כפי שהם בקובץ הקודם, רק בלי ה-schedule)
-      
+      # ---------- 2. שחזור DB ----------
       - name: Find previous run with valid scan artifact
         id: prev
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          WF_FILE="scan.yml"
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=20" \
-            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          WF_REF="${{ github.workflow_ref }}"
+          WF_PATH="${WF_REF%@*}"
+          WF_FILE="${WF_PATH##*/}"
+
+          RUNS=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=10" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' \
+            2>/dev/null || echo "")
+
           FOUND_RUN=""
           FOUND_ART=""
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
               --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' 2>/dev/null | head -n 1 || true)
-            if [ -n "$ART" ]; then
-              FOUND_RUN="$RID"
-              FOUND_ART="$ART"
-              break
-            fi
+            if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
           done
-          if [ -z "$FOUND_RUN" ]; then
-            echo "artifact=" >> $GITHUB_OUTPUT
+
+          if [ -n "$FOUND_RUN" ]; then
+            echo "run=$FOUND_RUN"     >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+          else
             echo "run="      >> $GITHUB_OUTPUT
-            exit 0
+            echo "artifact=" >> $GITHUB_OUTPUT
           fi
-          echo "run=$FOUND_RUN"     >> $GITHUB_OUTPUT
-          echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
 
       - name: Download previous artifact
         if: steps.prev.outputs.artifact != ''
@@ -136,13 +133,15 @@ jobs:
           run-id: ${{ steps.prev.outputs.run }}
           repository: ${{ github.repository }}
 
-      - name: Restore DB and prior summaries
+      - name: Restore DB
         if: steps.prev.outputs.artifact != ''
         run: |
           mkdir -p data summaries
-          [ -f /tmp/prev/data/alerts.db ] && cp /tmp/prev/data/alerts.db data/alerts.db && echo "DB restored"
-          [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv && echo "CSV restored"
+          [ -f /tmp/prev/data/alerts.db ] && cp /tmp/prev/data/alerts.db data/alerts.db
+          [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
+          echo "Restored DB and CSV."
 
+      # ---------- 3. בדיקות מקדימות ----------
       - name: Pre-scan DB state
         continue-on-error: true
         run: |
@@ -152,13 +151,10 @@ jobs:
           if os.path.exists(p):
               con = sqlite3.connect(p)
               for t in ['snapshots','alerts','outcomes','trigger_results']:
-                  print(f'  {t}: {con.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}')
+                  try: print(f'  {t}: {con.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}')
+                  except: pass
               con.close()
           " 2>&1 | tee -a scan.log
-
-      - name: Write run metadata
-        continue-on-error: true
-        run: python3 scripts/write_run_metadata.py || true
 
       - name: Outcome engine tests
         continue-on-error: true
@@ -185,6 +181,7 @@ jobs:
             echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
           fi
 
+      # ---------- 4. הרצת הסורק (Swing Mode) ----------
       - name: Run scanner
         id: scan
         continue-on-error: true
@@ -192,8 +189,6 @@ jobs:
           RESEARCH_MODE:        "true"
           ALPACA_API_KEY:       ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY:    ${{ secrets.ALPACA_SECRET_KEY }}
-          ALPACA_BASE_URL:      https://paper-api.alpaca.markets
-          APCA_API_BASE_URL:    https://paper-api.alpaca.markets
           FINNHUB_API_KEY:      ${{ secrets.FINNHUB_API_KEY }}
           FMP_API_KEY:          ${{ secrets.FMP_API_KEY }}
           GEMINI_API_KEY:       ${{ secrets.GEMINI_API_KEY }}
@@ -203,12 +198,17 @@ jobs:
         run: |
           set -o pipefail
           ENTRY="${{ steps.entry.outputs.entry }}"
+          SUBCOMMAND="swing_v1"   # <--- שונה ל-Swing
+          
           EXTRA=""
-          if [ "${{ github.event.inputs.is_cron }}" != "true" ] && [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             EXTRA="--manual"
           fi
-          python3 "$ENTRY" fullscan_v34 $EXTRA 2>&1 | tee -a scan.log
 
+          echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
+          python3 "$ENTRY" "$SUBCOMMAND" $EXTRA 2>&1 | tee -a scan.log
+
+      # ---------- 5. סיכום ושמירה ----------
       - name: Validate discovery produced snapshots
         if: always()
         run: |
@@ -216,7 +216,6 @@ jobs:
             echo "::error::Discovery returned 0 snapshots."
             exit 1
           fi
-          echo "Discovery OK."
 
       - name: Build run_summary.json
         if: always()
@@ -242,16 +241,7 @@ jobs:
           mkdir -p summaries
           python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
 
-      - name: Research diagnostics
-        if: always()
-        continue-on-error: true
-        run: python3 scripts/research_diagnostics.py || true
-
-      - name: PM forensics
-        if: always()
-        continue-on-error: true
-        run: python3 scripts/pm_forensics.py || true
-
+      # ---------- 6. העלאה ----------
       - name: Upload scan artifact
         if: always()
         uses: actions/upload-artifact@v4
