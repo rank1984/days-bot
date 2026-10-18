@@ -128,6 +128,13 @@ def _build_swing_plan(candidate: dict) -> dict:
         return {
             "plan_valid": False,
             "plan_error": "STOP_BELOW_ZERO",
+        } 
+        # אם הסטופ רחוק מדי (מעל 10%) — דלג על המניה
+    stop_distance_pct = (price - stop) / price * 100
+    if stop_distance_pct > 10.0:
+        return {
+            "plan_valid": False,
+            "plan_error": f"STOP_TOO_WIDE ({stop_distance_pct:.1f}%)",
         }
 
     risk_per_share = price - stop
