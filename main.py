@@ -2,7 +2,7 @@
 DAYS-BOT V5.0.7 – RESEARCH ENGINE (Multi-Strategy)
 תומך בשני מנועים:
 1. fullscan_v34 - מנוע Pre-Market (Gap and Go) - היסטורי
-2. swing_v1 - מנוע Swing יומי (Daily Bars) - חדש
+2. swing_v1 - מנוע Swing יומי (Daily Bars) - פעיל
 """
 import sys
 from pathlib import Path
@@ -15,25 +15,17 @@ sys.path.insert(0, str(BASE_DIR))
 ET = pytz.timezone("America/New_York")
 
 from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
 from scanner.full_scan_v34 import full_scan_v34
 from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
 from database.snapshot_schema import init_snapshot_schema, save_snapshot
-from telegram_v3 import send_message, format_research_report
-from telegram_v3 import format_lesson_for_telegram
+from telegram_v3 import send_message
 
-from learning.replay_engine import save_candidate_snapshot
-
-from learning.lesson_engine import (
-    build_lesson,
-    save_learning,
-    print_lesson,
-    load_previous_learning,
-)
 
 # ---------------------------------------------------------------------------
-# PM DATA SANITIZATION (V5.0.6-prep.2) - נשאר לצורך תאימות לאחור
+# PM DATA SANITIZATION (Legacy support for fullscan_v34)
 # ---------------------------------------------------------------------------
 
 def _sanitize_pm_fields(candidate):
@@ -70,8 +62,9 @@ def _sanitize_pm_fields(candidate):
             changed = True
     return changed
 
+
 # ---------------------------------------------------------------------------
-# Swing / trade-type helpers
+# Swing helpers
 # ---------------------------------------------------------------------------
 
 def _safe_swing(candidate, analysis=None):
@@ -107,6 +100,77 @@ def _classify_trade_type(candidate):
     if intraday_score >= 60 or swing_score >= 60:
         return "WATCH"
     return "WATCH"
+
+
+def _build_swing_plan(candidate: dict) -> dict:
+    """
+    תוכנית מסחר ייעודית ל-Swing:
+      Entry  = price
+      Stop   = price - 1.5 * ATR
+      T1     = price + 2.0 * risk
+      T2     = price + 4.0 * risk
+      Risk%  = MAX_RISK_PER_TRADE_V31
+    """
+    price = float(candidate.get('price', 0) or 0)
+    atr = float(candidate.get('atr', 0) or 0)
+
+    if price <= 0 or atr <= 0:
+        return {
+            "plan_valid": False,
+            "plan_error": "INVALID_PRICE_OR_ATR",
+        }
+
+    # Stop = 1.5 ATR מתחת לכניסה (מאפשר תנודתיות swing)
+    stop = price - (1.5 * atr)
+    if stop <= 0:
+        return {
+            "plan_valid": False,
+            "plan_error": "STOP_BELOW_ZERO",
+        }
+
+    risk_per_share = price - stop   # = 1.5 * ATR
+    if risk_per_share <= 0:
+        return {
+            "plan_valid": False,
+            "plan_error": "INVALID_RISK_PER_SHARE",
+        }
+
+    # יעדים מבוססי R
+    t1 = price + (2.0 * risk_per_share)
+    t2 = price + (4.0 * risk_per_share)
+
+    # גודל פוזיציה
+    max_risk_dollars = ACCOUNT_SIZE * MAX_RISK_PER_TRADE_V31
+    position_size_risk = int(max_risk_dollars / risk_per_share)
+
+    max_position_value = ACCOUNT_SIZE * MAX_POSITION_VALUE_PCT
+    position_size_value = int(max_position_value / price)
+
+    position_size = min(position_size_risk, position_size_value)
+
+    if position_size <= 0:
+        return {
+            "plan_valid": False,
+            "plan_error": "POSITION_SIZE_ZERO",
+        }
+
+    actual_max_loss = round(risk_per_share * position_size, 2)
+
+    return {
+        "plan_valid": True,
+        "plan_error": None,
+        "entry": round(price, 4),
+        "stop": round(stop, 4),
+        "target_1": round(t1, 4),
+        "target_2": round(t2, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "position_size": position_size,
+        "max_loss": actual_max_loss,
+        "account_size": ACCOUNT_SIZE,
+        "risk_pct": MAX_RISK_PER_TRADE_V31,
+        "hold_type": "SWING_1_3D",
+    }
+
 
 # ---------------------------------------------------------------------------
 # Legacy Normalization (for fullscan_v34)
@@ -146,6 +210,7 @@ def _normalize_discovery_stats(stats):
         "float_yfinance_avg_ms": int(stats.get("float_yfinance_avg_ms", 0) or 0),
     }
 
+
 # ---------------------------------------------------------------------------
 # ENGINE 1: Pre-Market Full Scan (Legacy)
 # ---------------------------------------------------------------------------
@@ -168,7 +233,7 @@ def run_fullscan_v34(manual=False):
 
     from scanner.premarket import scan_premarket
     discovery_result = scan_premarket(scan_date, manual)
-    
+
     if isinstance(discovery_result, tuple) and len(discovery_result) >= 2:
         candidates, discovery_stats = discovery_result
     else:
@@ -184,9 +249,13 @@ def run_fullscan_v34(manual=False):
     top5 = full_scan_v34(candidates, manual)
 
     print("[Main] Saving T0 snapshots...")
+    saved = 0
     for candidate in candidates:
         _sanitize_pm_fields(candidate)
-        save_snapshot(candidate, scan_id, now_et)
+        sid = save_snapshot(candidate, scan_id, now_et)
+        if sid is not None:
+            saved += 1
+    print(f"[Main] V5.0.6 snapshots saved: {saved}")
 
     if not top5:
         print("[Main] Full analysis returned empty.")
@@ -204,15 +273,14 @@ def run_fullscan_v34(manual=False):
 
     print(f"[Main] Top 5 processed: {len(top5)}")
 
+
 # ---------------------------------------------------------------------------
-# ENGINE 2: Swing Daily Scan (New)
+# ENGINE 2: Swing Daily Scan
 # ---------------------------------------------------------------------------
 
 def run_swing_v1(manual=False):
     from scanner.swing_discovery import run_swing_discovery
     from scanner.universe import load_universe
-    from risk.trade_plan_v34 import build_trade_plan
-    from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
     init_db()
     init_snapshot_schema()
@@ -229,10 +297,9 @@ def run_swing_v1(manual=False):
     if not universe:
         print("[Main] Universe is empty. Aborting.")
         return
-    
-    # ניקח את 500 המניות הראשונות
+
     tickers = universe[:500] if isinstance(universe, list) else list(universe)[:500]
-    
+
     print(f"[Main] Starting Swing Discovery on {len(tickers)} symbols...")
     candidates, stats = run_swing_discovery(tickers)
 
@@ -241,51 +308,62 @@ def run_swing_v1(manual=False):
         return
 
     print(f"[Main] Analyzing {len(candidates)} swing candidates...")
-    
-    # נמיין לפי נפח מסחר כדי לתת עדיפות לנזילות
     candidates.sort(key=lambda x: x.get('avg_volume', 0), reverse=True)
 
     saved_alerts = 0
+    saved_snapshots = 0
+    plan_blocked = 0
+
     for c in candidates:
         ticker = c['ticker']
-        
-        # 1. חישוב ציון Swing
+
+        # 1. ציון Swing
         swing = _safe_swing(c)
         c['swing_score'] = float(swing.get('swing_score', 0) or 0)
-        c['composite_score'] = c['swing_score'] # ציון ראשי הוא ה-Swing
-        
-        # 2. בניית תוכנית מסחר
-        plan = build_trade_plan(c, ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT)
-        if plan:
-            c.update(plan)
-        
-        # 3. שמירת Snapshot (תמיד נשמור, גם אם אין תוכנית)
-        _sanitize_pm_fields(c) # מנקה שאריות של PM
-        save_snapshot(c, scan_id, now_et)
+        c['composite_score'] = c['swing_score']
 
-        # 4. שמירת Alert אם התוכנית תקינה
+        # 2. בניית תוכנית מסחר (Swing-specific)
+        plan = _build_swing_plan(c)
+        c.update(plan)
+
+        # 3. שמירת Snapshot (תמיד)
+        _sanitize_pm_fields(c)
+        sid = save_snapshot(c, scan_id, now_et)
+        if sid is not None:
+            saved_snapshots += 1
+
+        # 4. שמירת Alert אם התוכנית תקינה וציון מעל 60
         if c.get('plan_valid') and c.get('swing_score', 0) >= 60:
             c['data_status'] = "ACTIONABLE"
             c['trade_type'] = "SWING_1_3D"
             try:
                 save_alert(**c)
                 saved_alerts += 1
-                print(f"[SwingScan] ✅ {ticker} | Score: {c['swing_score']:.1f} | Entry: ${c.get('entry', 0):.2f} | Stop: ${c.get('stop', 0):.2f}")
+                print(f"[SwingScan] ✅ {ticker} | Score: {c['swing_score']:.1f} | Entry: ${c['entry']:.2f} | Stop: ${c['stop']:.2f} | T1: ${c['target_1']:.2f} | T2: ${c['target_2']:.2f}")
             except Exception as e:
                 print(f"[SwingScan] DB error {ticker}: {e}")
         else:
-            print(f"[SwingScan] ⚠️ {ticker} | Score: {c['swing_score']:.1f} | Plan blocked or score too low")
+            plan_blocked += 1
+            reason = c.get('plan_error', 'UNKNOWN')
+            print(f"[SwingScan] ⚠️ {ticker} | Score: {c['swing_score']:.1f} | BLOCKED: {reason}")
+
+    print(f"[Main] V5.0.6 snapshots saved: {saved_snapshots}")
 
     print("\n" + "=" * 74)
-    print(f"SWING SUMMARY: Found {saved_alerts} valid swing setups out of {len(candidates)} candidates.")
+    print(f"SWING SUMMARY:")
+    print(f"  Candidates analyzed: {len(candidates)}")
+    print(f"  Snapshots saved:     {saved_snapshots}")
+    print(f"  Valid alerts:        {saved_alerts}")
+    print(f"  Plan blocked:        {plan_blocked}")
     print("=" * 74)
 
     if saved_alerts > 0:
         try:
-            msg = f"DAYS-BOT Swing Alert: Found {saved_alerts} setups for {scan_date}."
+            msg = f"DAYS-BOT Swing: {saved_alerts} valid setups for {scan_date}."
             send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         except Exception:
             pass
+
 
 # ---------------------------------------------------------------------------
 # MAIN ENTRY POINT
@@ -295,10 +373,10 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python main.py [fullscan_v34|swing_v1] [--manual]")
         sys.exit(1)
-    
+
     command = sys.argv[1]
     manual = "--manual" in sys.argv
-    
+
     if command == "fullscan_v34":
         run_fullscan_v34(manual)
     elif command == "swing_v1":
