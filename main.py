@@ -1,22 +1,8 @@
 """
-DAYS-BOT V5.0.6-prep.2 – RESEARCH ENGINE WITH SNAPSHOT SCHEMA
-
-Intraday + Swing 1-3D
-Manual execution only.
-No automatic orders.
-
-V5.0.6-prep.2 changes (over prep.1):
-- FIXED (root cause of PM violations): save_snapshot was being called
-  with partial PM data (pm_volume/pm_high populated, pm_bars=0).
-  New _sanitize_pm_fields() enforces PM evidence atomicity:
-    * pm_bars > 0  -> keep all PM scalars; ensure pm_source is set
-    * pm_bars = 0  -> NULL out pm_volume, pm_high, pm_low, pm_vwap,
-                      pm_source, pm_bars_json; set status to NO_DATA
-  This prevents the DB from ever containing partial PM state.
-
-V5.0.6-prep.1 changes:
-- FIXED: Save T0 snapshots BEFORE early return on empty Top 5
-- scan_id format: YYYY-MM-DD_HHMM (ET)
+DAYS-BOT V5.0.7 – RESEARCH ENGINE (Multi-Strategy)
+תומך בשני מנועים:
+1. fullscan_v34 - מנוע Pre-Market (Gap and Go) - היסטורי
+2. swing_v1 - מנוע Swing יומי (Daily Bars) - חדש
 """
 import sys
 from pathlib import Path
@@ -46,23 +32,12 @@ from learning.lesson_engine import (
     load_previous_learning,
 )
 
-
 # ---------------------------------------------------------------------------
-# PM DATA SANITIZATION (V5.0.6-prep.2)
+# PM DATA SANITIZATION (V5.0.6-prep.2) - נשאר לצורך תאימות לאחור
 # ---------------------------------------------------------------------------
 
 def _sanitize_pm_fields(candidate):
-    """
-    Enforce PM evidence atomicity before DB write.
-
-    Rule: PM evidence is all-or-nothing.
-      - If we have bars (pm_bars > 0), we keep scalars and ensure source.
-      - If we have no bars, we must NOT persist partial PM scalars.
-
-    Returns True if any field was changed (for logging).
-    """
     changed = False
-
     raw_bars = candidate.get("pm_bars", 0)
     try:
         pm_bars = int(raw_bars) if raw_bars is not None else 0
@@ -70,38 +45,30 @@ def _sanitize_pm_fields(candidate):
         pm_bars = 0
 
     if pm_bars <= 0:
-        # No PM bars -> no PM evidence. Clear everything.
         if candidate.get("pm_bars") not in (0, None):
             changed = True
         candidate["pm_bars"] = 0
-
         for field in ("pm_volume", "pm_high", "pm_low", "pm_vwap", "pm_source"):
             if candidate.get(field) is not None:
                 changed = True
                 candidate[field] = None
-
         if candidate.get("pm_volume_status") not in (None, "NO_DATA"):
             changed = True
         candidate["pm_volume_status"] = "NO_DATA"
-
         if candidate.get("pm_data_quality") not in (None, "NO_PM_BARS"):
             changed = True
         candidate["pm_data_quality"] = "NO_PM_BARS"
-
         if candidate.get("pm_bars_json") not in (None, "", "[]"):
             changed = True
             candidate["pm_bars_json"] = None
     else:
-        # Bars exist -> ensure source is populated
         if not candidate.get("pm_source"):
             candidate["pm_source"] = "alpaca"
             changed = True
         if not candidate.get("pm_volume_status"):
             candidate["pm_volume_status"] = "OK"
             changed = True
-
     return changed
-
 
 # ---------------------------------------------------------------------------
 # Swing / trade-type helpers
@@ -141,27 +108,22 @@ def _classify_trade_type(candidate):
         return "WATCH"
     return "WATCH"
 
+# ---------------------------------------------------------------------------
+# Legacy Normalization (for fullscan_v34)
+# ---------------------------------------------------------------------------
 
 def _normalize_discovery_stats(stats):
     if not isinstance(stats, dict):
         stats = {}
-
-    print("[Main] RAW discovery stats (before normalize):")
-    print(stats)
-
-    universe_value = stats.get("universe", stats.get("requested_symbols", 0))
-    if not universe_value:
-        universe_value = 500
-
+    universe_value = stats.get("universe", stats.get("requested_symbols", 0)) or 500
     reject_float_over_20m = int(stats.get("reject_float_over_20m", 0) or 0)
     float_unknown = int(stats.get("float_unknown", 0) or 0)
     reject_float_legacy = int(stats.get("reject_float", 0) or 0)
-
     if reject_float_over_20m == 0 and float_unknown == 0 and reject_float_legacy > 0:
         reject_float_over_20m = reject_float_legacy
 
-    normalized = {
-        "universe": int(universe_value or 0),
+    return {
+        "universe": int(universe_value),
         "snapshots_received": int(stats.get("snapshots_received", stats.get("returned_snapshots", 0)) or 0),
         "valid_price": int(stats.get("valid_price", 0) or 0),
         "valid_prev_close": int(stats.get("valid_prev_close", 0) or 0),
@@ -184,27 +146,9 @@ def _normalize_discovery_stats(stats):
         "float_yfinance_avg_ms": int(stats.get("float_yfinance_avg_ms", 0) or 0),
     }
 
-    print("[Main] Normalized discovery stats:")
-    print(normalized)
-    return normalized
-
-
-def _run_replay_integrity_check(replay_count, strict_count):
-    print()
-    print("=" * 74)
-    print("REPLAY INTEGRITY CHECK")
-    print("=" * 74)
-    strict_ok = (replay_count == strict_count)
-    print(f"  strict_candidates:                    {strict_count}")
-    print(f"  replay_records:                       {replay_count}")
-    print(f"  replay_records == strict_candidates:  {'PASS' if strict_ok else 'FAIL'}")
-    if not strict_ok:
-        print()
-        print("  WARNING: Replay count does not match strict candidates.")
-    print("=" * 74)
-    print()
-    return strict_ok
-
+# ---------------------------------------------------------------------------
+# ENGINE 1: Pre-Market Full Scan (Legacy)
+# ---------------------------------------------------------------------------
 
 def run_fullscan_v34(manual=False):
     init_db()
@@ -213,244 +157,152 @@ def run_fullscan_v34(manual=False):
     scan_date = now_et.strftime("%Y-%m-%d")
     scan_id = now_et.strftime("%Y-%m-%d_%H%M")
 
-    # --- PM window detection (matches workflow logic) ---
     now_hhmm = now_et.strftime("%H%M")
     in_pm_window = ("0400" <= now_hhmm < "0930")
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT V5.0.6-prep.2 - RESEARCH ENGINE (Snapshot Schema)")
+    print("DAYS-BOT - RESEARCH ENGINE (Pre-Market)")
     print(f"Date: {scan_date} | Scan ID: {scan_id} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print(f"PM window (04:00-09:30 ET): {'IN' if in_pm_window else 'OUT'} | now={now_hhmm}")
     print("=" * 74)
 
-    # ============================================================
-    # DISCOVERY
-    # ============================================================
-    print("[Main] Starting discovery...")
     from scanner.premarket import scan_premarket
-
     discovery_result = scan_premarket(scan_date, manual)
-
+    
     if isinstance(discovery_result, tuple) and len(discovery_result) >= 2:
-        candidates = discovery_result[0]
-        discovery_stats = discovery_result[1]
+        candidates, discovery_stats = discovery_result
     else:
-        candidates = discovery_result
-        discovery_stats = {}
+        candidates, discovery_stats = discovery_result, {}
 
     discovery_stats = _normalize_discovery_stats(discovery_stats)
 
     if not candidates:
         print("[Main] No candidates found by discovery.")
-        msg = "DAYS-BOT\n\nNo candidates.\nInsufficient market data.\n\nNo trade."
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
-    print(f"[Main] Discovery returned {len(candidates)} candidates")
-    print(
-        f"[Main] Discovery diagnostics: universe={discovery_stats['universe']} | "
-        f"snapshots={discovery_stats['snapshots_received']} | "
-        f"strict={discovery_stats['strict_candidates']} | "
-        f"fallback={discovery_stats['fallback_candidates']} | "
-        f"float_over_20m={discovery_stats['reject_float_over_20m']} | "
-        f"float_unknown={discovery_stats['float_unknown']}"
-    )
-
-    # ============================================================
-    # FULL ANALYSIS
-    # ============================================================
-    print("[Main] Running full analysis on ALL strict candidates...")
+    print(f"[Main] Running full analysis on {len(candidates)} candidates...")
     top5 = full_scan_v34(candidates, manual)
 
-    # ============================================================
-    # SAVE T0 SNAPSHOTS (WITH PM SANITIZATION)
-    # ============================================================
-    print("[Main] Saving V5.0.6 T0 snapshots for ALL strict candidates...")
-    snapshot_saved = 0
-    snapshot_failed = 0
-    pm_sanitized = 0
-    pm_with_bars = 0
-
+    print("[Main] Saving T0 snapshots...")
     for candidate in candidates:
-        try:
-            raw_bars = candidate.get("pm_bars", 0) or 0
-            try:
-                raw_bars = int(raw_bars)
-            except (TypeError, ValueError):
-                raw_bars = 0
+        _sanitize_pm_fields(candidate)
+        save_snapshot(candidate, scan_id, now_et)
 
-            was_changed = _sanitize_pm_fields(candidate)
-
-            if raw_bars <= 0:
-                pm_sanitized += 1
-            else:
-                pm_with_bars += 1
-
-            if was_changed:
-                print(
-                    f"[Main] PM sanitized: {candidate.get('ticker')} "
-                    f"(pm_bars={raw_bars})"
-                )
-
-            sid = save_snapshot(candidate, scan_id, now_et)
-            if sid is not None:
-                snapshot_saved += 1
-            else:
-                snapshot_failed += 1
-        except Exception as e:
-            snapshot_failed += 1
-            print(f"[Main] Snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
-
-    print(
-        f"[Main] V5.0.6 snapshots saved: {snapshot_saved} "
-        f"(failed/skipped: {snapshot_failed}) | "
-        f"PM with bars: {pm_with_bars} | PM sanitized to NULL: {pm_sanitized}"
-    )
-
-    # ============================================================
-    # EARLY RETURN — AFTER snapshots are saved
-    # ============================================================
     if not top5:
         print("[Main] Full analysis returned empty.")
-        msg = "DAYS-BOT\n\nDiscovery worked, but no candidate passed full analysis."
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
         return
 
-    print(f"[Main] Full analysis returned {len(top5)} candidates")
-
-    # ============================================================
-    # REPLAY SNAPSHOTS
-    # ============================================================
-    print("[Main] Saving replay snapshots for ALL strict candidates...")
-    replay_saved = 0
-    replay_failed = 0
-
-    for idx, candidate in enumerate(candidates):
-        try:
-            save_candidate_snapshot(candidate, idx)
-            replay_saved += 1
-        except Exception as e:
-            replay_failed += 1
-            print(f"[Main] Replay snapshot error {candidate.get('ticker')}: {type(e).__name__}: {e}")
-
-    print(f"[Main] Replay snapshots saved: {replay_saved} (failed: {replay_failed})")
-
-    # ============================================================
-    # SWING ANALYSIS FOR TOP 5
-    # ============================================================
-    print("[Main] Running swing analysis for Top 5...")
-    for idx, candidate in enumerate(top5):
+    for candidate in top5:
         analysis = candidate.get('analysis', {})
         swing = _safe_swing(candidate, analysis)
-
         candidate["swing_score"] = float(swing.get("swing_score", 0) or 0)
-        candidate["qualified"] = swing.get("qualified", False)
-        candidate["swing_data"] = swing
         candidate["trade_type"] = _classify_trade_type(candidate)
-
         try:
             save_alert(**candidate)
-            print(f"[Main] DB saved: {candidate.get('ticker')}")
         except Exception as e:
-            print(f"[Main] DB save error {candidate.get('ticker')}: {type(e).__name__}: {e}")
+            print(f"[Main] DB save error {candidate.get('ticker')}: {e}")
 
-    # ============================================================
-    # REPLAY INTEGRITY CHECK
-    # ============================================================
-    strict_count = discovery_stats.get("strict_candidates", 0)
-    integrity_ok = _run_replay_integrity_check(replay_saved, strict_count)
+    print(f"[Main] Top 5 processed: {len(top5)}")
 
-    # ============================================================
-    # LEARNING
-    # ============================================================
-    print("[Main] Building daily lesson...")
-    previous_lesson = load_previous_learning()
-    lesson = build_lesson(
-        candidates=candidates,
-        top5=top5,
-        discovery_stats=discovery_stats,
-        previous_lesson=previous_lesson,
-        config_params={
-            "DISCOVERY_MIN_PRICE": 1.00,
-            "DISCOVERY_MAX_PRICE": 30.00,
-            "DISCOVERY_MIN_GAP": 3.0,
-            "DISCOVERY_MIN_VOLUME": 50000,
-        }
-    )
-    save_learning(lesson)
-    print_lesson(lesson)
+# ---------------------------------------------------------------------------
+# ENGINE 2: Swing Daily Scan (New)
+# ---------------------------------------------------------------------------
 
-    # ============================================================
-    # TELEGRAM
-    # ============================================================
-    print("[Main] Sending Telegram...")
-    msg = format_research_report(top5, now_et)
-    telegram_ok = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-    print(f"[Main] Telegram report sent: {telegram_ok}")
+def run_swing_v1(manual=False):
+    from scanner.swing_discovery import run_swing_discovery
+    from scanner.universe import load_universe
+    from risk.trade_plan_v34 import build_trade_plan
+    from utils.config import ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT
 
-    if lesson.get("observations") or lesson.get("notes"):
-        lesson_msg = format_lesson_for_telegram(lesson)
-        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, lesson_msg)
+    init_db()
+    init_snapshot_schema()
+    now_et = datetime.now(ET)
+    scan_date = now_et.strftime("%Y-%m-%d")
+    scan_id = now_et.strftime("%Y-%m-%d_SWING")
 
-    # ============================================================
-    # FLOW SUMMARY
-    # ============================================================
-    print()
-    print("=" * 74)
-    print("DISCOVERY -> GATES -> TOP 5 FLOW")
-    print("=" * 74)
-    print(f"  Universe:                  {discovery_stats['universe']}")
-    print(f"  Valid snapshots:           {discovery_stats['snapshots_received']}")
-    print(f"  Strict candidates:         {discovery_stats['strict_candidates']}")
-    print(f"  Analyzed (FullScan):       {len(candidates)}")
-    print(f"  In Top 5:                  {len(top5)}")
-    print(f"  V5.0.6 Snapshots saved:    {snapshot_saved}")
-    print(f"  PM with bars / sanitized:  {pm_with_bars} / {pm_sanitized}")
+    print("\n" + "=" * 74)
+    print("DAYS-BOT - SWING ENGINE (Daily Bars)")
+    print(f"Date: {scan_date} | Mode: {'MANUAL' if manual else 'LIVE'}")
     print("=" * 74)
 
-    # ============================================================
-    # TOP 5 SUMMARY
-    # ============================================================
-    print()
-    print("=" * 74)
-    print("TOP 5")
-    print("=" * 74)
-    for i, c in enumerate(top5, 1):
-        pm_status = c.get('pm_volume_status', 'UNKNOWN')
-        print(
-            f"{i}. {c.get('ticker')} | "
-            f"Intraday={float(c.get('composite_score', 0) or 0):.1f} | "
-            f"Early={float(c.get('early_score', 0) or 0):.1f} | "
-            f"Swing={float(c.get('swing_score', 0) or 0):.1f} | "
-            f"PMVol={pm_status} | "
-            f"Type={c.get('trade_type', 'WATCH')} | "
-            f"Data={c.get('data_status', 'UNKNOWN')}"
-        )
+    universe = load_universe()
+    if not universe:
+        print("[Main] Universe is empty. Aborting.")
+        return
+    
+    # ניקח את 500 המניות הראשונות
+    tickers = universe[:500] if isinstance(universe, list) else list(universe)[:500]
+    
+    print(f"[Main] Starting Swing Discovery on {len(tickers)} symbols...")
+    candidates, stats = run_swing_discovery(tickers)
+
+    if not candidates:
+        print("[Main] No swing candidates found today.")
+        return
+
+    print(f"[Main] Analyzing {len(candidates)} swing candidates...")
+    
+    # נמיין לפי נפח מסחר כדי לתת עדיפות לנזילות
+    candidates.sort(key=lambda x: x.get('avg_volume', 0), reverse=True)
+
+    saved_alerts = 0
+    for c in candidates:
+        ticker = c['ticker']
+        
+        # 1. חישוב ציון Swing
+        swing = _safe_swing(c)
+        c['swing_score'] = float(swing.get('swing_score', 0) or 0)
+        c['composite_score'] = c['swing_score'] # ציון ראשי הוא ה-Swing
+        
+        # 2. בניית תוכנית מסחר
+        plan = build_trade_plan(c, ACCOUNT_SIZE, MAX_RISK_PER_TRADE_V31, MAX_POSITION_VALUE_PCT)
+        if plan:
+            c.update(plan)
+        
+        # 3. שמירת Snapshot (תמיד נשמור, גם אם אין תוכנית)
+        _sanitize_pm_fields(c) # מנקה שאריות של PM
+        save_snapshot(c, scan_id, now_et)
+
+        # 4. שמירת Alert אם התוכנית תקינה
+        if c.get('plan_valid') and c.get('swing_score', 0) >= 60:
+            c['data_status'] = "ACTIONABLE"
+            c['trade_type'] = "SWING_1_3D"
+            try:
+                save_alert(**c)
+                saved_alerts += 1
+                print(f"[SwingScan] ✅ {ticker} | Score: {c['swing_score']:.1f} | Entry: ${c.get('entry', 0):.2f} | Stop: ${c.get('stop', 0):.2f}")
+            except Exception as e:
+                print(f"[SwingScan] DB error {ticker}: {e}")
+        else:
+            print(f"[SwingScan] ⚠️ {ticker} | Score: {c['swing_score']:.1f} | Plan blocked or score too low")
+
+    print("\n" + "=" * 74)
+    print(f"SWING SUMMARY: Found {saved_alerts} valid swing setups out of {len(candidates)} candidates.")
     print("=" * 74)
 
-    # ============================================================
-    # REPLAY SUMMARY
-    # ============================================================
-    print()
-    print("=" * 74)
-    print("REPLAY SUMMARY")
-    print("=" * 74)
-    print(f"Universe:             {discovery_stats['universe']}")
-    print(f"Valid snapshots:      {discovery_stats['snapshots_received']}")
-    print(f"Strict candidates:    {strict_count}")
-    print(f"Replay records:       {replay_saved}")
-    print(f"V5.0.6 snapshots:     {snapshot_saved}")
-    print(f"Top 5:                {len(top5)}")
-    print()
-    print(f"Replay integrity:     {'PASS' if integrity_ok else 'FAIL'}")
-    print("=" * 74)
-    print("NO AUTOMATIC ORDERS - MANUAL EXECUTION ONLY")
-    print("=" * 74)
+    if saved_alerts > 0:
+        try:
+            msg = f"DAYS-BOT Swing Alert: Found {saved_alerts} setups for {scan_date}."
+            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        except Exception:
+            pass
 
+# ---------------------------------------------------------------------------
+# MAIN ENTRY POINT
+# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py fullscan_v34 [--manual]")
+        print("Usage: python main.py [fullscan_v34|swing_v1] [--manual]")
         sys.exit(1)
+    
+    command = sys.argv[1]
     manual = "--manual" in sys.argv
-    run_fullscan_v34(manual)
+    
+    if command == "fullscan_v34":
+        run_fullscan_v34(manual)
+    elif command == "swing_v1":
+        run_swing_v1(manual)
+    else:
+        print(f"Unknown command: {command}")
+        sys.exit(1)
