@@ -79,17 +79,29 @@ def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     total_volume = int(df["volume"].sum())
 
     if total_volume > 0:
+        # ── מקרה רגיל: חישוב VWAP משוקלל ──
         typical = (df["high"] + df["low"] + df["close"]) / 3.0
         total_value = (typical * df["volume"]).sum()
         pm_vwap = float(total_value / total_volume)
         pm_volume = total_volume
         pm_volume_status = "OK"
         pm_vwap_status = "OK"
+
+    elif pm_bars_count > 0:
+        # ── Fallback: יש בארים תקינים אבל אפס נפח ──
+        # מחשבים TWAP (ממוצע מחירים) ומסמנים במפורש שזה לא VWAP אמיתי
+        typical = (df["high"] + df["low"] + df["close"]) / 3.0
+        pm_vwap = float(typical.mean())
+        pm_volume = 0
+        pm_volume_status = "VOLUME_UNAVAILABLE"
+        pm_vwap_status = "TWAP_FALLBACK"
+
     else:
+        # ── אין נתונים בכלל ──
         pm_vwap = None
         pm_volume = None
-        pm_volume_status = "VOLUME_UNAVAILABLE"
-        pm_vwap_status = "VOLUME_UNAVAILABLE"
+        pm_volume_status = "UNAVAILABLE"
+        pm_vwap_status = "UNAVAILABLE"
 
     pm_bars_list = _build_bars_list(df)
 
@@ -105,7 +117,6 @@ def _calculate_pm_metrics(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         "pm_last": round(float(df["close"].iloc[-1]), 4),
         "pm_bars_list": pm_bars_list,
     }
-
 
 def _fetch_yfinance_pm(ticker: str, target_date: datetime) -> Optional[Dict[str, Any]]:
     try:
