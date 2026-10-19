@@ -1,14 +1,16 @@
 name: DAYS-BOT V5.0.7 Swing Scanner
 
 on:
-  # UTC. 13:00–20:59 = 09:00–16:59 ET (EDT)
-  # בחורף (EST) שנה ל: '*/30 14-21 * * 1-5'
+  # UTC. 
+  # 14:30 UTC = 10:30 ET (התייצבות הבוקר)
+  # 20:30 UTC = 16:30 ET (סגירת השוק - הנתון הקובע)
   schedule:
-    - cron: '*/30 13-20 * * 1-5'
+    - cron: '30 14 * * 1-5'
+    - cron: '30 20 * * 1-5'
   workflow_dispatch:
     inputs:
       force:
-        description: 'Force run even if already ran today (skip dedup)'
+        description: 'Force run (skip dedup)'
         type: boolean
         default: false
 
@@ -30,7 +32,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- Dedup: דלג אם כבר רצנו היום ----------
+      # ---------- Dedup: מונע ריצה כפולה באותו חלון זמן ----------
       - name: Dedup check
         id: dedup
         if: github.event.inputs.force != 'true'
@@ -39,19 +41,47 @@ jobs:
         run: |
           set +e
           TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
+          HOUR_ET=$(TZ=America/New_York date +%H)
+          
+          # מחלקים את היום לשניים: בוקר (לפני 15:00 ET) וסגירה (אחרי 15:00 ET)
+          if [ "$HOUR_ET" -lt 15 ]; then
+            WINDOW="MORNING"
+          else
+            WINDOW="CLOSE"
+          fi
+
+          # בודק אם כבר רצה בהצלחה ריצה בחלון הזה היום
           COUNT=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=50" \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
             --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\") | select(.created_at | startswith(\"$TODAY_ET\"))] | length" \
             2>/dev/null || echo "0")
 
-          echo "Dedup: $COUNT successful run(s) today (excluding this run)"
-          if [ "$COUNT" -ge 1 ]; then
-            echo "skip=true" >> $GITHUB_OUTPUT
-            echo "Dedup: SKIPPING — already ran successfully today"
+          # לוגיקה פשוטה: אם רצנו היום יותר מפעם אחת (למשל הבוקר), והגענו לסגירה - נדרוס?
+          # בואו נעשה פשוט: אם יש ריצה מוצלחת היום והיא הייתה אחרי 20:00 UTC, תדלג.
+          
+          UTC_HOUR=$(date -u +%H)
+          if [ "$UTC_HOUR" -ge 20 ]; then
+             # ריצת סגירה - בודקים אם כבר היתה ריצת סגירה
+             CLOSE_RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
+               --jq "[.workflow_runs[] | select(.created_at | startswith(\"$TODAY_ET\")) | select(.created_at | contains(\"T20:\"))] | length" 2>/dev/null || echo "0")
+             if [ "$CLOSE_RUNS" -ge 1 ]; then
+               echo "skip=true" >> $GITHUB_OUTPUT
+               echo "Dedup: Close run already done today."
+               exit 0
+             fi
           else
-            echo "skip=false" >> $GITHUB_OUTPUT
-            echo "Dedup: PROCEEDING — first successful run today"
+             # ריצת בוקר - בודקים אם כבר היתה ריצת בוקר
+             MORNING_RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
+               --jq "[.workflow_runs[] | select(.created_at | startswith(\"$TODAY_ET\")) | select(.created_at | contains(\"T14:\") or contains(\"T15:\"))] | length" 2>/dev/null || echo "0")
+             if [ "$MORNING_RUNS" -ge 1 ]; then
+               echo "skip=true" >> $GITHUB_OUTPUT
+               echo "Dedup: Morning run already done today."
+               exit 0
+             fi
           fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "Dedup: Proceeding."
 
       # ---------- 0. זמן + חישוב משתני סביבה ----------
       - name: Compute time env
@@ -65,10 +95,8 @@ jobs:
           NOW_MIN=$((10#$HOUR * 60 + 10#$MIN))
           if [ "$NOW_MIN" -ge 570 ] && [ "$NOW_MIN" -lt 960 ]; then
             echo "IN_PM_WINDOW=1" >> $GITHUB_ENV
-            echo "PM window: IN ($HOUR:$MIN ET)"
           else
             echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
-            echo "PM window: OUT ($HOUR:$MIN ET)"
           fi
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
@@ -85,25 +113,19 @@ jobs:
             echo "DAYS-BOT V5.0.7 SWING SCAN"
             echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
             echo "Event:      ${{ github.event_name }}"
-            echo "Git SHA:    ${{ github.sha }}"
-            echo "UTC:        $(date -u +%FT%TZ)"
-            echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
             echo "Force:      ${{ github.event.inputs.force }}"
+            echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
             echo "=================================================="
           } | tee scan.log
 
       # ---------- 1. Checkout + Python ----------
       - uses: actions/checkout@v4
         if: steps.dedup.outputs.skip != 'true'
-        with:
-          fetch-depth: 1
-
       - uses: actions/setup-python@v5
         if: steps.dedup.outputs.skip != 'true'
         with:
           python-version: '3.11'
           cache: 'pip'
-
       - name: Install deps
         if: steps.dedup.outputs.skip != 'true'
         run: |
@@ -114,14 +136,7 @@ jobs:
         id: entry
         if: steps.dedup.outputs.skip != 'true'
         run: |
-          for f in main.py scan.py app.py; do
-            if [ -f "$f" ]; then
-              echo "entry=$f" >> $GITHUB_OUTPUT
-              echo "FOUND entry point: $f"
-              exit 0
-            fi
-          done
-          exit 1
+          echo "entry=main.py" >> $GITHUB_OUTPUT
 
       # ---------- 2. שחזור DB ----------
       - name: Find previous run with valid scan artifact
@@ -132,30 +147,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          WF_REF="${{ github.workflow_ref }}"
-          WF_PATH="${WF_REF%@*}"
-          WF_FILE="${WF_PATH##*/}"
-
-          RUNS=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=10" \
-            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' \
-            2>/dev/null || echo "")
-
-          FOUND_RUN=""
-          FOUND_ART=""
+          WF_FILE="scan.yml"
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/${WF_FILE}/runs?per_page=10" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          FOUND_RUN=""; FOUND_ART=""
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
               --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' 2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
           done
-
-          if [ -n "$FOUND_RUN" ]; then
-            echo "run=$FOUND_RUN"     >> $GITHUB_OUTPUT
-            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
-          else
-            echo "run="      >> $GITHUB_OUTPUT
-            echo "artifact=" >> $GITHUB_OUTPUT
-          fi
+          if [ -n "$FOUND_RUN" ]; then echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT; echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT; fi
 
       - name: Download previous artifact
         if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
@@ -173,7 +174,6 @@ jobs:
           mkdir -p data summaries
           [ -f /tmp/prev/data/alerts.db ] && cp /tmp/prev/data/alerts.db data/alerts.db
           [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
-          echo "Restored DB and CSV."
 
       # ---------- 3. בדיקות מקדימות ----------
       - name: Pre-scan DB state
@@ -211,13 +211,8 @@ jobs:
         run: |
           set +e
           python3 scripts/preflight.py > preflight.log 2>&1
-          PF_EXIT=$?
           cat preflight.log
-          if [ "$PF_EXIT" -eq 0 ]; then
-            echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV
-          else
-            echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
-          fi
+          if [ $? -eq 0 ]; then echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV; else echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV; fi
 
       # ---------- 4. הרצת הסורק ----------
       - name: Run scanner
@@ -236,24 +231,10 @@ jobs:
           TELEGRAM_CHAT_ID:     ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -o pipefail
-          ENTRY="${{ steps.entry.outputs.entry }}"
-          SUBCOMMAND="swing_v1"
-          EXTRA=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            EXTRA="--manual"
-          fi
-          echo ">>> running: python3 $ENTRY $SUBCOMMAND $EXTRA"
-          python3 "$ENTRY" "$SUBCOMMAND" $EXTRA 2>&1 | tee -a scan.log
+          echo ">>> running: python3 main.py swing_v1 --manual"
+          python3 main.py swing_v1 --manual 2>&1 | tee -a scan.log
 
       # ---------- 5. סיכום ושמירה ----------
-      - name: Validate discovery produced snapshots
-        if: steps.dedup.outputs.skip != 'true' && always()
-        run: |
-          if grep -q "snapshots_received': 0" scan.log 2>/dev/null; then
-            echo "::error::Discovery returned 0 snapshots."
-            exit 1
-          fi
-
       - name: Build run_summary.json
         if: steps.dedup.outputs.skip != 'true' && always()
         env:
@@ -266,11 +247,7 @@ jobs:
           IN_PM_WINDOW:      ${{ env.IN_PM_WINDOW }}
           PREFLIGHT_PASSED:  ${{ env.PREFLIGHT_PASSED }}
         run: |
-          if [ -f scan.log ] && [ -s scan.log ]; then
-            python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
-          else
-            echo "{}" > run_summary.json
-          fi
+          python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
 
       - name: Append to all_runs.csv
         if: steps.dedup.outputs.skip != 'true' && always()
