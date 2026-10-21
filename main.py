@@ -104,11 +104,9 @@ def _classify_trade_type(candidate):
 
 def _build_swing_plan(candidate: dict) -> dict:
     """
-    תוכנית מסחר ייעודית ל-Swing:
-      Entry  = price
-      Stop   = price - (1.5 * ATR) OR price - 2.5%, whichever is wider
-      T1     = price + 2.0 * risk
-      T2     = price + 4.0 * risk
+    תוכנית מסחר ייעודית ל-Swing.
+    כולל הגנה קריטית: אם הסטופ קטן מ-2% מהמחיר, העסקה נפסלת 
+    כדי למנוע מצב שבו עלויות (spread+slippage) טורפות את כל הרווח.
     """
     price = float(candidate.get('price', 0) or 0)
     atr = float(candidate.get('atr', 0) or 0)
@@ -119,7 +117,7 @@ def _build_swing_plan(candidate: dict) -> dict:
             "plan_error": "INVALID_PRICE_OR_ATR",
         }
 
-    # Stop = 1.5 ATR, אבל לפחות 2.5% מהמחיר (כדי למנוע סטופים צמודים מדי)
+    # Stop = 1.5 ATR, אבל לא קרוב יותר מ-2.5% (כדי לתת מקום לנשום)
     atr_stop = price - (1.5 * atr)
     min_pct_stop = price * 0.975  # 2.5% minimum stop distance
     stop = min(atr_stop, min_pct_stop)  # min = lower price = wider stop
@@ -128,20 +126,15 @@ def _build_swing_plan(candidate: dict) -> dict:
         return {
             "plan_valid": False,
             "plan_error": "STOP_BELOW_ZERO",
-        } 
-        # אם הסטופ רחוק מדי (מעל 10%) — דלג על המניה
-    stop_distance_pct = (price - stop) / price * 100
-    if stop_distance_pct > 10.0:
-        return {
-            "plan_valid": False,
-            "plan_error": f"STOP_TOO_WIDE ({stop_distance_pct:.1f}%)",
         }
 
     risk_per_share = price - stop
-    if risk_per_share <= 0:
+    
+    # 🚨 חסם קריטי: אם הסיכון קטן מ-2% מהמחיר, אסור לסחור
+    if risk_per_share < (price * 0.02):
         return {
             "plan_valid": False,
-            "plan_error": "INVALID_RISK_PER_SHARE",
+            "plan_error": f"STOP_TOO_TIGHT_FOR_COSTS ({(risk_per_share/price)*100:.2f}%)",
         }
 
     t1 = price + (2.0 * risk_per_share)
@@ -178,6 +171,7 @@ def _build_swing_plan(candidate: dict) -> dict:
         "risk_pct": MAX_RISK_PER_TRADE_V31,
         "hold_type": "SWING_1_3D",
     }
+
 
 # ---------------------------------------------------------------------------
 # Legacy Normalization (for fullscan_v34)
