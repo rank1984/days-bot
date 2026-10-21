@@ -2,7 +2,7 @@
 """
 DAYS-BOT - Swing Trade Evaluator
 בודק את ביצועי תוכניות ה-Swing שנוצרו ב-DB.
-עובד על בסיס נרות יומיים (Daily Bars) ולא על בסיס דקות.
+עובד על בסיס נרות יומיים (Daily Bars) וממתין 5 ימים לפני שמכריע.
 """
 import sqlite3
 import pandas as pd
@@ -14,6 +14,9 @@ import os
 ET = pytz.timezone("America/New_York")
 DB_PATH = "data/alerts.db"
 
+# כמה ימי מסחר מינימום צריכים לעבור לפני שנחשב את התוצאה
+MIN_DAYS_TO_EVALUATE = 5
+
 def evaluate_swing_trades():
     if not os.path.exists(DB_PATH):
         print("DB not found.")
@@ -24,7 +27,6 @@ def evaluate_swing_trades():
     cur = conn.cursor()
 
     # שולף את כל ה-Snapshots שעדיין לא נבדקו ויש להם תוכנית מסחר תקפה
-    # הבדיקה היא: יש Entry, Stop, Target (במקום plan_valid שלא קיים בטבלה)
     rows = cur.execute("""
         SELECT s.snapshot_id, s.ticker, s.scan_date, s.entry, s.stop, s.target_1, s.target_2
         FROM snapshots s
@@ -40,20 +42,33 @@ def evaluate_swing_trades():
         print("No new swing trades to evaluate.")
         return
 
-    print(f"Evaluating {len(rows)} swing trades...")
+    print(f"Checking {len(rows)} swing trades against current date...")
+    
+    today = datetime.now(ET).date()
+    evaluated_count = 0
+    pending_count = 0
 
     for row in rows:
         ticker = row["ticker"]
-        scan_date = row["scan_date"]
+        scan_date_str = row["scan_date"]
         entry = float(row["entry"])
         stop = float(row["stop"])
         t1 = float(row["target_1"])
         t2 = float(row["target_2"])
         snap_id = row["snapshot_id"]
 
-        # מושך נרות יומיים מהיום שאחרי הסריקה והלאה (עד 5 ימים)
-        start_dt = datetime.strptime(scan_date, "%Y-%m-%d") + timedelta(days=1)
-        end_dt = start_dt + timedelta(days=7) # בודקים שבוע קדימה
+        # בדיקת גיל העסקה
+        scan_date_obj = datetime.strptime(scan_date_str, "%Y-%m-%d").date()
+        days_since_scan = (today - scan_date_obj).days
+        
+        if days_since_scan < MIN_DAYS_TO_EVALUATE:
+            print(f"⏳ {ticker:5s} | PENDING — only {days_since_scan} days old (needs {MIN_DAYS_TO_EVALUATE})")
+            pending_count += 1
+            continue
+
+        # העסקה בשלה להערכה. מושך נתונים למשך 5 ימים מהסריקה
+        start_dt = datetime.strptime(scan_date_str, "%Y-%m-%d") + timedelta(days=1)
+        end_dt = start_dt + timedelta(days=7) # קצת יותר מ-5 ימי מסחר
         
         try:
             df = yf.download(
@@ -136,13 +151,14 @@ def evaluate_swing_trades():
             """, (snap_id, entry, exit_price, exit_reason, days_held * 390, gross_r, net_r, outcome)) 
             
             print(f"✅ {ticker:5s} | {exit_reason:20s} | Net R: {net_r:+.2f} | {outcome}")
+            evaluated_count += 1
 
         except Exception as e:
             print(f"ERR {ticker}: {e}")
 
     conn.commit()
     conn.close()
-    print("Swing evaluation complete.")
+    print(f"\nSwing evaluation complete. Evaluated: {evaluated_count} | Pending: {pending_count}")
 
 if __name__ == "__main__":
     evaluate_swing_trades()
