@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT — Append run_summary.json into all_runs.csv (v2)
-מסנן שורות ריקות (run_number ריק) לפני הכתיבה.
+DAYS-BOT — Append run_summary.json into all_runs.csv (v3)
+תומך בשדות Swing חדשים.
 """
 import csv
 import json
@@ -12,9 +12,16 @@ import sys
 FIELDS = [
     "run_number", "run_id", "time_et", "scan_date", "event",
     "is_scheduled", "in_pm_window", "preflight_passed",
-    "universe", "strict", "liquidity_rejects", "dataquality_blocked",
-    "plan_blocked", "plan_blocked_list", "top5_returned",
-    "pre_scan_snapshots", "post_scan_snapshots", "generated_at_utc",
+    "universe", "strict",
+    "liquidity_rejects", "dataquality_blocked", "plan_blocked",
+    "top5_returned",
+    # Swing-specific
+    "valid_alerts", "telegram_sent",
+    "stop_too_tight", "stop_too_wide", "other_blocked",
+    # Chain
+    "pre_scan_snapshots", "post_scan_snapshots", "snapshots_saved",
+    # Meta
+    "generated_at_utc",
 ]
 
 
@@ -46,11 +53,11 @@ def main():
     with open(json_path, encoding="utf-8") as f:
         new = json.load(f)
 
-    # אם אין run_number — לא כותבים כלום
     if not new.get("run_number"):
         print("run_summary.json has no run_number — skipping write", file=sys.stderr)
         sys.exit(0)
 
+    # plan_blocked_list -> string
     if isinstance(new.get("plan_blocked_list"), list):
         new["plan_blocked_list"] = "; ".join(new["plan_blocked_list"])
     elif new.get("plan_blocked_list") is None:
@@ -60,10 +67,10 @@ def main():
 
     rows = load_rows(csv_path)
 
-    # 1. הסר שורות ריקות (run_number ריק או 0)
+    # הסרת שורות ריקות
     rows = [r for r in rows if str(r.get("run_number") or "").strip() not in ("", "0")]
 
-    # 2. החלף לפי run_number
+    # החלפה לפי run_number
     rows = [r for r in rows if str(r.get("run_number")) != str(row["run_number"])]
     rows.append(row)
     rows.sort(key=sort_key)
