@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT — Run Summary Extractor (v3)
+DAYS-BOT — Run Summary Extractor (v4)
 -------------------------------------
-קורא scan.log ומייצר run_summary.json.
-
-תיקון v3:
-  שלושת השדות (is_scheduled, in_pm_window, preflight_passed) נחלצים
-  קודם מהלוג, אחר כך מ-env vars, ואם אין — ברירת מחדל 0 (FAIL בטוח).
-
-Env vars אופציונליים:
-    RUN_ID, RUN_NUMBER, EVENT, SCAN_DATE, TIME_ET,
-    IS_SCHEDULED, IN_PM_WINDOW, PREFLIGHT_PASSED
+תומך בשני המנועים: fullscan_v34 (Pre-Market) ו-swing_v1 (Swing).
+מייצר run_summary.json עם כל השדות משני הפורמטים.
 """
 import re
 import json
@@ -27,7 +20,6 @@ def load(path: str) -> str:
 
 
 def find(pat: str, text: str, default=None, cast=str):
-    """מחזיר את group(1) של ההתאמה הראשונה, או default אם אין."""
     m = re.search(pat, text, re.MULTILINE)
     if not m:
         return default
@@ -45,7 +37,6 @@ def first_not_none(*values):
 
 
 def _env_int(name: str, default: int = 0) -> int:
-    """קורא env var כמספר שלם, מחזיר default אם ריק או לא תקין."""
     raw = os.environ.get(name, "")
     if raw is None or str(raw).strip() == "":
         return default
@@ -58,21 +49,29 @@ def _env_int(name: str, default: int = 0) -> int:
 def extract(log: str) -> dict:
     env = os.environ
 
-    # --- PLAN_BLOCKED entries ---
-    pairs = re.findall(
+    # ---------- Pre-Market patterns (fullscan_v34) ----------
+    plan_blocked_pairs = re.findall(
         r"PLAN_BLOCKED\s+([A-Z0-9\.\-]+)\s*\|\s*reason=([A-Z_]+)",
         log,
     )
+    pre_strict = find(r"Discovery returned\s+(\d+)\s+candidates", log, None, int)
 
-        # --- Pre/Post snapshots ---
-    # תומך גם ב-"Pre-scan DB state:\n  snapshots: N" (DB קיים)
-    # וגם ב-סתם "  snapshots: N" (DB קיים, בלי כותרת)
+    # ---------- Swing patterns (swing_v1) ----------
+    swing_candidates = find(r"\[SwingDiscovery\] Found\s+(\d+)\s+candidates", log, None, int)
+    swing_valid_alerts = find(r"Valid alerts:\s+(\d+)", log, 0, int)
+    swing_plan_blocked = find(r"Plan blocked:\s+(\d+)", log, 0, int)
+    swing_telegram_sent = find(r"Telegram sent:\s+(\d+)", log, 0, int)
+    swing_stop_tight = find(r"Stop too tight:\s+(\d+)", log, 0, int)
+    swing_stop_wide = find(r"Stop too wide:\s+(\d+)", log, 0, int)
+    swing_other_blocked = find(r"Other \(low score\):\s+(\d+)", log, 0, int)
+
+    # ---------- Pre/Post snapshots ----------
     pre = find(r"Pre-scan DB state:.*?\n\s*snapshots:\s*(\d+)", log, None, int)
     if pre is None:
         pre = find(r"^\s*snapshots:\s*(\d+)", log, 0, int)
     saved = find(r"V5\.0\.6 snapshots saved:\s*(\d+)", log, 0, int)
 
-    # --- שדות מזוהים: קודם מלוג, אחר כך env ---
+    # ---------- שדות מזוהים ----------
     run_number = first_not_none(
         find(r"Run:\s+\d+\s+\(#(\d+)\)", log, cast=int),
         env.get("RUN_NUMBER"),
@@ -103,19 +102,16 @@ def extract(log: str) -> dict:
         env.get("EVENT"),
     )
 
-    # --- שלושת השדות הרגישים: לוג → env → 0 (FAIL בטוח) ---
-    is_scheduled = find(
-        r"IS_SCHEDULED:\s+(\d)", log,
-        _env_int("IS_SCHEDULED", 0), int,
-    )
-    in_pm_window = find(
-        r"IN_PM_WINDOW:\s+(\d)", log,
-        _env_int("IN_PM_WINDOW", 0), int,
-    )
-    preflight_passed = find(
-        r"PREFLIGHT_PASSED:\s+(\d)", log,
-        _env_int("PREFLIGHT_PASSED", 0), int,
-    )
+    # ---------- שלושת השדות הרגישים ----------
+    is_scheduled = find(r"IS_SCHEDULED:\s+(\d)", log, _env_int("IS_SCHEDULED", 0), int)
+    in_pm_window = find(r"IN_PM_WINDOW:\s+(\d)", log, _env_int("IN_PM_WINDOW", 0), int)
+    preflight_passed = find(r"PREFLIGHT_PASSED:\s+(\d)", log, _env_int("PREFLIGHT_PASSED", 0), int)
+
+    # ---------- שילוב: strict + plan_blocked ----------
+    strict = pre_strict if pre_strict is not None else (swing_candidates or 0)
+    plan_blocked = len(plan_blocked_pairs)
+    if plan_blocked == 0:
+        plan_blocked = swing_plan_blocked
 
     summary = {
         # זיהוי הריצה
@@ -125,25 +121,33 @@ def extract(log: str) -> dict:
         "scan_date":           scan_date,
         "event":               event,
 
-        # דגלי context — 0 = FAIL בטוח
+        # דגלי context
         "is_scheduled":        is_scheduled,
         "in_pm_window":        in_pm_window,
         "preflight_passed":    preflight_passed,
 
         # שלבי Discovery
         "universe":            find(r"Final:\s+(\d+)\s+symbols", log, cast=int),
-        "strict":              find(r"Discovery returned\s+(\d+)\s+candidates", log, 0, int),
+        "strict":              strict,
 
         # שלבי FullScan / Gates
         "liquidity_rejects":   find(r"Liquidity rejects:\s+(\d+)", log, 0, int),
         "dataquality_blocked": find(r"DataQuality blocked:\s+(\d+)", log, 0, int),
-        "plan_blocked":        len(pairs),
-        "plan_blocked_list":   [f"{t} ({r})" for t, r in pairs],
+        "plan_blocked":        plan_blocked,
+        "plan_blocked_list":   [f"{t} ({r})" for t, r in plan_blocked_pairs],
         "top5_returned":       find(r"Top 5 returned:\s+(\d+)", log, 0, int),
+
+        # Swing-specific
+        "valid_alerts":        swing_valid_alerts,
+        "telegram_sent":       swing_telegram_sent,
+        "stop_too_tight":      swing_stop_tight,
+        "stop_too_wide":       swing_stop_wide,
+        "other_blocked":       swing_other_blocked,
 
         # גדילת ה-chain
         "pre_scan_snapshots":  pre,
         "post_scan_snapshots": pre + saved,
+        "snapshots_saved":     saved,
 
         # מטא
         "generated_at_utc":    datetime.now(timezone.utc).isoformat(timespec="seconds"),
