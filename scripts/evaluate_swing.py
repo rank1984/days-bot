@@ -24,13 +24,15 @@ def evaluate_swing_trades():
     cur = conn.cursor()
 
     # שולף את כל ה-Snapshots שעדיין לא נבדקו ויש להם תוכנית מסחר תקפה
-    # (כרגע נבדוק את כל מי שמ-2026-10-20)
+    # הבדיקה היא: יש Entry, Stop, Target (במקום plan_valid שלא קיים בטבלה)
     rows = cur.execute("""
         SELECT s.snapshot_id, s.ticker, s.scan_date, s.entry, s.stop, s.target_1, s.target_2
         FROM snapshots s
         LEFT JOIN outcomes o ON o.snapshot_id = s.snapshot_id
         WHERE s.trade_type = 'SWING_1_3D' 
-          AND s.plan_valid = 1
+          AND s.entry IS NOT NULL 
+          AND s.stop IS NOT NULL
+          AND s.target_1 IS NOT NULL
           AND o.outcome_id IS NULL
     """).fetchall()
 
@@ -51,7 +53,7 @@ def evaluate_swing_trades():
 
         # מושך נרות יומיים מהיום שאחרי הסריקה והלאה (עד 5 ימים)
         start_dt = datetime.strptime(scan_date, "%Y-%m-%d") + timedelta(days=1)
-        end_dt = start_dt + timedelta(days=5) # בודקים שבוע קדימה
+        end_dt = start_dt + timedelta(days=7) # בודקים שבוע קדימה
         
         try:
             df = yf.download(
@@ -79,15 +81,19 @@ def evaluate_swing_trades():
             days_held = len(df)
             
             t1_hit = False
+            current_stop = stop
             
             for i, (date, bar) in enumerate(df.iterrows()):
                 high = float(bar['High'])
                 low = float(bar['Low'])
                 
                 # בדיקת סטופ קודם (שמרני)
-                if low <= stop:
-                    exit_reason = "STOP_HIT"
-                    exit_price = stop
+                if low <= current_stop:
+                    if t1_hit:
+                        exit_reason = "STOP_BE_AFTER_T1" # סטופ ב-Breakeven אחרי T1
+                    else:
+                        exit_reason = "STOP_HIT"
+                    exit_price = current_stop
                     exit_date = date
                     days_held = i + 1
                     break
@@ -95,8 +101,7 @@ def evaluate_swing_trades():
                 # בדיקת T1
                 if not t1_hit and high >= t1:
                     t1_hit = True
-                    # אם הגענו ל-T1, מזיזים סטופ ל-Breakeven
-                    stop = entry
+                    current_stop = entry # מזיזים סטופ ל-Breakeven
                 
                 # בדיקת T2
                 if t1_hit and high >= t2:
@@ -107,12 +112,12 @@ def evaluate_swing_trades():
                     break
             
             # חישוב Net R
-            risk = entry - float(row["stop"])
+            risk = entry - stop
             reward = exit_price - entry
             gross_r = reward / risk if risk > 0 else 0
             
-            # הערכת עלויות (ספרד + החלקה, נניח 0.5% לכל צד)
-            cost_pct = 1.0 / 100.0 # 1% הלוך ושוב
+            # הערכת עלויות (ספרד + החלקה, נניח 1% לכל צד עבור שמרנות)
+            cost_pct = 1.0 / 100.0 
             cost_dollars = entry * cost_pct
             net_r = (reward - cost_dollars) / risk if risk > 0 else 0
 
@@ -128,9 +133,9 @@ def evaluate_swing_trades():
                 INSERT INTO outcomes 
                 (snapshot_id, outcome_horizon, t0_price, exit_price, exit_reason, hold_minutes, gross_r, net_r, net_r_status, outcome, exit_rules_version)
                 VALUES (?, 'SWING_3D', ?, ?, ?, ?, ?, ?, 'VALID', ?, 'SWING-E1')
-            """, (snap_id, entry, exit_price, exit_reason, days_held * 390, gross_r, net_r, outcome)) # 390 דקות ביום מסחר
+            """, (snap_id, entry, exit_price, exit_reason, days_held * 390, gross_r, net_r, outcome)) 
             
-            print(f"✅ {ticker:5s} | {exit_reason:15s} | Net R: {net_r:+.2f} | {outcome}")
+            print(f"✅ {ticker:5s} | {exit_reason:20s} | Net R: {net_r:+.2f} | {outcome}")
 
         except Exception as e:
             print(f"ERR {ticker}: {e}")
