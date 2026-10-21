@@ -1,10 +1,11 @@
 """
-DAYS-BOT V5.0.7 – RESEARCH ENGINE (Multi-Strategy)
-תומך בשני מנועים:
-1. fullscan_v34 - מנוע Pre-Market (Gap and Go) - היסטורי
-2. swing_v1 - מנוע Swing יומי (Daily Bars) - פעיל
+DAYS-BOT V5.0.8 – RESEARCH ENGINE (Multi-Strategy)
+1. fullscan_v34 - מנוע Pre-Market (Legacy)
+2. swing_v1 - מנוע Swing יומי (Daily Bars)
 
-V5.0.7.1: הוספת התראות טלגרם פרטניות לכל תוכנית Swing תקפה.
+V5.0.8:
+- MAX_STOP_PCT = 10% (פוסל סטופים רחבים מדי כמו BSP -18%)
+- MAX_TELEGRAM_ALERTS = 10 (רק 10 ההתראות הטובות ביותר נשלחות לטלגרם)
 """
 import sys
 from pathlib import Path
@@ -27,13 +28,22 @@ from telegram_v3 import send_message
 
 
 # ---------------------------------------------------------------------------
-# TELEGRAM SWING ALERTS
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+
+MIN_STOP_PCT = 2.0      # מינימום - למנוע סטופים צמודים מדי (AES, BWIN)
+MAX_STOP_PCT = 10.0     # מקסימום - למנוע סטופים רחבים מדי (BSP, BAK)
+MIN_SWING_SCORE = 60    # סף מינימום לתוכנית תקפה
+MAX_TELEGRAM_ALERTS = 10  # מקסימום התראות טלגרם בריצה אחת
+TELEGRAM_SCORE_THRESHOLD = 85  # שלח התראה רק לציונים מעל הסף הזה
+
+
+# ---------------------------------------------------------------------------
+# TELEGRAM ALERTS
 # ---------------------------------------------------------------------------
 
 def send_swing_alert(ticker, entry, stop, t1, t2, score, position_size, max_loss):
-    """
-    שולח התראת טלגרם פרטנית עבור תוכנית Swing אחת.
-    """
+    """שולח התראת טלגרם פרטנית עבור תוכנית Swing אחת."""
     risk_per_share = entry - stop
     risk_pct = (risk_per_share / entry) * 100
 
@@ -51,17 +61,14 @@ def send_swing_alert(ticker, entry, stop, t1, t2, score, position_size, max_loss
 ⏳ Hold: 1-3 days
 """
     try:
-        ok = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        return ok
+        return send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
     except Exception as e:
         print(f"[Main] Telegram error for {ticker}: {type(e).__name__}: {e}")
         return False
 
 
-def send_swing_summary(scan_date, saved_alerts, candidates_count, blocked_count):
-    """
-    שולח הודעת סיכום כללית בסוף ריצת Swing.
-    """
+def send_swing_summary(scan_date, saved_alerts, candidates_count, blocked_count, telegram_sent):
+    """שולח הודעת סיכום כללית."""
     msg = f"""
 📊 *DAYS-BOT Swing Summary*
 ━━━━━━━━━━━━━━━━━━
@@ -69,6 +76,7 @@ def send_swing_summary(scan_date, saved_alerts, candidates_count, blocked_count)
 🔍 Candidates: {candidates_count}
 ✅ Valid Alerts: {saved_alerts}
 ⚠️ Blocked: {blocked_count}
+📱 Sent to Telegram: {telegram_sent}
 ━━━━━━━━━━━━━━━━━━
 """
     try:
@@ -78,7 +86,7 @@ def send_swing_summary(scan_date, saved_alerts, candidates_count, blocked_count)
 
 
 # ---------------------------------------------------------------------------
-# PM DATA SANITIZATION (Legacy support for fullscan_v34)
+# PM DATA SANITIZATION (Legacy)
 # ---------------------------------------------------------------------------
 
 def _sanitize_pm_fields(candidate):
@@ -124,12 +132,80 @@ def _safe_swing(candidate, analysis=None):
     try:
         result = calculate_swing_score(candidate, analysis)
         if not isinstance(result, dict):
-            print(f"[Main] Swing returned {type(result).__name__} for {candidate.get('ticker')}")
             return {"swing_score": 0, "swing_type": "INVALID", "qualified": False}
         return result
     except Exception as e:
         print(f"[Main] Swing error {candidate.get('ticker')}: {type(e).__name__}: {e}")
         return {"swing_score": 0, "swing_type": "ERROR", "error": str(e), "qualified": False}
+
+
+def _build_swing_plan(candidate: dict) -> dict:
+    """
+    תוכנית Swing עם שני חסמים קריטיים:
+    - MIN_STOP_PCT = 2.0% (למנוע סטופים צמודים מדי - עלויות טורפות)
+    - MAX_STOP_PCT = 10.0% (למנוע סטופים רחבים מדי - פוזיציה זעירה מדי)
+    """
+    price = float(candidate.get('price', 0) or 0)
+    atr = float(candidate.get('atr', 0) or 0)
+
+    if price <= 0 or atr <= 0:
+        return {"plan_valid": False, "plan_error": "INVALID_PRICE_OR_ATR"}
+
+    # Stop = max(1.5 ATR, 2.5% minimum) - אבל לא יותר מ-10%
+    atr_stop = price - (1.5 * atr)
+    min_pct_stop = price * (1 - MIN_STOP_PCT / 100.0)  # 2% minimum
+    stop = min(atr_stop, min_pct_stop)
+
+    if stop <= 0:
+        return {"plan_valid": False, "plan_error": "STOP_BELOW_ZERO"}
+
+    stop_distance_pct = (price - stop) / price * 100.0
+
+    # 🚨 חסם 1: סטופ צמוד מדי (עלויות טורפות)
+    if stop_distance_pct < MIN_STOP_PCT:
+        return {
+            "plan_valid": False,
+            "plan_error": f"STOP_TOO_TIGHT ({stop_distance_pct:.2f}% < {MIN_STOP_PCT}%)",
+        }
+
+    # 🚨 חסם 2: סטופ רחב מדי (פוזיציה זעירה, R:R לא אמיתי)
+    if stop_distance_pct > MAX_STOP_PCT:
+        return {
+            "plan_valid": False,
+            "plan_error": f"STOP_TOO_WIDE ({stop_distance_pct:.2f}% > {MAX_STOP_PCT}%)",
+        }
+
+    risk_per_share = price - stop
+    t1 = price + (2.0 * risk_per_share)
+    t2 = price + (4.0 * risk_per_share)
+
+    # גודל פוזיציה
+    max_risk_dollars = ACCOUNT_SIZE * MAX_RISK_PER_TRADE_V31
+    position_size_risk = int(max_risk_dollars / risk_per_share)
+    max_position_value = ACCOUNT_SIZE * MAX_POSITION_VALUE_PCT
+    position_size_value = int(max_position_value / price)
+    position_size = min(position_size_risk, position_size_value)
+
+    if position_size <= 0:
+        return {"plan_valid": False, "plan_error": "POSITION_SIZE_ZERO"}
+
+    actual_max_loss = round(risk_per_share * position_size, 2)
+
+    return {
+        "plan_valid": True,
+        "plan_error": None,
+        "entry": round(price, 4),
+        "stop": round(stop, 4),
+        "target_1": round(t1, 4),
+        "target_2": round(t2, 4),
+        "risk_per_share": round(risk_per_share, 4),
+        "stop_distance_pct": round(stop_distance_pct, 2),
+        "position_size": position_size,
+        "max_loss": actual_max_loss,
+        "account_size": ACCOUNT_SIZE,
+        "risk_pct": MAX_RISK_PER_TRADE_V31,
+        "hold_type": "SWING_1_3D",
+    }
 
 
 def _classify_trade_type(candidate):
@@ -155,79 +231,8 @@ def _classify_trade_type(candidate):
     return "WATCH"
 
 
-def _build_swing_plan(candidate: dict) -> dict:
-    """
-    תוכנית מסחר ייעודית ל-Swing.
-    כולל הגנה קריטית: אם הסטופ קטן מ-2% מהמחיר, העסקה נפסלת 
-    כדי למנוע מצב שבו עלויות (spread+slippage) טורפות את כל הרווח.
-    """
-    price = float(candidate.get('price', 0) or 0)
-    atr = float(candidate.get('atr', 0) or 0)
-
-    if price <= 0 or atr <= 0:
-        return {
-            "plan_valid": False,
-            "plan_error": "INVALID_PRICE_OR_ATR",
-        }
-
-    # Stop = 1.5 ATR, אבל לא קרוב יותר מ-2.5% (כדי לתת מקום לנשום)
-    atr_stop = price - (1.5 * atr)
-    min_pct_stop = price * 0.975  # 2.5% minimum stop distance
-    stop = min(atr_stop, min_pct_stop)  # min = lower price = wider stop
-
-    if stop <= 0:
-        return {
-            "plan_valid": False,
-            "plan_error": "STOP_BELOW_ZERO",
-        }
-
-    risk_per_share = price - stop
-    
-    # 🚨 חסם קריטי: אם הסיכון קטן מ-2% מהמחיר, אסור לסחור
-    if risk_per_share < (price * 0.02):
-        return {
-            "plan_valid": False,
-            "plan_error": f"STOP_TOO_TIGHT_FOR_COSTS ({(risk_per_share/price)*100:.2f}%)",
-        }
-
-    t1 = price + (2.0 * risk_per_share)
-    t2 = price + (4.0 * risk_per_share)
-
-    # גודל פוזיציה
-    max_risk_dollars = ACCOUNT_SIZE * MAX_RISK_PER_TRADE_V31
-    position_size_risk = int(max_risk_dollars / risk_per_share)
-
-    max_position_value = ACCOUNT_SIZE * MAX_POSITION_VALUE_PCT
-    position_size_value = int(max_position_value / price)
-
-    position_size = min(position_size_risk, position_size_value)
-
-    if position_size <= 0:
-        return {
-            "plan_valid": False,
-            "plan_error": "POSITION_SIZE_ZERO",
-        }
-
-    actual_max_loss = round(risk_per_share * position_size, 2)
-
-    return {
-        "plan_valid": True,
-        "plan_error": None,
-        "entry": round(price, 4),
-        "stop": round(stop, 4),
-        "target_1": round(t1, 4),
-        "target_2": round(t2, 4),
-        "risk_per_share": round(risk_per_share, 4),
-        "position_size": position_size,
-        "max_loss": actual_max_loss,
-        "account_size": ACCOUNT_SIZE,
-        "risk_pct": MAX_RISK_PER_TRADE_V31,
-        "hold_type": "SWING_1_3D",
-    }
-
-
 # ---------------------------------------------------------------------------
-# Legacy Normalization (for fullscan_v34)
+# Legacy Normalization
 # ---------------------------------------------------------------------------
 
 def _normalize_discovery_stats(stats):
@@ -266,7 +271,7 @@ def _normalize_discovery_stats(stats):
 
 
 # ---------------------------------------------------------------------------
-# ENGINE 1: Pre-Market Full Scan (Legacy)
+# ENGINE 1: Pre-Market (Legacy)
 # ---------------------------------------------------------------------------
 
 def run_fullscan_v34(manual=False):
@@ -329,7 +334,7 @@ def run_fullscan_v34(manual=False):
 
 
 # ---------------------------------------------------------------------------
-# ENGINE 2: Swing Daily Scan (with Telegram alerts)
+# ENGINE 2: Swing Daily Scan (with smart Telegram alerts)
 # ---------------------------------------------------------------------------
 
 def run_swing_v1(manual=False):
@@ -343,8 +348,10 @@ def run_swing_v1(manual=False):
     scan_id = now_et.strftime("%Y-%m-%d_SWING")
 
     print("\n" + "=" * 74)
-    print("DAYS-BOT - SWING ENGINE (Daily Bars)")
+    print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
     print(f"Date: {scan_date} | Mode: {'MANUAL' if manual else 'LIVE'}")
+    print(f"Stop range: {MIN_STOP_PCT}%-{MAX_STOP_PCT}% | Min Score: {MIN_SWING_SCORE}")
+    print(f"Telegram: max {MAX_TELEGRAM_ALERTS} alerts, score >= {TELEGRAM_SCORE_THRESHOLD}")
     print("=" * 74)
 
     universe = load_universe()
@@ -367,7 +374,8 @@ def run_swing_v1(manual=False):
     saved_alerts = 0
     saved_snapshots = 0
     plan_blocked = 0
-    telegram_sent = 0
+    blocked_reasons = {"STOP_TOO_TIGHT": 0, "STOP_TOO_WIDE": 0, "OTHER": 0}
+    valid_candidates_for_telegram = []
 
     for c in candidates:
         ticker = c['ticker']
@@ -377,7 +385,7 @@ def run_swing_v1(manual=False):
         c['swing_score'] = float(swing.get('swing_score', 0) or 0)
         c['composite_score'] = c['swing_score']
 
-        # 2. בניית תוכנית מסחר (Swing-specific)
+        # 2. בניית תוכנית מסחר
         plan = _build_swing_plan(c)
         c.update(plan)
 
@@ -387,54 +395,82 @@ def run_swing_v1(manual=False):
         if sid is not None:
             saved_snapshots += 1
 
-        # 4. שמירת Alert + שליחת טלגרם אם התוכנית תקינה וציון מעל 60
-        if c.get('plan_valid') and c.get('swing_score', 0) >= 60:
+        # 4. שמירת Alert אם התוכנית תקינה וציון מעל הסף
+        if c.get('plan_valid') and c.get('swing_score', 0) >= MIN_SWING_SCORE:
             c['data_status'] = "ACTIONABLE"
             c['trade_type'] = "SWING_1_3D"
             try:
                 save_alert(**c)
                 saved_alerts += 1
-                print(f"[SwingScan] ✅ {ticker} | Score: {c['swing_score']:.1f} | Entry: ${c['entry']:.2f} | Stop: ${c['stop']:.2f} | T1: ${c['target_1']:.2f} | T2: ${c['target_2']:.2f}")
-                
-                # 🎯 שליחת התראה לטלגרם
-                sent = send_swing_alert(
-                    ticker=ticker,
-                    entry=c['entry'],
-                    stop=c['stop'],
-                    t1=c['target_1'],
-                    t2=c['target_2'],
-                    score=c['swing_score'],
-                    position_size=c['position_size'],
-                    max_loss=c['max_loss'],
-                )
-                if sent:
-                    telegram_sent += 1
-                    
+                valid_candidates_for_telegram.append(c)
+                print(f"[SwingScan] ✅ {ticker} | Score: {c['swing_score']:.0f} | Entry: ${c['entry']:.2f} | Stop: ${c['stop']:.2f} ({c['stop_distance_pct']:.1f}%) | T1: ${c['target_1']:.2f}")
             except Exception as e:
                 print(f"[SwingScan] DB error {ticker}: {e}")
         else:
             plan_blocked += 1
-            reason = c.get('plan_error', 'UNKNOWN')
-            print(f"[SwingScan] ⚠️ {ticker} | Score: {c['swing_score']:.1f} | BLOCKED: {reason}")
+            reason = c.get('plan_error') or 'LOW_SCORE'
+            if 'STOP_TOO_TIGHT' in reason:
+                blocked_reasons["STOP_TOO_TIGHT"] += 1
+            elif 'STOP_TOO_WIDE' in reason:
+                blocked_reasons["STOP_TOO_WIDE"] += 1
+            else:
+                blocked_reasons["OTHER"] += 1
+            print(f"[SwingScan] ⚠️ {ticker} | Score: {c['swing_score']:.0f} | BLOCKED: {reason}")
 
-    print(f"[Main] V5.0.6 snapshots saved: {saved_snapshots}")
+    print(f"\n[Main] V5.0.8 snapshots saved: {saved_snapshots}")
 
+    # 🎯 שליחת התראות טלגרם - רק ה-Top N עם ציון מעל הסף
+    telegram_sent = 0
+    if valid_candidates_for_telegram:
+        # מיין לפי ציון (יורד), ואז לפי נפח (יורד)
+        valid_candidates_for_telegram.sort(
+            key=lambda x: (x.get('swing_score', 0), x.get('avg_volume', 0)),
+            reverse=True
+        )
+        
+        # קח רק את אלה שעוברים את סף הטלגרם, ועד MAX_TELEGRAM_ALERTS
+        top_for_telegram = [
+            c for c in valid_candidates_for_telegram
+            if c.get('swing_score', 0) >= TELEGRAM_SCORE_THRESHOLD
+        ][:MAX_TELEGRAM_ALERTS]
+
+        print(f"\n[Main] Sending {len(top_for_telegram)} alerts to Telegram (top {MAX_TELEGRAM_ALERTS}, score >= {TELEGRAM_SCORE_THRESHOLD})...")
+        
+        for c in top_for_telegram:
+            sent = send_swing_alert(
+                ticker=c['ticker'],
+                entry=c['entry'],
+                stop=c['stop'],
+                t1=c['target_1'],
+                t2=c['target_2'],
+                score=c['swing_score'],
+                position_size=c['position_size'],
+                max_loss=c['max_loss'],
+            )
+            if sent:
+                telegram_sent += 1
+            print(f"[Main]   → {c['ticker']} (score {c['swing_score']:.0f}) - {'sent' if sent else 'FAILED'}")
+
+    # סיכום
     print("\n" + "=" * 74)
     print(f"SWING SUMMARY:")
-    print(f"  Candidates analyzed: {len(candidates)}")
-    print(f"  Snapshots saved:     {saved_snapshots}")
-    print(f"  Valid alerts:        {saved_alerts}")
-    print(f"  Plan blocked:        {plan_blocked}")
-    print(f"  Telegram sent:       {telegram_sent}")
+    print(f"  Candidates analyzed:    {len(candidates)}")
+    print(f"  Snapshots saved:        {saved_snapshots}")
+    print(f"  Valid alerts (saved):   {saved_alerts}")
+    print(f"  Plan blocked:           {plan_blocked}")
+    print(f"    - Stop too tight:     {blocked_reasons['STOP_TOO_TIGHT']}")
+    print(f"    - Stop too wide:      {blocked_reasons['STOP_TOO_WIDE']}")
+    print(f"    - Other (low score):  {blocked_reasons['OTHER']}")
+    print(f"  Telegram sent:          {telegram_sent}")
     print("=" * 74)
 
-    # שליחת סיכום כללי לטלגרם
+    # שליחת סיכום כללי
     if saved_alerts > 0:
-        send_swing_summary(scan_date, saved_alerts, len(candidates), plan_blocked)
+        send_swing_summary(scan_date, saved_alerts, len(candidates), plan_blocked, telegram_sent)
 
 
 # ---------------------------------------------------------------------------
-# MAIN ENTRY POINT
+# MAIN
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
