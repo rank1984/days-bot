@@ -47,6 +47,8 @@ def evaluate_swing_trades():
     today = datetime.now(ET).date()
     evaluated_count = 0
     pending_count = 0
+    wins, losses, breakeven = 0, 0, 0
+    total_net_r = 0.0
 
     for row in rows:
         ticker = row["ticker"]
@@ -57,7 +59,7 @@ def evaluate_swing_trades():
         t2 = float(row["target_2"])
         snap_id = row["snapshot_id"]
 
-        # בדיקת גיל העסקה
+        # בדיקת גיל העסקה (חייב לעבור 5 ימים)
         scan_date_obj = datetime.strptime(scan_date_str, "%Y-%m-%d").date()
         days_since_scan = (today - scan_date_obj).days
         
@@ -68,7 +70,7 @@ def evaluate_swing_trades():
 
         # העסקה בשלה להערכה. מושך נתונים למשך 5 ימים מהסריקה
         start_dt = datetime.strptime(scan_date_str, "%Y-%m-%d") + timedelta(days=1)
-        end_dt = start_dt + timedelta(days=7) # קצת יותר מ-5 ימי מסחר
+        end_dt = start_dt + timedelta(days=7)
         
         try:
             df = yf.download(
@@ -105,7 +107,7 @@ def evaluate_swing_trades():
                 # בדיקת סטופ קודם (שמרני)
                 if low <= current_stop:
                     if t1_hit:
-                        exit_reason = "STOP_BE_AFTER_T1" # סטופ ב-Breakeven אחרי T1
+                        exit_reason = "STOP_BE_AFTER_T1"
                     else:
                         exit_reason = "STOP_HIT"
                     exit_price = current_stop
@@ -138,10 +140,16 @@ def evaluate_swing_trades():
 
             if net_r > 0.1:
                 outcome = "WIN"
+                wins += 1
             elif net_r < -0.1:
                 outcome = "LOSS"
+                losses += 1
             else:
                 outcome = "BREAKEVEN"
+                breakeven += 1
+
+            total_net_r += net_r
+            evaluated_count += 1
 
             # שמירה ל-DB
             cur.execute("""
@@ -151,14 +159,19 @@ def evaluate_swing_trades():
             """, (snap_id, entry, exit_price, exit_reason, days_held * 390, gross_r, net_r, outcome)) 
             
             print(f"✅ {ticker:5s} | {exit_reason:20s} | Net R: {net_r:+.2f} | {outcome}")
-            evaluated_count += 1
 
         except Exception as e:
             print(f"ERR {ticker}: {e}")
 
     conn.commit()
     conn.close()
-    print(f"\nSwing evaluation complete. Evaluated: {evaluated_count} | Pending: {pending_count}")
+    
+    print(f"\n--- SWING EVALUATION SUMMARY ---")
+    print(f"Evaluated: {evaluated_count} | Pending: {pending_count}")
+    if evaluated_count > 0:
+        print(f"Win Rate: {wins/evaluated_count*100:.1f}% ({wins}W / {losses}L / {breakeven}BE)")
+        print(f"Avg Net R: {total_net_r/evaluated_count:+.2f}R")
+    print(f"Swing evaluation complete.")
 
 if __name__ == "__main__":
     evaluate_swing_trades()
