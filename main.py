@@ -3,6 +3,8 @@ DAYS-BOT V5.0.7 – RESEARCH ENGINE (Multi-Strategy)
 תומך בשני מנועים:
 1. fullscan_v34 - מנוע Pre-Market (Gap and Go) - היסטורי
 2. swing_v1 - מנוע Swing יומי (Daily Bars) - פעיל
+
+V5.0.7.1: הוספת התראות טלגרם פרטניות לכל תוכנית Swing תקפה.
 """
 import sys
 from pathlib import Path
@@ -22,6 +24,57 @@ from scanner.swing_engine import calculate_swing_score
 from database.db import init_db, save_alert
 from database.snapshot_schema import init_snapshot_schema, save_snapshot
 from telegram_v3 import send_message
+
+
+# ---------------------------------------------------------------------------
+# TELEGRAM SWING ALERTS
+# ---------------------------------------------------------------------------
+
+def send_swing_alert(ticker, entry, stop, t1, t2, score, position_size, max_loss):
+    """
+    שולח התראת טלגרם פרטנית עבור תוכנית Swing אחת.
+    """
+    risk_per_share = entry - stop
+    risk_pct = (risk_per_share / entry) * 100
+
+    msg = f"""
+🎯 *SWING ALERT: {ticker}*
+━━━━━━━━━━━━━━━━━━
+📊 Score: {score:.0f}/100
+💰 Entry: ${entry:.2f}
+🛑 Stop: ${stop:.2f} (-{risk_pct:.1f}%)
+🎯 T1: ${t1:.2f} (+{risk_pct*2:.1f}%, R:R 1:2)
+🎯 T2: ${t2:.2f} (+{risk_pct*4:.1f}%, R:R 1:4)
+━━━━━━━━━━━━━━━━━━
+📦 Size: {position_size} shares
+💵 Max Loss: ${max_loss:.2f}
+⏳ Hold: 1-3 days
+"""
+    try:
+        ok = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+        return ok
+    except Exception as e:
+        print(f"[Main] Telegram error for {ticker}: {type(e).__name__}: {e}")
+        return False
+
+
+def send_swing_summary(scan_date, saved_alerts, candidates_count, blocked_count):
+    """
+    שולח הודעת סיכום כללית בסוף ריצת Swing.
+    """
+    msg = f"""
+📊 *DAYS-BOT Swing Summary*
+━━━━━━━━━━━━━━━━━━
+📅 Date: {scan_date}
+🔍 Candidates: {candidates_count}
+✅ Valid Alerts: {saved_alerts}
+⚠️ Blocked: {blocked_count}
+━━━━━━━━━━━━━━━━━━
+"""
+    try:
+        send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
+    except Exception as e:
+        print(f"[Main] Telegram summary error: {type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +329,7 @@ def run_fullscan_v34(manual=False):
 
 
 # ---------------------------------------------------------------------------
-# ENGINE 2: Swing Daily Scan
+# ENGINE 2: Swing Daily Scan (with Telegram alerts)
 # ---------------------------------------------------------------------------
 
 def run_swing_v1(manual=False):
@@ -314,6 +367,7 @@ def run_swing_v1(manual=False):
     saved_alerts = 0
     saved_snapshots = 0
     plan_blocked = 0
+    telegram_sent = 0
 
     for c in candidates:
         ticker = c['ticker']
@@ -333,7 +387,7 @@ def run_swing_v1(manual=False):
         if sid is not None:
             saved_snapshots += 1
 
-        # 4. שמירת Alert אם התוכנית תקינה וציון מעל 60
+        # 4. שמירת Alert + שליחת טלגרם אם התוכנית תקינה וציון מעל 60
         if c.get('plan_valid') and c.get('swing_score', 0) >= 60:
             c['data_status'] = "ACTIONABLE"
             c['trade_type'] = "SWING_1_3D"
@@ -341,6 +395,21 @@ def run_swing_v1(manual=False):
                 save_alert(**c)
                 saved_alerts += 1
                 print(f"[SwingScan] ✅ {ticker} | Score: {c['swing_score']:.1f} | Entry: ${c['entry']:.2f} | Stop: ${c['stop']:.2f} | T1: ${c['target_1']:.2f} | T2: ${c['target_2']:.2f}")
+                
+                # 🎯 שליחת התראה לטלגרם
+                sent = send_swing_alert(
+                    ticker=ticker,
+                    entry=c['entry'],
+                    stop=c['stop'],
+                    t1=c['target_1'],
+                    t2=c['target_2'],
+                    score=c['swing_score'],
+                    position_size=c['position_size'],
+                    max_loss=c['max_loss'],
+                )
+                if sent:
+                    telegram_sent += 1
+                    
             except Exception as e:
                 print(f"[SwingScan] DB error {ticker}: {e}")
         else:
@@ -356,14 +425,12 @@ def run_swing_v1(manual=False):
     print(f"  Snapshots saved:     {saved_snapshots}")
     print(f"  Valid alerts:        {saved_alerts}")
     print(f"  Plan blocked:        {plan_blocked}")
+    print(f"  Telegram sent:       {telegram_sent}")
     print("=" * 74)
 
+    # שליחת סיכום כללי לטלגרם
     if saved_alerts > 0:
-        try:
-            msg = f"DAYS-BOT Swing: {saved_alerts} valid setups for {scan_date}."
-            send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
-        except Exception:
-            pass
+        send_swing_summary(scan_date, saved_alerts, len(candidates), plan_blocked)
 
 
 # ---------------------------------------------------------------------------
