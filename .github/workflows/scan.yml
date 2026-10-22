@@ -1,4 +1,4 @@
-name: DAYS-BOT V5.0.7 Swing Scanner
+name: DAYS-BOT V5.0.8 Swing Scanner
 
 on:
   # UTC. 
@@ -32,7 +32,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- Dedup: מונע ריצה כפולה באותו חלון זמן ----------
+      # ---------- Dedup: מונע ריצה כפולה בתוך חלון של שעתיים ----------
       - name: Dedup check
         id: dedup
         if: github.event.inputs.force != 'true'
@@ -40,48 +40,32 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)
-          HOUR_ET=$(TZ=America/New_York date +%H)
-          
-          # מחלקים את היום לשניים: בוקר (לפני 15:00 ET) וסגירה (אחרי 15:00 ET)
-          if [ "$HOUR_ET" -lt 15 ]; then
-            WINDOW="MORNING"
-          else
-            WINDOW="CLOSE"
+          # כמה דקות עברו מאז הריצה המוצלחת האחרונה?
+          LAST_RUN=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\")] | .[0] | .updated_at" \
+            2>/dev/null || echo "")
+
+          if [ -z "$LAST_RUN" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Dedup: no previous successful run — proceeding"
+            exit 0
           fi
 
-          # בודק אם כבר רצה בהצלחה ריצה בחלון הזה היום
-          COUNT=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
-            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\") | select(.created_at | startswith(\"$TODAY_ET\"))] | length" \
-            2>/dev/null || echo "0")
+          LAST_EPOCH=$(date -d "$LAST_RUN" +%s 2>/dev/null || echo 0)
+          NOW_EPOCH=$(date +%s)
+          DIFF_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
 
-          # לוגיקה פשוטה: אם רצנו היום יותר מפעם אחת (למשל הבוקר), והגענו לסגירה - נדרוס?
-          # בואו נעשה פשוט: אם יש ריצה מוצלחת היום והיא הייתה אחרי 20:00 UTC, תדלג.
-          
-          UTC_HOUR=$(date -u +%H)
-          if [ "$UTC_HOUR" -ge 20 ]; then
-             # ריצת סגירה - בודקים אם כבר היתה ריצת סגירה
-             CLOSE_RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
-               --jq "[.workflow_runs[] | select(.created_at | startswith(\"$TODAY_ET\")) | select(.created_at | contains(\"T20:\"))] | length" 2>/dev/null || echo "0")
-             if [ "$CLOSE_RUNS" -ge 1 ]; then
-               echo "skip=true" >> $GITHUB_OUTPUT
-               echo "Dedup: Close run already done today."
-               exit 0
-             fi
+          echo "Dedup: last successful run was $DIFF_MIN minutes ago ($LAST_RUN)"
+
+          # חוסם רק אם ריצה מוצלחת הייתה פחות מ-120 דקות (2 שעות)
+          if [ "$DIFF_MIN" -lt 120 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Dedup: SKIPPING — a successful run was $DIFF_MIN min ago (< 120)"
           else
-             # ריצת בוקר - בודקים אם כבר היתה ריצת בוקר
-             MORNING_RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
-               --jq "[.workflow_runs[] | select(.created_at | startswith(\"$TODAY_ET\")) | select(.created_at | contains(\"T14:\") or contains(\"T15:\"))] | length" 2>/dev/null || echo "0")
-             if [ "$MORNING_RUNS" -ge 1 ]; then
-               echo "skip=true" >> $GITHUB_OUTPUT
-               echo "Dedup: Morning run already done today."
-               exit 0
-             fi
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Dedup: PROCEEDING — last successful run was $DIFF_MIN min ago"
           fi
-
-          echo "skip=false" >> $GITHUB_OUTPUT
-          echo "Dedup: Proceeding."
 
       # ---------- 0. זמן + חישוב משתני סביבה ----------
       - name: Compute time env
@@ -110,11 +94,13 @@ jobs:
         run: |
           {
             echo "=================================================="
-            echo "DAYS-BOT V5.0.7 SWING SCAN"
+            echo "DAYS-BOT V5.0.8 SWING SCAN"
             echo "Run:        ${{ github.run_id }} (#${{ github.run_number }})"
             echo "Event:      ${{ github.event_name }}"
             echo "Force:      ${{ github.event.inputs.force }}"
+            echo "UTC:        $(date -u +%FT%TZ)"
             echo "ET:         $(TZ=America/New_York date '+%F %T %Z')"
+            echo "Israel:     $(TZ=Asia/Jerusalem date '+%F %T %Z')"
             echo "=================================================="
           } | tee scan.log
 
@@ -174,6 +160,7 @@ jobs:
           mkdir -p data summaries
           [ -f /tmp/prev/data/alerts.db ] && cp /tmp/prev/data/alerts.db data/alerts.db
           [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
+          echo "DB restored."
 
       # ---------- 3. בדיקות מקדימות ----------
       - name: Pre-scan DB state
