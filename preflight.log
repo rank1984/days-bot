@@ -1,0 +1,13 @@
+==========================================================================
+PREFLIGHT CHECK — 2026-10-25 03:20:15 EDT
+  Mode: swing
+==========================================================================
+  [PASS] 1. PM window (N/A for swing) — swing mode — daily bars, no PM window required
+  [PASS] 2. PMH consistent with pm_bars — 1366 snapshots with pm_bars+pm_high
+  [PASS] 3. pm_bars>0 implies pm_high — 0 snapshots with bars but no pm_high
+  [PASS] 4. event_rank column present — columns=68
+  [PASS] 5. trigger window (N/A for swing) — swing mode — no intraday trigger
+
+  RESULT: 5/5 passed
+  PREFLIGHT PASSED
+  PREFLIGHT_RESULT=passed
