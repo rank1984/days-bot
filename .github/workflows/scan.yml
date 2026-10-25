@@ -1,11 +1,19 @@
 name: DAYS-BOT V5.0.8 Swing Scanner
 
 on:
+  # GitHub Actions תומך ב-timezone (IANA) ולכן לא צריך לחשב UTC ידנית.
+  # הזמנים כאן הם לפי שעון ניו יורק (ET) והם אוטומטיים לקיץ/חורף.
+  #
+  # ריצת בוקר: 09:00 ET (לפני פתיחת השוק)
+  #   - שעון חורף ישראלי (IST): 16:00
+  #   - שעון קיץ ישראלי (IDT):  17:00
+  #
+  # ריצת סגירה: 16:30 ET (אחרי סגירת השוק)
+  #   - שעון חורף ישראלי (IST): 23:30
+  #   - שעון קיץ ישראלי (IDT):  00:30 (למחרת)
   schedule:
-    # 10:30 ET — פתיחת המסחר (נרות של אתמול + פתיחה טרייה)
-    - cron: '30 10 * * 1-5'
+    - cron: '0 9 * * 1-5'
       timezone: "America/New_York"
-    # 16:30 ET — סגירת המסחר (הנתון הקובע)
     - cron: '30 16 * * 1-5'
       timezone: "America/New_York"
   workflow_dispatch:
@@ -26,7 +34,7 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
   DB_PATH: data/alerts.db
-  # Suppress pandas-4 deprecation noise from yfinance (see requirements.txt note)
+  # מנטרל את שטף אזהרות Pandas4 שמקורו ב-yfinance
   PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
 
 jobs:
@@ -35,7 +43,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- Dedup: skip if a successful run finished < 120 min ago ----------
+      # ---------- Dedup: מונע ריצה כפולה בתוך חלון של 120 דקות ----------
       - name: Dedup check
         id: dedup
         if: github.event.inputs.force != 'true'
@@ -68,15 +76,14 @@ jobs:
             echo "Dedup: PROCEEDING — last successful run was $DIFF_MIN min ago"
           fi
 
-      # ---------- 0. Compute time env ----------
+      # ---------- 0. חישוב משתני זמן (לפי ET, אך נשמרים גם עבור התצוגה) ----------
       - name: Compute time env
         if: steps.dedup.outputs.skip != 'true'
         run: |
           echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
           echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
 
-          # Swing mode uses daily bars; PM-window is a legacy concept.
-          # We still emit the field for backward compatibility with the CSV schema.
+          # מצב Swing אינו תלוי בחלון Pre-Market
           echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
@@ -100,23 +107,21 @@ jobs:
             echo "=================================================="
           } | tee scan.log
 
-      # ---------- 1. Checkout + Python ----------
+      # ---------- 1. התקנה ----------
       - uses: actions/checkout@v4
         if: steps.dedup.outputs.skip != 'true'
-
       - uses: actions/setup-python@v5
         if: steps.dedup.outputs.skip != 'true'
         with:
           python-version: '3.11'
           cache: 'pip'
-
       - name: Install deps
         if: steps.dedup.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ---------- 2. Restore previous DB ----------
+      # ---------- 2. שחזור DB מהריצה הקודמת ----------
       - name: Find previous run with valid scan artifact
         id: prev
         if: steps.dedup.outputs.skip != 'true'
@@ -135,8 +140,8 @@ jobs:
             if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
           done
           if [ -n "$FOUND_RUN" ]; then
-            echo "run=$FOUND_RUN"         >> $GITHUB_OUTPUT
-            echo "artifact=$FOUND_ART"    >> $GITHUB_OUTPUT
+            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
           fi
 
       - name: Download previous artifact
@@ -153,9 +158,9 @@ jobs:
         if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
         run: |
           mkdir -p data summaries
-          [ -f /tmp/prev/data/alerts.db ]            && cp /tmp/prev/data/alerts.db            data/alerts.db
-          [ -f /tmp/prev/summaries/all_runs.csv ]    && cp /tmp/prev/summaries/all_runs.csv    summaries/all_runs.csv
-          [ -f /tmp/prev/run_summary_prior.json ]    && cp /tmp/prev/run_summary_prior.json    run_summary_prior.json
+          [ -f /tmp/prev/data/alerts.db ]         && cp /tmp/prev/data/alerts.db         data/alerts.db
+          [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
+          [ -f /tmp/prev/run_summary_prior.json ] && cp /tmp/prev/run_summary_prior.json run_summary_prior.json
           echo "DB restored (if present)."
 
       - name: Verify DB integrity
@@ -175,7 +180,7 @@ jobs:
             mv data/alerts.db data/alerts.db.corrupt
           fi
 
-      # ---------- 3. Pre-run checks ----------
+      # ---------- 3. בדיקות מקדימות ----------
       - name: Pre-scan DB state
         if: steps.dedup.outputs.skip != 'true'
         continue-on-error: true
@@ -187,10 +192,8 @@ jobs:
               con = sqlite3.connect(p)
               for t in ['snapshots','alerts','outcomes','trigger_results']:
                   try: print(f'  {t}: {con.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}')
-                  except Exception as e: print(f'  {t}: ERR {e}')
+                  except: pass
               con.close()
-          else:
-              print('  no DB yet')
           " 2>&1 | tee -a scan.log
 
       - name: Capture PRE-scan snapshot count
@@ -215,7 +218,7 @@ jobs:
           python3 scripts/migrate_research_meta.py || true
           python3 scripts/migrate_cost_columns.py  || true
 
-      # ---------- 4. Preflight (swing mode) ----------
+      # ---------- 4. Preflight (מצב Swing) ----------
       - name: Preflight check
         id: preflight
         if: steps.dedup.outputs.skip != 'true'
@@ -233,7 +236,7 @@ jobs:
           fi
           exit 0
 
-      # ---------- 5. Run scanner ----------
+      # ---------- 5. הרצת הסורק ----------
       - name: Run scanner
         id: scan
         if: steps.dedup.outputs.skip != 'true'
@@ -253,7 +256,7 @@ jobs:
           echo ">>> running: python3 main.py swing_v1 --manual"
           python3 main.py swing_v1 --manual 2>&1 | tee -a scan.log
 
-      # ---------- 6. Metadata + summary ----------
+      # ---------- 6. מטא-דאטה וסיכום ----------
       - name: Write run metadata
         if: steps.dedup.outputs.skip != 'true' && always()
         env:
@@ -284,7 +287,7 @@ jobs:
           mkdir -p summaries
           python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
 
-      # ---------- 7. Upload ----------
+      # ---------- 7. העלאה ----------
       - name: Upload scan artifact
         if: steps.dedup.outputs.skip != 'true' && always()
         uses: actions/upload-artifact@v4
