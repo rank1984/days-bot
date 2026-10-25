@@ -1,0 +1,194 @@
+name: Restore 176 Outcomes (from r906)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Run ID with 1443 snapshots (default: r906 = 40180855072)'
+        required: true
+        default: '40180855072'
+      merge_run_id:
+        description: 'Run ID with 80 new snapshots (default: r1 = last swing_pipeline)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      # ---------- 1. Download source DB (r906) ----------
+      - name: Find r906 artifact
+        id: find_source
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ github.event.inputs.source_run_id }}"
+          ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' \
+            2>/dev/null | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::No scan-* artifact in run $RUN_ID"
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].name' || true
+            exit 1
+          fi
+          echo "artifact=$ART" >> $GITHUB_OUTPUT
+          echo "Found: $ART"
+
+      - name: Download source DB
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find_source.outputs.artifact }}
+          path: /tmp/source
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.inputs.source_run_id }}
+          repository: ${{ github.repository }}
+
+      - name: Prepare DB
+        run: |
+          mkdir -p data
+          cp /tmp/source/data/alerts.db data/alerts.db
+          echo "══════ BEFORE ══════"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT 'snapshots' AS metric, COUNT(*) AS value FROM snapshots
+          UNION ALL SELECT 'outcomes', COUNT(*) FROM outcomes;
+          SQL
+
+      # ---------- 2. Run evaluator (this creates 176 outcomes) ----------
+      - name: Run evaluator
+        id: eval
+        env:
+          PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          python3 scripts/evaluate_swing.py 2>&1 | tee eval.log
+          echo "=== tail ==="
+          tail -20 eval.log
+
+      # ---------- 3. Verify 176 outcomes were created ----------
+      - name: Verify outcomes
+        run: |
+          echo "══════ AFTER EVALUATE ══════"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT 'snapshots' AS metric, COUNT(*) AS value FROM snapshots
+          UNION ALL SELECT 'outcomes', COUNT(*) FROM outcomes
+          UNION ALL SELECT 'valid_outcomes', COUNT(*) FROM outcomes WHERE net_r_status='VALID'
+          UNION ALL SELECT 'pending_outcomes', COUNT(*) FROM outcomes WHERE net_r_status='PENDING';
+          SQL
+          
+          echo ""
+          echo "══════ WIN RATE ══════"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT
+            COUNT(*) AS n,
+            ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / NULLIF(COUNT(*),0), 2) AS win_pct,
+            ROUND(AVG(net_r), 4) AS avg_net_r
+          FROM outcomes WHERE net_r_status='VALID';
+          SQL
+          
+          VALID=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM outcomes WHERE net_r_status='VALID'")
+          echo "Valid outcomes: $VALID"
+          if [ "$VALID" -lt 100 ]; then
+            echo "::error::Expected ~176 valid outcomes, got $VALID"
+            echo "Check eval.log for errors"
+            exit 1
+          fi
+          echo "✅ $VALID valid outcomes created"
+
+      # ---------- 4. Optional: merge with r1 (80 new snapshots) ----------
+      - name: Find r1 artifact (optional)
+        id: find_merge
+        if: github.event.inputs.merge_run_id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ github.event.inputs.merge_run_id }}"
+          ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' \
+            2>/dev/null | head -1)
+          echo "artifact=$ART" >> $GITHUB_OUTPUT
+
+      - name: Download r1 DB
+        if: github.event.inputs.merge_run_id != '' && steps.find_merge.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find_merge.outputs.artifact }}
+          path: /tmp/merge
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.inputs.merge_run_id }}
+          repository: ${{ github.repository }}
+
+      - name: Merge DBs (if r1 provided)
+        if: github.event.inputs.merge_run_id != '' && steps.find_merge.outputs.artifact != ''
+        run: |
+          python3 scripts/merge_databases.py \
+            data/alerts.db \
+            /tmp/merge/data/alerts.db \
+            data/merged.db
+          mv data/merged.db data/alerts.db
+          
+          echo "══════ AFTER MERGE ══════"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT 'snapshots' AS metric, COUNT(*) AS value FROM snapshots
+          UNION ALL SELECT 'outcomes', COUNT(*) FROM outcomes;
+          SQL
+
+      # ---------- 5. Upload final DB ----------
+      - name: Upload restored DB
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-restored-${{ github.run_number }}
+          path: |
+            data/alerts.db
+            eval.log
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          {
+            echo "## ✅ Restore Complete"
+            echo ""
+            echo "**Artifact:** \`db-restored-${{ github.run_number }}\`"
+            echo ""
+            echo "### DB State"
+            sqlite3 -header -column data/alerts.db <<'SQL'
+            SELECT 'snapshots' AS metric, COUNT(*) AS value FROM snapshots
+            UNION ALL SELECT 'outcomes', COUNT(*) FROM outcomes
+            UNION ALL SELECT 'valid', COUNT(*) FROM outcomes WHERE net_r_status='VALID'
+            UNION ALL SELECT 'pending', COUNT(*) FROM outcomes WHERE net_r_status='PENDING';
+            SQL
+            echo ""
+            echo "### Win Rate"
+            sqlite3 -header -column data/alerts.db <<'SQL'
+            SELECT COUNT(*) AS n,
+              ROUND(100.0*SUM(CASE WHEN net_r>0 THEN 1 ELSE 0 END)/COUNT(*),2) AS win_pct,
+              ROUND(AVG(net_r),4) AS avg_net_r
+            FROM outcomes WHERE net_r_status='VALID';
+            SQL
+            echo ""
+            echo "### Next Step"
+            echo "Run **Swing Pipeline** with \`mode=scan\`, \`force=true\`"
+            echo "It will auto-detect \`db-restored-${{ github.run_number }}\` and continue from it."
+          } >> $GITHUB_STEP_SUMMARY
