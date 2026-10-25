@@ -1,0 +1,188 @@
+name: DAYS-BOT — DB Recovery (merge old + new)
+
+on:
+  workflow_dispatch:
+    inputs:
+      old_run_id:
+        description: 'OLD run ID (scan.yml run with 1443 snapshots + 176 outcomes)'
+        required: true
+        type: string
+      new_run_id:
+        description: 'NEW run ID (swing_pipeline run with today''s 80 snapshots; blank = latest)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      # ---------- Locate OLD artifact ----------
+      - name: Find old artifact
+        id: old
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ github.event.inputs.old_run_id }}"
+          echo "Searching run $RUN_ID..."
+          ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' \
+            2>/dev/null | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::No scan-* artifact found in run $RUN_ID"
+            echo "Available artifacts:"
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].name' || true
+            exit 1
+          fi
+          echo "artifact=$ART" >> $GITHUB_OUTPUT
+          echo "run=$RUN_ID"    >> $GITHUB_OUTPUT
+          echo "Old: run $RUN_ID artifact $ART"
+
+      # ---------- Locate NEW artifact ----------
+      - name: Find new artifact
+        id: new
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.new_run_id }}" ]; then
+            RUN_ID="${{ github.event.inputs.new_run_id }}"
+          else
+            RUN_ID=$(gh api "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=5" \
+              --jq '[.workflow_runs[] | select(.status=="completed" and .conclusion=="success")] | .[0] | .id')
+          fi
+          ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' \
+            2>/dev/null | head -1)
+          if [ -z "$ART" ]; then
+            echo "::error::No scan-* artifact found in run $RUN_ID"
+            gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/artifacts" --jq '.artifacts[].name' || true
+            exit 1
+          fi
+          echo "artifact=$ART" >> $GITHUB_OUTPUT
+          echo "run=$RUN_ID"    >> $GITHUB_OUTPUT
+          echo "New: run $RUN_ID artifact $ART"
+
+      # ---------- Download both ----------
+      - name: Download OLD
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.old.outputs.artifact }}
+          path: /tmp/old
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.old.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Download NEW
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.new.outputs.artifact }}
+          path: /tmp/new
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.new.outputs.run }}
+          repository: ${{ github.repository }}
+
+      # ---------- Pre-merge diagnostics ----------
+      - name: OLD DB stats
+        run: |
+          echo "══════════ OLD DB ══════════"
+          sqlite3 -header -column /tmp/old/data/alerts.db <<'SQL'
+          SELECT 'snapshots' AS t, COUNT(*) AS n FROM snapshots
+          UNION ALL SELECT 'outcomes',  COUNT(*) FROM outcomes
+          UNION ALL SELECT 'alerts',    COUNT(*) FROM alerts
+          UNION ALL SELECT 'min_date',  MIN(scan_date) FROM snapshots
+          UNION ALL SELECT 'max_date',  MAX(scan_date) FROM snapshots;
+          SQL
+          echo ""
+          sqlite3 -header -column /tmp/old/data/alerts.db <<'SQL'
+          SELECT COUNT(*) AS n,
+                 ROUND(AVG(net_r), 4) AS avg_net_r,
+                 ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / MAX(COUNT(*),1), 2) AS win_pct
+          FROM outcomes WHERE net_r_status='VALID';
+          SQL
+
+      - name: NEW DB stats
+        run: |
+          echo "══════════ NEW DB ══════════"
+          sqlite3 -header -column /tmp/new/data/alerts.db <<'SQL'
+          SELECT 'snapshots' AS t, COUNT(*) AS n FROM snapshots
+          UNION ALL SELECT 'outcomes',  COUNT(*) FROM outcomes
+          UNION ALL SELECT 'alerts',    COUNT(*) FROM alerts
+          UNION ALL SELECT 'min_date',  MIN(scan_date) FROM snapshots
+          UNION ALL SELECT 'max_date',  MAX(scan_date) FROM snapshots;
+          SQL
+
+      # ---------- Merge ----------
+      - name: Merge databases
+        run: |
+          python3 scripts/merge_databases.py \
+            /tmp/old/data/alerts.db \
+            /tmp/new/data/alerts.db \
+            data/alerts.db
+
+      # ---------- Post-merge diagnostics ----------
+      - name: Verify merged DB
+        run: |
+          echo "══════════ MERGED DB ══════════"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT 'snapshots' AS t, COUNT(*) AS n FROM snapshots
+          UNION ALL SELECT 'outcomes',  COUNT(*) FROM outcomes
+          UNION ALL SELECT 'alerts',    COUNT(*) FROM alerts;
+          SQL
+          echo ""
+          echo "── snapshots per scan_date ──"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT scan_date, COUNT(*) AS n
+          FROM snapshots
+          GROUP BY scan_date
+          ORDER BY scan_date DESC
+          LIMIT 20;
+          SQL
+          echo ""
+          echo "── outcomes (VALID) ──"
+          sqlite3 -header -column data/alerts.db <<'SQL'
+          SELECT COUNT(*) AS n,
+                 ROUND(AVG(net_r), 4) AS avg_net_r,
+                 ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / MAX(COUNT(*),1), 2) AS win_pct
+          FROM outcomes WHERE net_r_status='VALID';
+          SQL
+          echo ""
+          echo "── integrity check ──"
+          sqlite3 data/alerts.db "PRAGMA integrity_check;"
+
+      # ---------- Upload merged ----------
+      - name: Upload merged DB
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-merged-${{ github.run_number }}
+          path: data/alerts.db
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          {
+            echo "══════════════════════════════════════════════════"
+            echo "✅ Merged DB uploaded as: db-merged-${{ github.run_number }}"
+            echo ""
+            echo "Next step:"
+            echo "  1. Actions → Swing Pipeline → Run workflow"
+            echo "     mode=scan, force=true"
+            echo "  2. It will auto-detect db-merged-${{ github.run_number }}"
+            echo "     and use it as the new baseline."
+            echo "══════════════════════════════════════════════════"
+          } >> $GITHUB_STEP_SUMMARY
