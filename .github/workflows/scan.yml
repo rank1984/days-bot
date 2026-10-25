@@ -1,9 +1,9 @@
 name: DAYS-BOT V5.0.8 Swing Scanner
 
 on:
-  # UTC. 
-  # 14:30 UTC = 10:30 ET (התייצבות הבוקר)
-  # 20:30 UTC = 16:30 ET (סגירת השוק - הנתון הקובע)
+  # UTC.
+  # 14:30 UTC = 10:30 ET
+  # 20:30 UTC = 16:30 ET
   schedule:
     - cron: '30 14 * * 1-5'
     - cron: '30 20 * * 1-5'
@@ -25,6 +25,8 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
   DB_PATH: data/alerts.db
+  # Suppress pandas-4 deprecation noise from yfinance (see requirements.txt note)
+  PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
 
 jobs:
   scan:
@@ -32,7 +34,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- Dedup: מונע ריצה כפולה בתוך חלון של שעתיים ----------
+      # ---------- Dedup: skip if a successful run finished < 120 min ago ----------
       - name: Dedup check
         id: dedup
         if: github.event.inputs.force != 'true'
@@ -40,7 +42,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          # כמה דקות עברו מאז הריצה המוצלחת האחרונה?
           LAST_RUN=$(gh api \
             "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=5" \
             --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\")] | .[0] | .updated_at" \
@@ -58,7 +59,6 @@ jobs:
 
           echo "Dedup: last successful run was $DIFF_MIN minutes ago ($LAST_RUN)"
 
-          # חוסם רק אם ריצה מוצלחת הייתה פחות מ-120 דקות (2 שעות)
           if [ "$DIFF_MIN" -lt 120 ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "Dedup: SKIPPING — a successful run was $DIFF_MIN min ago (< 120)"
@@ -67,21 +67,16 @@ jobs:
             echo "Dedup: PROCEEDING — last successful run was $DIFF_MIN min ago"
           fi
 
-      # ---------- 0. זמן + חישוב משתני סביבה ----------
+      # ---------- 0. Compute time env ----------
       - name: Compute time env
         if: steps.dedup.outputs.skip != 'true'
         run: |
           echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
           echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
 
-          HOUR=$(TZ=America/New_York date +%H)
-          MIN=$(TZ=America/New_York date +%M)
-          NOW_MIN=$((10#$HOUR * 60 + 10#$MIN))
-          if [ "$NOW_MIN" -ge 570 ] && [ "$NOW_MIN" -lt 960 ]; then
-            echo "IN_PM_WINDOW=1" >> $GITHUB_ENV
-          else
-            echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
-          fi
+          # Swing mode uses daily bars; PM-window is a legacy concept.
+          # We still emit the field for backward compatibility with the CSV schema.
+          echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
 
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "IS_SCHEDULED=1" >> $GITHUB_ENV
@@ -107,24 +102,20 @@ jobs:
       # ---------- 1. Checkout + Python ----------
       - uses: actions/checkout@v4
         if: steps.dedup.outputs.skip != 'true'
+
       - uses: actions/setup-python@v5
         if: steps.dedup.outputs.skip != 'true'
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install deps
         if: steps.dedup.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Locate scanner entry point
-        id: entry
-        if: steps.dedup.outputs.skip != 'true'
-        run: |
-          echo "entry=main.py" >> $GITHUB_OUTPUT
-
-      # ---------- 2. שחזור DB ----------
+      # ---------- 2. Restore previous DB ----------
       - name: Find previous run with valid scan artifact
         id: prev
         if: steps.dedup.outputs.skip != 'true'
@@ -142,7 +133,10 @@ jobs:
               --jq '.artifacts[] | select(.name | startswith("scan-")) | select(.size_in_bytes > 0) | .name' 2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
           done
-          if [ -n "$FOUND_RUN" ]; then echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT; echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT; fi
+          if [ -n "$FOUND_RUN" ]; then
+            echo "run=$FOUND_RUN"         >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART"    >> $GITHUB_OUTPUT
+          fi
 
       - name: Download previous artifact
         if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
@@ -154,15 +148,33 @@ jobs:
           run-id: ${{ steps.prev.outputs.run }}
           repository: ${{ github.repository }}
 
-      - name: Restore DB
+      - name: Restore DB + prior summary
         if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
         run: |
           mkdir -p data summaries
-          [ -f /tmp/prev/data/alerts.db ] && cp /tmp/prev/data/alerts.db data/alerts.db
-          [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
-          echo "DB restored."
+          [ -f /tmp/prev/data/alerts.db ]            && cp /tmp/prev/data/alerts.db            data/alerts.db
+          [ -f /tmp/prev/summaries/all_runs.csv ]    && cp /tmp/prev/summaries/all_runs.csv    summaries/all_runs.csv
+          [ -f /tmp/prev/run_summary_prior.json ]    && cp /tmp/prev/run_summary_prior.json    run_summary_prior.json
+          echo "DB restored (if present)."
 
-      # ---------- 3. בדיקות מקדימות ----------
+      - name: Verify DB integrity
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          set +e
+          if [ ! -f data/alerts.db ]; then
+            echo "[integrity] no DB to verify (fresh start)"
+            exit 0
+          fi
+          RESULT=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -n 1)
+          if [ "$RESULT" = "ok" ]; then
+            echo "[integrity] PRAGMA integrity_check = ok"
+          else
+            echo "[integrity] WARN: PRAGMA integrity_check = $RESULT"
+            echo "[integrity] renaming DB to alerts.db.corrupt and starting fresh"
+            mv data/alerts.db data/alerts.db.corrupt
+          fi
+
+      # ---------- 3. Pre-run checks ----------
       - name: Pre-scan DB state
         if: steps.dedup.outputs.skip != 'true'
         continue-on-error: true
@@ -174,9 +186,20 @@ jobs:
               con = sqlite3.connect(p)
               for t in ['snapshots','alerts','outcomes','trigger_results']:
                   try: print(f'  {t}: {con.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}')
-                  except: pass
+                  except Exception as e: print(f'  {t}: ERR {e}')
               con.close()
+          else:
+              print('  no DB yet')
           " 2>&1 | tee -a scan.log
+
+      - name: Capture PRE-scan snapshot count
+        id: pre
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          PRE=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots;" 2>/dev/null || echo 0)
+          echo "PRE_SCAN_COUNT=$PRE" >> $GITHUB_ENV
+          echo "PRE_SCAN_COUNT=$PRE" >> $GITHUB_OUTPUT
+          echo "[pre] snapshots before scan: $PRE"
 
       - name: Outcome engine tests
         if: steps.dedup.outputs.skip != 'true'
@@ -187,21 +210,29 @@ jobs:
         if: steps.dedup.outputs.skip != 'true'
         continue-on-error: true
         run: |
-          python3 scripts/migrate_event_rank.py || true
+          python3 scripts/migrate_event_rank.py    || true
           python3 scripts/migrate_research_meta.py || true
-          python3 scripts/migrate_cost_columns.py || true
+          python3 scripts/migrate_cost_columns.py  || true
 
+      # ---------- 4. Preflight (swing mode) ----------
       - name: Preflight check
         id: preflight
         if: steps.dedup.outputs.skip != 'true'
-        continue-on-error: true
         run: |
           set +e
-          python3 scripts/preflight.py > preflight.log 2>&1
+          python3 scripts/preflight.py --mode swing > preflight.log 2>&1
+          RC=$?
           cat preflight.log
-          if [ $? -eq 0 ]; then echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV; else echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV; fi
+          if [ $RC -eq 0 ]; then
+            echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV
+            echo "PREFLIGHT_PASSED=1" >> $GITHUB_OUTPUT
+          else
+            echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
+            echo "PREFLIGHT_PASSED=0" >> $GITHUB_OUTPUT
+          fi
+          exit 0
 
-      # ---------- 4. הרצת הסורק ----------
+      # ---------- 5. Run scanner ----------
       - name: Run scanner
         id: scan
         if: steps.dedup.outputs.skip != 'true'
@@ -221,20 +252,30 @@ jobs:
           echo ">>> running: python3 main.py swing_v1 --manual"
           python3 main.py swing_v1 --manual 2>&1 | tee -a scan.log
 
-      # ---------- 5. סיכום ושמירה ----------
+      # ---------- 6. Metadata + summary ----------
+      - name: Write run metadata
+        if: steps.dedup.outputs.skip != 'true' && always()
+        env:
+          PREFLIGHT_PASSED: ${{ env.PREFLIGHT_PASSED }}
+          SCAN_DATE:        ${{ env.TODAY_ET }}
+          TIME_ET:          ${{ env.TIME_ET }}
+          IS_SCHEDULED:     ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:     ${{ env.IN_PM_WINDOW }}
+        run: |
+          python3 scripts/write_run_metadata.py 2>&1 | tee -a scan.log || true
+
       - name: Build run_summary.json
         if: steps.dedup.outputs.skip != 'true' && always()
         env:
-          RUN_ID:            ${{ github.run_id }}
-          RUN_NUMBER:        ${{ github.run_number }}
-          EVENT:             ${{ github.event_name }}
-          SCAN_DATE:         ${{ env.TODAY_ET }}
-          TIME_ET:           ${{ env.TIME_ET }}
-          IS_SCHEDULED:      ${{ env.IS_SCHEDULED }}
-          IN_PM_WINDOW:      ${{ env.IN_PM_WINDOW }}
-          PREFLIGHT_PASSED:  ${{ env.PREFLIGHT_PASSED }}
+          PRE_SCAN_COUNT:   ${{ env.PRE_SCAN_COUNT }}
+          PREFLIGHT_PASSED: ${{ env.PREFLIGHT_PASSED }}
+          SCAN_DATE:        ${{ env.TODAY_ET }}
+          TIME_ET:          ${{ env.TIME_ET }}
+          IS_SCHEDULED:     ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:     ${{ env.IN_PM_WINDOW }}
         run: |
-          python3 scripts/summarize_run.py scan.log run_summary.json || echo "{}" > run_summary.json
+          python3 scripts/summarize_run.py scan.log run_summary.json \
+            || echo '{"error":"summarize_failed"}' > run_summary.json
 
       - name: Append to all_runs.csv
         if: steps.dedup.outputs.skip != 'true' && always()
@@ -242,7 +283,7 @@ jobs:
           mkdir -p summaries
           python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
 
-      # ---------- 6. העלאה ----------
+      # ---------- 7. Upload ----------
       - name: Upload scan artifact
         if: steps.dedup.outputs.skip != 'true' && always()
         uses: actions/upload-artifact@v4
@@ -251,10 +292,12 @@ jobs:
           path: |
             data/alerts.db
             run_summary.json
+            run_summary_prior.json
             summaries/all_runs.csv
             scan.log
             preflight.log
           retention-days: 14
+          if-no-files-found: warn
 
       - name: Upload daily aggregate
         if: steps.dedup.outputs.skip != 'true' && always()
@@ -264,3 +307,4 @@ jobs:
           path: summaries/all_runs.csv
           retention-days: 30
           overwrite: true
+          if-no-files-found: warn
