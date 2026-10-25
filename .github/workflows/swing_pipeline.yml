@@ -39,7 +39,10 @@ env:
 
 jobs:
   scan:
-    if: ${{ (github.event_name == 'schedule' && github.event.schedule != '30 17 * * 1-5') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both')) }}
+    if: >-
+      ${{ (github.event_name == 'schedule' && github.event.schedule != '30 17 * * 1-5')
+      || (github.event_name == 'workflow_dispatch'
+      && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -311,7 +314,11 @@ jobs:
 
   evaluate:
     needs: [scan]
-    if: ${{ always() && ((github.event_name == 'schedule' && github.event.schedule == '30 17 * * 1-5') || (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'evaluate' || github.event.inputs.mode == 'both'))) }}
+    if: >-
+      ${{ always()
+      && ((github.event_name == 'schedule' && github.event.schedule == '30 17 * * 1-5')
+      || (github.event_name == 'workflow_dispatch'
+      && (github.event.inputs.mode == 'evaluate' || github.event.inputs.mode == 'both'))) }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
