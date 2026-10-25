@@ -113,7 +113,7 @@ jobs:
         if: ${{ steps.dedup.outputs.skip != 'true' }}
         run: sudo apt-get install -y sqlite3
 
-            - name: Find latest DB artifact
+      - name: Find latest DB artifact
         id: prev
         if: ${{ steps.dedup.outputs.skip != 'true' }}
         continue-on-error: true
@@ -125,15 +125,17 @@ jobs:
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' \
             2>/dev/null || echo "")
           FOUND_RUN=""; FOUND_ART=""
-          echo "[prev] Pass 1: searching for db-restored-*"
+
+          echo "[prev] Pass 1: searching for db-restored-* (highest priority)"
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
               --jq '.artifacts[] | select(.name | startswith("db-restored-")) | select(.size_in_bytes > 10000) | .name' \
               2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; echo "[prev]   HIT: $ART"; break; fi
           done
+
           if [ -z "$FOUND_RUN" ]; then
-            echo "[prev] Pass 2: falling back to scan-* / eval-* / db-*"
+            echo "[prev] Pass 2: fallback to scan-* / eval-* / db-*"
             for RID in $RUNS; do
               ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
                 --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 10000) | .name' \
@@ -141,12 +143,13 @@ jobs:
               if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; echo "[prev]   HIT: $ART"; break; fi
             done
           fi
+
           if [ -n "$FOUND_RUN" ]; then
             echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
             echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
             echo "[prev] Selected: $FOUND_ART (run $FOUND_RUN)"
           else
-            echo "[prev] No artifact found"
+            echo "[prev] No prior artifact found - will start fresh"
           fi
 
       - name: Download previous artifact
@@ -381,19 +384,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' \
             2>/dev/null || echo "")
+          FOUND_RUN=""; FOUND_ART=""
+
+          echo "[prev] Pass 1: searching for db-restored-*"
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' \
+              --jq '.artifacts[] | select(.name | startswith("db-restored-")) | select(.size_in_bytes > 10000) | .name' \
               2>/dev/null | head -n 1 || true)
-            if [ -n "$ART" ]; then
-              echo "run=$RID" >> $GITHUB_OUTPUT
-              echo "artifact=$ART" >> $GITHUB_OUTPUT
-              break
-            fi
+            if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; echo "[prev]   HIT: $ART"; break; fi
           done
+
+          if [ -z "$FOUND_RUN" ]; then
+            echo "[prev] Pass 2: fallback to scan-* / eval-* / db-*"
+            for RID in $RUNS; do
+              ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+                --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 10000) | .name' \
+                2>/dev/null | head -n 1 || true)
+              if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; echo "[prev]   HIT: $ART"; break; fi
+            done
+          fi
+
+          if [ -n "$FOUND_RUN" ]; then
+            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+            echo "[prev] Selected: $FOUND_ART (run $FOUND_RUN)"
+          fi
 
       - name: Download previous artifact
         if: ${{ steps.same.outcome != 'success' && steps.prev.outputs.artifact != '' }}
@@ -502,19 +520,34 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' \
             2>/dev/null || echo "")
+          FOUND_RUN=""; FOUND_ART=""
+
+          echo "[prev] Pass 1: searching for db-restored-*"
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' \
+              --jq '.artifacts[] | select(.name | startswith("db-restored-")) | select(.size_in_bytes > 10000) | .name' \
               2>/dev/null | head -n 1 || true)
-            if [ -n "$ART" ]; then
-              echo "run=$RID" >> $GITHUB_OUTPUT
-              echo "artifact=$ART" >> $GITHUB_OUTPUT
-              break
-            fi
+            if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; echo "[prev]   HIT: $ART"; break; fi
           done
+
+          if [ -z "$FOUND_RUN" ]; then
+            echo "[prev] Pass 2: fallback"
+            for RID in $RUNS; do
+              ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+                --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 10000) | .name' \
+                2>/dev/null | head -n 1 || true)
+              if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; echo "[prev]   HIT: $ART"; break; fi
+            done
+          fi
+
+          if [ -n "$FOUND_RUN" ]; then
+            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+            echo "[prev] Selected: $FOUND_ART (run $FOUND_RUN)"
+          fi
 
       - name: Download DB
         if: ${{ steps.prev.outputs.artifact != '' }}
