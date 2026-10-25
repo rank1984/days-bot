@@ -3,10 +3,13 @@
 preflight.py — preflight checks.
 
 Modes:
-  --mode premarket  (legacy: PM window 04:00-09:30 ET, trigger 09:30-11:00)
-  --mode swing      (default for swing_v1: skips PM/trigger, keeps DB checks)
+  --mode premarket  (legacy: PM window 04:00-09:30 ET, trigger 09:30-11:00,
+                     event_rank column in trigger_results)
+  --mode swing      (default for swing_v1: skips PM/trigger/event_rank,
+                     keeps DB sanity checks that are relevant to swing)
 
-Exit 0 only if all applicable checks pass. Emits `PREFLIGHT_RESULT=passed|failed`.
+Exit 0 only if all applicable checks pass.
+Emits `PREFLIGHT_RESULT=passed|failed`.
 """
 from __future__ import annotations
 
@@ -69,10 +72,11 @@ def check_pm_bars_imply_high(conn: sqlite3.Connection) -> tuple[bool, str]:
         return True, f"skipped ({e})"
 
 
-def check_event_rank_column(conn: sqlite3.Connection) -> tuple[bool, str]:
+def check_event_rank_in_trigger_results(conn: sqlite3.Connection) -> tuple[bool, str]:
+    """Legacy check: event_rank lives in trigger_results, NOT in snapshots."""
     try:
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)")}
-        return ("event_rank" in cols), f"columns={len(cols)}"
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(trigger_results)")}
+        return ("event_rank" in cols), f"trigger_results columns={len(cols)}"
     except sqlite3.OperationalError as e:
         return False, str(e)
 
@@ -86,6 +90,7 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
     now = now_et()
     checks: list[tuple[str, bool, str]] = []
 
+    # 1. PM window (premarket only)
     if mode == "premarket":
         ok, info = check_pm_window(now)
         checks.append(("1. inside PM window", ok, info))
@@ -93,6 +98,7 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
         checks.append(("1. PM window (N/A for swing)", True,
                        "swing mode — daily bars, no PM window required"))
 
+    # 2/3/4 — DB sanity
     conn = None
     if os.path.exists(db_path):
         try:
@@ -103,11 +109,17 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
     if conn is not None:
         checks.append(("2. PMH consistent with pm_bars", *check_pmh_consistent(conn)))
         checks.append(("3. pm_bars>0 implies pm_high", *check_pm_bars_imply_high(conn)))
-        checks.append(("4. event_rank column present", *check_event_rank_column(conn)))
+        if mode == "premarket":
+            checks.append(("4. event_rank in trigger_results",
+                           *check_event_rank_in_trigger_results(conn)))
+        else:
+            checks.append(("4. event_rank (N/A for swing)", True,
+                           "swing mode — trigger_results is legacy"))
     else:
         for i in (2, 3, 4):
             checks.append((f"{i}. (SKIPPED — no DB)", True, "no DB"))
 
+    # 5. Trigger window (premarket only)
     if mode == "premarket":
         ok, info = check_trigger_window(now)
         checks.append(("5. trigger window 09:30-11:00", ok, info))
@@ -138,8 +150,7 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["premarket", "swing"], default="swing",
-                    help="premarket = legacy PM checks; swing = daily-bar checks (default)")
+    ap.add_argument("--mode", choices=["premarket", "swing"], default="swing")
     ap.add_argument("--db", default=DB_PATH)
     args = ap.parse_args()
     return run_preflight(args.mode, args.db)
