@@ -1,0 +1,59 @@
+snapshots: 1234
+  alerts: 878
+  outcomes: 0
+  trigger_results: 0
+[schema] snapshots.pm_bars_json already present
+[schema] trigger_results.trigger_data_mode already present
+[schema] outcomes.trigger_result_id already present
+[schema] outcomes.net_r_status already present
+[schema] outcomes.cost_r already present
+[schema] outcomes.net_r_x2 already present
+[schema] outcomes.spread_pct_used already present
+[schema] outcomes.spread_source already present
+[schema] outcomes.quote_raw already present
+[schema] outcomes.quote_timestamp_utc already present
+[schema] outcomes.raw_fill already present
+[schema] outcomes.stop_used already present
+[schema] outcomes.t1_used already present
+[schema] outcomes.t2_used already present
+[schema] outcomes.risk_actual already present
+[schema] snapshots.is_scheduled already present
+[schema] snapshots.in_pm_window already present
+[schema] snapshots.preflight_passed already present
+[schema] snapshots.pm_vwap_status already present
+
+==========================================================================
+DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8
+Date: 2026-10-23 | Mode: MANUAL
+[header thresholds redacted — strategy-sensitive]
+==========================================================================
+[Universe] Building clean dynamic universe...
+[Universe] https://api.alpaca.markets/v2/assets → HTTP 401
+[Universe] Alpaca whitelist loaded from https://paper-api.alpaca.markets/v2/assets: 13209 symbols
+[Universe] Mode: Nasdaq + News + Alpaca whitelist (13209 symbols)
+[Universe] Nasdaq base: 6948 symbols
+[Universe] News candidates (pre-whitelist): 193
+[Universe] Final: 500 symbols | rejected: format=0, common_word=3, not_in_whitelist=29
+[Main] Starting Swing Discovery on 500 symbols...
+[SwingDiscovery] Starting daily scan on 500 symbols...
+[SwingDiscovery] Fetching daily bars via yfinance...
+[SwingDiscovery] Found 60 candidates passing daily filters.
+[SwingDiscovery] Diagnostics: {'universe': 500, 'passed_filters': 60, 'reject_price': 74, 'reject_volume': 260, 'reject_trend': 68, 'reject_gap': 1, 'reject_atr': 0}
+[Main] Analyzing 60 swing candidates...
+[per-symbol lines redacted — 60 lines with ticker/entry/stop/target removed]
+[Main] V5.0.8 snapshots saved: 60
+
+[Main] Sending 10 alerts to Telegram...
+[per-alert lines redacted — 10 lines with ticker names removed]
+
+==========================================================================
+SWING SUMMARY:
+  Candidates analyzed:    60
+  Snapshots saved:        60
+  Valid alerts (saved):   45
+  Plan blocked:           15
+    - Stop too tight:     1
+    - Stop too wide:      5
+    - Other (low score):  9
+  Telegram sent:          10
+==========================================================================
