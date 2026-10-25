@@ -1,24 +1,13 @@
 name: DAYS-BOT V5.0.8 Swing Pipeline
 
-# ────────────────────────────────────────────────────────────────
-# Single workflow that covers:
-#   • scan       @ 09:00 ET and 16:30 ET (Mon-Fri)
-#   • evaluate   @ 17:30 ET             (Mon-Fri)
-#   • diagnose   manual dispatch only
-#
-# All times use America/New_York so DST is automatic.
-# IST equivalents (winter): 16:00, 23:30, 00:30(+1)
-# IST equivalents (summer): 17:00, 00:30(+1), 01:30(+1)
-# ────────────────────────────────────────────────────────────────
-
 on:
   schedule:
     - cron: '0 9 * * 1-5'
-      timezone: "America/New_York"      # 09:00 ET — pre-market scan
+      timezone: "America/New_York"
     - cron: '30 16 * * 1-5'
-      timezone: "America/New_York"      # 16:30 ET — post-close scan
+      timezone: "America/New_York"
     - cron: '30 17 * * 1-5'
-      timezone: "America/New_York"      # 17:30 ET — outcome evaluation
+      timezone: "America/New_York"
   workflow_dispatch:
     inputs:
       mode:
@@ -44,10 +33,10 @@ env:
   DB_PATH: data/alerts.db
   PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
 
-# ══════════════════════════════════════════════════════════════════
-# JOB 1 — SCAN (runs at 09:00 and 16:30 ET)
-# ══════════════════════════════════════════════════════════════════
 jobs:
+  # ══════════════════════════════════════════════════════════
+  # JOB 1 — SCAN
+  # ══════════════════════════════════════════════════════════
   scan:
     if: |
       always() && (
@@ -56,10 +45,7 @@ jobs:
       )
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    outputs:
-      artifact: ${{ steps.upload.outputs.artifact-name }}
     steps:
-      # ---------- Dedup ----------
       - name: Dedup check
         id: dedup
         if: github.event.inputs.force != 'true'
@@ -68,7 +54,7 @@ jobs:
         run: |
           set +e
           LAST_RUN=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=5" \
+            "repos/${{ github.repository }}/actions/runs?per_page=5" \
             --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\")] | .[0] | .updated_at" \
             2>/dev/null || echo "")
           if [ -z "$LAST_RUN" ]; then
@@ -87,7 +73,6 @@ jobs:
             echo "Dedup: PROCEEDING ($DIFF_MIN min)"
           fi
 
-      # ---------- Time env ----------
       - name: Compute time env
         if: steps.dedup.outputs.skip != 'true'
         run: |
@@ -114,22 +99,22 @@ jobs:
             echo "══════════════════════════════════════════════════"
           } | tee scan.log
 
-      # ---------- Setup ----------
       - uses: actions/checkout@v4
         if: steps.dedup.outputs.skip != 'true'
+
       - uses: actions/setup-python@v5
         if: steps.dedup.outputs.skip != 'true'
         with:
           python-version: '3.11'
           cache: 'pip'
+
       - name: Install deps
         if: steps.dedup.outputs.skip != 'true'
         run: |
           python -m pip install --upgrade pip
-          [ -f requirements.txt ] && pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ---------- Restore DB from latest artifact (scan- or eval-) ----------
-            - name: Find latest DB artifact (all workflows)
+      - name: Find latest DB artifact (all workflows)
         id: prev
         if: steps.dedup.outputs.skip != 'true'
         continue-on-error: true
@@ -137,19 +122,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Search ALL workflow runs, not just swing_pipeline
           RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
           FOUND_RUN=""; FOUND_ART=""
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
               --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
-            if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
+            if [ -n "$ART" ]; then
+              FOUND_RUN="$RID"; FOUND_ART="$ART"; break
+            fi
           done
           if [ -n "$FOUND_RUN" ]; then
             echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
             echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
-            echo "Found: $FOUND_ART from run $FOUND_RUN"
+            echo "[prev] Found: $FOUND_ART from run $FOUND_RUN"
+          else
+            echo "[prev] No prior artifact found"
           fi
 
       - name: Download previous artifact
@@ -171,7 +159,6 @@ jobs:
           [ -f /tmp/prev/run_summary_prior.json ] && cp /tmp/prev/run_summary_prior.json run_summary_prior.json
           echo "DB restored (if present)."
 
-      # ---------- Fail loudly if restore was expected but DB is missing ----------
       - name: Verify DB restore
         if: steps.dedup.outputs.skip != 'true'
         env:
@@ -179,7 +166,7 @@ jobs:
         run: |
           set +e
           PRIOR_SUCCESS=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=20" \
+            "repos/${{ github.repository }}/actions/runs?per_page=30" \
             --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success")] | length' \
             2>/dev/null || echo 0)
           if [ -f data/alerts.db ]; then
@@ -206,7 +193,6 @@ jobs:
             mv data/alerts.db data/alerts.db.corrupt
           fi
 
-      # ---------- PRE-scan diagnostics ----------
       - name: Pre-scan DB state
         if: steps.dedup.outputs.skip != 'true'
         run: |
@@ -242,7 +228,6 @@ jobs:
           python3 scripts/migrate_research_meta.py >> scan.log 2>&1 || true
           python3 scripts/migrate_cost_columns.py  >> scan.log 2>&1 || true
 
-      # ---------- INLINE PREFLIGHT (bulletproof — does not trust preflight.py) ----------
       - name: Preflight (swing, inline)
         id: preflight
         if: steps.dedup.outputs.skip != 'true'
@@ -251,29 +236,23 @@ jobs:
           echo "=== preflight.py output (diagnostic only) ===" | tee preflight.log
           python3 scripts/preflight.py --mode swing >> preflight.log 2>&1 || true
           cat preflight.log
-
           echo ""
           echo "=== inline swing preflight ===" | tee -a preflight.log
-          # In swing mode the only hard requirement is DB integrity.
           if [ -f data/alerts.db ]; then
             INTEG=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
             if [ "$INTEG" != "ok" ]; then
               echo "[preflight] DB corrupted: $INTEG" | tee -a preflight.log
               echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
-              echo "PREFLIGHT_RESULT=failed_corrupt_db" >> $GITHUB_ENV
               exit 0
             fi
             echo "[preflight] DB integrity OK" | tee -a preflight.log
           else
             echo "[preflight] no DB yet — OK for swing first run" | tee -a preflight.log
           fi
-
           echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV
-          echo "PREFLIGHT_RESULT=passed" >> $GITHUB_ENV
           echo "PREFLIGHT PASSED (swing inline)" | tee -a preflight.log
           exit 0
 
-      # ---------- Run scanner ----------
       - name: Run scanner
         id: scan
         if: steps.dedup.outputs.skip != 'true'
@@ -292,7 +271,6 @@ jobs:
           set -o pipefail
           python3 main.py swing_v1 --manual 2>&1 | tee -a scan.log
 
-      # ---------- Post-scan backfill: ensure pf=1 today ----------
       - name: Backfill preflight_passed for today's snapshots
         if: steps.dedup.outputs.skip != 'true' && env.PREFLIGHT_PASSED == '1'
         run: |
@@ -305,7 +283,6 @@ jobs:
             echo "[backfill] fixed $BAD snapshots"
           fi
 
-      # ---------- Metadata + summary ----------
       - name: Write run metadata
         if: steps.dedup.outputs.skip != 'true' && always()
         env:
@@ -335,24 +312,15 @@ jobs:
           mkdir -p summaries
           python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
 
-      # ---------- Post-scan diagnostics ----------
       - name: Post-scan summary
         if: steps.dedup.outputs.skip != 'true' && always()
         run: |
           echo "=== POST-SCAN SUMMARY ===" | tee -a scan.log
           cat run_summary.json | tee -a scan.log
           echo "" | tee -a scan.log
-          sqlite3 data/alerts.db <<'SQL' 2>&1 | tee -a scan.log
-          SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots
-          UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes
-          UNION ALL SELECT 'today_snaps', COUNT(*) FROM snapshots WHERE scan_date = date('now')
-          UNION ALL SELECT 'today_pf1', COUNT(*) FROM snapshots WHERE scan_date = date('now') AND preflight_passed=1
-          UNION ALL SELECT 'today_valid_plans', COUNT(*) FROM snapshots WHERE scan_date = date('now') AND plan_valid=1;
-          SQL
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'today_snaps', COUNT(*) FROM snapshots WHERE scan_date = date('now');" 2>&1 | tee -a scan.log || true
 
-      # ---------- Upload ----------
       - name: Upload scan artifact
-        id: upload
         if: steps.dedup.outputs.skip != 'true' && always()
         uses: actions/upload-artifact@v4
         with:
@@ -367,9 +335,9 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-# ══════════════════════════════════════════════════════════════════
-# JOB 2 — EVALUATE (runs at 17:30 ET; this populates outcomes)
-# ══════════════════════════════════════════════════════════════════
+  # ══════════════════════════════════════════════════════════
+  # JOB 2 — EVALUATE
+  # ══════════════════════════════════════════════════════════
   evaluate:
     needs: [scan]
     if: |
@@ -378,9 +346,10 @@ jobs:
         (github.event_name == 'schedule' && github.event.schedule == '30 17 * * 1-5')
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -389,7 +358,10 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          [ -f requirements.txt ] && pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
 
       - name: Compute time env
         run: |
@@ -406,7 +378,6 @@ jobs:
             echo "══════════════════════════════════════════════════"
           } | tee eval.log
 
-      # ---------- If scan ran in this workflow, download its artifact directly ----------
       - name: Download scan artifact (same workflow)
         id: same
         if: needs.scan.result == 'success'
@@ -416,8 +387,7 @@ jobs:
           name: scan-${{ env.TODAY_ET }}-r${{ github.run_number }}
           path: /tmp/prev
 
-      # ---------- Otherwise, search for latest DB artifact ----------
-      - name: Find latest DB artifact (previous runs)
+      - name: Find latest DB artifact (all workflows)
         id: prev
         if: steps.same.outcome != 'success'
         continue-on-error: true
@@ -425,13 +395,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=15" \
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 0) | .name' 2>/dev/null | head -n 1 || true)
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then
-              echo "run=$RID"      >> $GITHUB_OUTPUT
+              echo "run=$RID" >> $GITHUB_OUTPUT
               echo "artifact=$ART" >> $GITHUB_OUTPUT
               break
             fi
@@ -447,7 +417,6 @@ jobs:
           run-id: ${{ steps.prev.outputs.run }}
           repository: ${{ github.repository }}
 
-      # ---------- Restore ----------
       - name: Restore DB
         run: |
           mkdir -p data
@@ -465,22 +434,10 @@ jobs:
           [ "$R" = "ok" ] || { echo "::error::DB corrupt: $R"; exit 1; }
           echo "[eval] DB integrity ok"
 
-      # ---------- Diagnostics: BEFORE ----------
       - name: BEFORE evaluate — diagnostic
         run: |
           echo "=== BEFORE evaluate ===" | tee -a eval.log
-          sqlite3 -header -column data/alerts.db <<'SQL' 2>&1 | tee -a eval.log
-          SELECT 'snapshots_total'   AS metric, COUNT(*) AS value FROM snapshots
-          UNION ALL SELECT 'outcomes_total',  COUNT(*) FROM outcomes
-          UNION ALL SELECT 'swing_snaps',     COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D'
-          UNION ALL SELECT 'valid_plans',     COUNT(*) FROM snapshots WHERE plan_valid=1
-          UNION ALL SELECT 'pf1_snaps',       COUNT(*) FROM snapshots WHERE preflight_passed=1
-          UNION ALL SELECT 'eligible_5d',     COUNT(*) FROM snapshots
-              WHERE plan_valid=1
-                AND trade_type='SWING_1_3D'
-                AND date(scan_date) <= date('now', '-5 days')
-                AND snapshot_id NOT IN (SELECT snapshot_id FROM outcomes);
-          SQL
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'swing_snaps', COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D';" 2>&1 | tee -a eval.log || true
 
       - name: Check evaluator script exists
         run: |
@@ -490,7 +447,6 @@ jobs:
             exit 1
           fi
 
-      # ---------- RUN EVALUATOR ----------
       - name: Run evaluator
         id: eval
         continue-on-error: true
@@ -500,30 +456,15 @@ jobs:
           set -o pipefail
           python3 scripts/evaluate_swing.py 2>&1 | tee -a eval.log
 
-      # ---------- Diagnostics: AFTER ----------
       - name: AFTER evaluate — diagnostic
         if: always()
         run: |
           echo "=== AFTER evaluate ===" | tee -a eval.log
-          sqlite3 -header -column data/alerts.db <<'SQL' 2>&1 | tee -a eval.log
-          SELECT 'outcomes_total' AS metric, COUNT(*) AS value FROM outcomes
-          UNION ALL SELECT 'valid_outcomes', COUNT(*) FROM outcomes WHERE net_r_status='VALID'
-          UNION ALL SELECT 'win_count', SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID'
-          UNION ALL SELECT 'loss_count', SUM(CASE WHEN net_r <= 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID';
-          SQL
+          sqlite3 -header -column data/alerts.db "SELECT 'outcomes_total' AS metric, COUNT(*) AS value FROM outcomes UNION ALL SELECT 'valid_outcomes', COUNT(*) FROM outcomes WHERE net_r_status='VALID' UNION ALL SELECT 'win_count', SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID' UNION ALL SELECT 'loss_count', SUM(CASE WHEN net_r <= 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID';" 2>&1 | tee -a eval.log || true
           echo "" | tee -a eval.log
           echo "--- win rate & avg Net R ---" | tee -a eval.log
-          sqlite3 -header -column data/alerts.db <<'SQL' 2>&1 | tee -a eval.log
-          SELECT
-            COUNT(*) AS n,
-            ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / COUNT(*), 2) AS win_pct,
-            ROUND(AVG(net_r), 4) AS avg_net_r,
-            ROUND(MIN(net_r), 4) AS min_net_r,
-            ROUND(MAX(net_r), 4) AS max_net_r
-          FROM outcomes WHERE net_r_status='VALID';
-          SQL
+          sqlite3 -header -column data/alerts.db "SELECT COUNT(*) AS n, ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / COUNT(*), 2) AS win_pct, ROUND(AVG(net_r), 4) AS avg_net_r, ROUND(MIN(net_r), 4) AS min_net_r, ROUND(MAX(net_r), 4) AS max_net_r FROM outcomes WHERE net_r_status='VALID';" 2>&1 | tee -a eval.log || true
 
-      # ---------- Upload updated DB ----------
       - name: Upload eval artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -535,9 +476,9 @@ jobs:
           retention-days: 30
           if-no-files-found: warn
 
-# ══════════════════════════════════════════════════════════════════
-# JOB 3 — DIAGNOSE (manual only, no changes to DB)
-# ══════════════════════════════════════════════════════════════════
+  # ══════════════════════════════════════════════════════════
+  # JOB 3 — DIAGNOSE (manual only)
+  # ══════════════════════════════════════════════════════════
   diagnose:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'diagnose'
     runs-on: ubuntu-latest
@@ -545,19 +486,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Find latest DB artifact
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Find latest DB artifact (all workflows)
         id: prev
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=20" \
-            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id')
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 0) | .name' | head -1)
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then
-              echo "run=$RID"      >> $GITHUB_OUTPUT
+              echo "run=$RID" >> $GITHUB_OUTPUT
               echo "artifact=$ART" >> $GITHUB_OUTPUT
               break
             fi
@@ -578,71 +522,42 @@ jobs:
           if [ ! -f /tmp/prev/data/alerts.db ]; then
             echo "::error::No DB found"; exit 1
           fi
+          mkdir -p data
           cp /tmp/prev/data/alerts.db data/alerts.db
-          
           echo "══════════════════════════════════════════════════"
           echo "DIAGNOSTIC REPORT"
           echo "══════════════════════════════════════════════════"
-          sqlite3 -header -column data/alerts.db <<'SQL'
-          SELECT 'snapshots_total'         AS metric, COUNT(*) AS value FROM snapshots
-          UNION ALL SELECT 'outcomes_total',         COUNT(*) FROM outcomes
-          UNION ALL SELECT 'swing_snaps',            COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D'
-          UNION ALL SELECT 'valid_plans',            COUNT(*) FROM snapshots WHERE plan_valid=1
-          UNION ALL SELECT 'pf1_snaps',              COUNT(*) FROM snapshots WHERE preflight_passed=1
-          UNION ALL SELECT 'pf0_snaps',              COUNT(*) FROM snapshots WHERE preflight_passed=0
-          UNION ALL SELECT 'eligible_5d_pending',    COUNT(*) FROM snapshots
-              WHERE plan_valid=1 AND trade_type='SWING_1_3D'
-                AND date(scan_date) <= date('now', '-5 days')
-                AND snapshot_id NOT IN (SELECT snapshot_id FROM outcomes);
-          SQL
-          
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'swing_snaps', COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D' UNION ALL SELECT 'pf1_snaps', COUNT(*) FROM snapshots WHERE preflight_passed=1 UNION ALL SELECT 'pf0_snaps', COUNT(*) FROM snapshots WHERE preflight_passed=0;"
           echo ""
           echo "── Per scan_date ──"
-          sqlite3 -header -column data/alerts.db <<'SQL'
-          SELECT scan_date,
-                 COUNT(*) AS snaps,
-                 SUM(plan_valid) AS valid_plans,
-                 SUM(preflight_passed) AS pf1,
-                 SUM(CASE WHEN snapshot_id IN (SELECT snapshot_id FROM outcomes) THEN 1 ELSE 0 END) AS evaluated
-          FROM snapshots
-          GROUP BY scan_date
-          ORDER BY scan_date DESC
-          LIMIT 20;
-          SQL
-          
+          sqlite3 -header -column data/alerts.db "SELECT scan_date, COUNT(*) AS snaps, SUM(CASE WHEN snapshot_id IN (SELECT snapshot_id FROM outcomes) THEN 1 ELSE 0 END) AS evaluated FROM snapshots GROUP BY scan_date ORDER BY scan_date DESC LIMIT 20;"
           echo ""
           echo "── Outcomes stats ──"
-          sqlite3 -header -column data/alerts.db <<'SQL'
-          SELECT
-            COUNT(*) AS n,
-            ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / MAX(COUNT(*),1), 2) AS win_pct,
-            ROUND(AVG(net_r), 4) AS avg_net_r
-          FROM outcomes WHERE net_r_status='VALID';
-          SQL
-          echo ""
-          echo "── Schema: outcomes columns ──"
-          sqlite3 data/alerts.db "PRAGMA table_info(outcomes);"
+          sqlite3 -header -column data/alerts.db "SELECT COUNT(*) AS n, ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / MAX(COUNT(*),1), 2) AS win_pct, ROUND(AVG(net_r), 4) AS avg_net_r FROM outcomes WHERE net_r_status='VALID';"
 
-# ══════════════════════════════════════════════════════════════════
-# JOB 4 — BACKFILL (manual only, fixes preflight_passed=0)
-# ══════════════════════════════════════════════════════════════════
+  # ══════════════════════════════════════════════════════════
+  # JOB 4 — BACKFILL (manual only)
+  # ══════════════════════════════════════════════════════════
   backfill:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backfill'
     runs-on: ubuntu-latest
     steps:
-      - name: Find latest DB
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Find latest DB (all workflows)
         id: prev
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=20" \
-            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id')
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 0) | .name' | head -1)
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then
-              echo "run=$RID"      >> $GITHUB_OUTPUT
+              echo "run=$RID" >> $GITHUB_OUTPUT
               echo "artifact=$ART" >> $GITHUB_OUTPUT
               break
             fi
@@ -662,26 +577,1195 @@ jobs:
         run: |
           mkdir -p data
           cp /tmp/prev/data/alerts.db data/alerts.db
-          
           echo "── Before ──"
           sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE preflight_passed=0;"
-          
-          # Only fix snapshots that are swing trades AND have a valid plan
-          # (i.e. those the evaluator should be considering)
-          sqlite3 data/alerts.db <<'SQL'
-          UPDATE snapshots
-          SET preflight_passed = 1
-          WHERE preflight_passed = 0
-            AND trade_type = 'SWING_1_3D'
-            AND plan_valid = 1;
-          SQL
-          
+          sqlite3 data/alerts.db "UPDATE snapshots SET preflight_passed = 1 WHERE preflight_passed = 0 AND trade_type = 'SWING_1_3D';"
           echo "── After ──"
           sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE preflight_passed=0;"
 
       - name: Upload backfilled DB
         uses: actions/upload-artifact@v4
         with:
-          name: eval-backfill-r${{ github.run_number }}
+          name: db-backfill-${{ github.run_number }}
+          path: data/alerts.db
+          retention-days: 30name: DAYS-BOT V5.0.8 Swing Pipeline
+
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '30 16 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '30 17 * * 1-5'
+      timezone: "America/New_York"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'scan | evaluate | both | diagnose | backfill'
+        type: choice
+        options: [scan, evaluate, both, diagnose, backfill]
+        default: both
+      force:
+        description: 'Skip dedup'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: days-bot-pipeline
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  DB_PATH: data/alerts.db
+  PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
+
+jobs:
+  # ══════════════════════════════════════════════════════════
+  # JOB 1 — SCAN
+  # ══════════════════════════════════════════════════════════
+  scan:
+    if: |
+      always() && (
+        (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both')) ||
+        (github.event_name == 'schedule' && github.event.schedule != '30 17 * * 1-5')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Dedup check
+        id: dedup
+        if: github.event.inputs.force != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          LAST_RUN=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\")] | .[0] | .updated_at" \
+            2>/dev/null || echo "")
+          if [ -z "$LAST_RUN" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Dedup: no previous successful run"
+            exit 0
+          fi
+          LAST_EPOCH=$(date -d "$LAST_RUN" +%s 2>/dev/null || echo 0)
+          NOW_EPOCH=$(date +%s)
+          DIFF_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
+          if [ "$DIFF_MIN" -lt 120 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Dedup: SKIPPING ($DIFF_MIN min < 120)"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Dedup: PROCEEDING ($DIFF_MIN min)"
+          fi
+
+      - name: Compute time env
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+          echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
+          echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "IS_SCHEDULED=1" >> $GITHUB_ENV
+          else
+            echo "IS_SCHEDULED=0" >> $GITHUB_ENV
+          fi
+
+      - name: Banner
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          {
+            echo "══════════════════════════════════════════════════"
+            echo "DAYS-BOT V5.0.8 — SCAN"
+            echo "Run:    ${{ github.run_id }} (#${{ github.run_number }})"
+            echo "Event:  ${{ github.event_name }}"
+            echo "UTC:    $(date -u +%FT%TZ)"
+            echo "ET:     $(TZ=America/New_York date '+%F %T %Z')"
+            echo "Israel: $(TZ=Asia/Jerusalem date '+%F %T %Z')"
+            echo "══════════════════════════════════════════════════"
+          } | tee scan.log
+
+      - uses: actions/checkout@v4
+        if: steps.dedup.outputs.skip != 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.dedup.outputs.skip != 'true'
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Find latest DB artifact (all workflows)
+        id: prev
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          FOUND_RUN=""; FOUND_ART=""
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              FOUND_RUN="$RID"; FOUND_ART="$ART"; break
+            fi
+          done
+          if [ -n "$FOUND_RUN" ]; then
+            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+            echo "[prev] Found: $FOUND_ART from run $FOUND_RUN"
+          else
+            echo "[prev] No prior artifact found"
+          fi
+
+      - name: Download previous artifact
+        if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Restore DB
+        if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
+        run: |
+          mkdir -p data summaries
+          [ -f /tmp/prev/data/alerts.db ]         && cp /tmp/prev/data/alerts.db         data/alerts.db
+          [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
+          [ -f /tmp/prev/run_summary_prior.json ] && cp /tmp/prev/run_summary_prior.json run_summary_prior.json
+          echo "DB restored (if present)."
+
+      - name: Verify DB restore
+        if: steps.dedup.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          PRIOR_SUCCESS=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success")] | length' \
+            2>/dev/null || echo 0)
+          if [ -f data/alerts.db ]; then
+            ROWS=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots;" 2>/dev/null || echo "?")
+            echo "[restore] DB present — snapshots rows: $ROWS"
+            exit 0
+          fi
+          if [ "$PRIOR_SUCCESS" -gt 0 ]; then
+            echo "[restore] FATAL: $PRIOR_SUCCESS prior runs but no DB restored"
+            exit 1
+          fi
+          echo "[restore] first-ever run — empty DB is OK"
+
+      - name: Verify DB integrity
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          set +e
+          [ ! -f data/alerts.db ] && exit 0
+          R=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
+          if [ "$R" = "ok" ]; then
+            echo "[integrity] ok"
+          else
+            echo "[integrity] WARN: $R — renaming to .corrupt"
+            mv data/alerts.db data/alerts.db.corrupt
+          fi
+
+      - name: Pre-scan DB state
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          python3 -c "
+          import sqlite3, os
+          p = os.environ.get('DB_PATH', 'data/alerts.db')
+          if not os.path.exists(p):
+              print('  no DB yet'); raise SystemExit
+          con = sqlite3.connect(p)
+          for t in ['snapshots','alerts','outcomes','trigger_results']:
+              try: print(f'  {t}: {con.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}')
+              except: pass
+          con.close()
+          " 2>&1 | tee -a scan.log
+
+      - name: Capture PRE-scan snapshot count
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          PRE=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots;" 2>/dev/null || echo 0)
+          echo "PRE_SCAN_COUNT=$PRE" >> $GITHUB_ENV
+          echo "[pre] snapshots before scan: $PRE"
+
+      - name: Outcome engine tests
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        run: python3 tests/test_outcome_engine.py 2>&1 | tee -a scan.log || true
+
+      - name: Migrations
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          python3 scripts/migrate_event_rank.py    >> scan.log 2>&1 || true
+          python3 scripts/migrate_research_meta.py >> scan.log 2>&1 || true
+          python3 scripts/migrate_cost_columns.py  >> scan.log 2>&1 || true
+
+      - name: Preflight (swing, inline)
+        id: preflight
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          set +e
+          echo "=== preflight.py output (diagnostic only) ===" | tee preflight.log
+          python3 scripts/preflight.py --mode swing >> preflight.log 2>&1 || true
+          cat preflight.log
+          echo ""
+          echo "=== inline swing preflight ===" | tee -a preflight.log
+          if [ -f data/alerts.db ]; then
+            INTEG=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
+            if [ "$INTEG" != "ok" ]; then
+              echo "[preflight] DB corrupted: $INTEG" | tee -a preflight.log
+              echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
+              exit 0
+            fi
+            echo "[preflight] DB integrity OK" | tee -a preflight.log
+          else
+            echo "[preflight] no DB yet — OK for swing first run" | tee -a preflight.log
+          fi
+          echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV
+          echo "PREFLIGHT PASSED (swing inline)" | tee -a preflight.log
+          exit 0
+
+      - name: Run scanner
+        id: scan
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          RESEARCH_MODE:     "true"
+          ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY:       ${{ secrets.FMP_API_KEY }}
+          GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+          POLYGON_API_KEY:   ${{ secrets.POLYGON_API_KEY }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -o pipefail
+          python3 main.py swing_v1 --manual 2>&1 | tee -a scan.log
+
+      - name: Backfill preflight_passed for today's snapshots
+        if: steps.dedup.outputs.skip != 'true' && env.PREFLIGHT_PASSED == '1'
+        run: |
+          set +e
+          [ ! -f data/alerts.db ] && exit 0
+          BAD=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE scan_date='$TODAY_ET' AND preflight_passed=0;")
+          echo "[backfill] snapshots with preflight_passed=0 today: $BAD"
+          if [ "$BAD" -gt 0 ]; then
+            sqlite3 data/alerts.db "UPDATE snapshots SET preflight_passed=1 WHERE scan_date='$TODAY_ET' AND preflight_passed=0;"
+            echo "[backfill] fixed $BAD snapshots"
+          fi
+
+      - name: Write run metadata
+        if: steps.dedup.outputs.skip != 'true' && always()
+        env:
+          PREFLIGHT_PASSED: ${{ env.PREFLIGHT_PASSED }}
+          SCAN_DATE:        ${{ env.TODAY_ET }}
+          TIME_ET:          ${{ env.TIME_ET }}
+          IS_SCHEDULED:     ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:     ${{ env.IN_PM_WINDOW }}
+        run: python3 scripts/write_run_metadata.py 2>&1 | tee -a scan.log || true
+
+      - name: Build run_summary.json
+        if: steps.dedup.outputs.skip != 'true' && always()
+        env:
+          PRE_SCAN_COUNT:   ${{ env.PRE_SCAN_COUNT }}
+          PREFLIGHT_PASSED: ${{ env.PREFLIGHT_PASSED }}
+          SCAN_DATE:        ${{ env.TODAY_ET }}
+          TIME_ET:          ${{ env.TIME_ET }}
+          IS_SCHEDULED:     ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:     ${{ env.IN_PM_WINDOW }}
+        run: |
+          python3 scripts/summarize_run.py scan.log run_summary.json \
+            || echo '{"error":"summarize_failed"}' > run_summary.json
+
+      - name: Append to all_runs.csv
+        if: steps.dedup.outputs.skip != 'true' && always()
+        run: |
+          mkdir -p summaries
+          python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
+
+      - name: Post-scan summary
+        if: steps.dedup.outputs.skip != 'true' && always()
+        run: |
+          echo "=== POST-SCAN SUMMARY ===" | tee -a scan.log
+          cat run_summary.json | tee -a scan.log
+          echo "" | tee -a scan.log
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'today_snaps', COUNT(*) FROM snapshots WHERE scan_date = date('now');" 2>&1 | tee -a scan.log || true
+
+      - name: Upload scan artifact
+        if: steps.dedup.outputs.skip != 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: |
+            data/alerts.db
+            run_summary.json
+            run_summary_prior.json
+            summaries/all_runs.csv
+            scan.log
+            preflight.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ══════════════════════════════════════════════════════════
+  # JOB 2 — EVALUATE
+  # ══════════════════════════════════════════════════════════
+  evaluate:
+    needs: [scan]
+    if: |
+      always() && (
+        (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'evaluate' || github.event.inputs.mode == 'both')) ||
+        (github.event_name == 'schedule' && github.event.schedule == '30 17 * * 1-5')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Compute time env
+        run: |
+          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+          echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
+
+      - name: Banner
+        run: |
+          {
+            echo "══════════════════════════════════════════════════"
+            echo "DAYS-BOT V5.0.8 — EVALUATE"
+            echo "Run:    ${{ github.run_id }} (#${{ github.run_number }})"
+            echo "ET:     $(TZ=America/New_York date '+%F %T %Z')"
+            echo "══════════════════════════════════════════════════"
+          } | tee eval.log
+
+      - name: Download scan artifact (same workflow)
+        id: same
+        if: needs.scan.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: /tmp/prev
+
+      - name: Find latest DB artifact (all workflows)
+        id: prev
+        if: steps.same.outcome != 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              echo "run=$RID" >> $GITHUB_OUTPUT
+              echo "artifact=$ART" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Download previous artifact
+        if: steps.same.outcome != 'success' && steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Restore DB
+        run: |
+          mkdir -p data
+          if [ -f /tmp/prev/data/alerts.db ]; then
+            cp /tmp/prev/data/alerts.db data/alerts.db
+            echo "[eval] DB restored"
+          else
+            echo "::error::No DB available for evaluation"
+            exit 1
+          fi
+
+      - name: Verify DB integrity
+        run: |
+          R=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
+          [ "$R" = "ok" ] || { echo "::error::DB corrupt: $R"; exit 1; }
+          echo "[eval] DB integrity ok"
+
+      - name: BEFORE evaluate — diagnostic
+        run: |
+          echo "=== BEFORE evaluate ===" | tee -a eval.log
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'swing_snaps', COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D';" 2>&1 | tee -a eval.log || true
+
+      - name: Check evaluator script exists
+        run: |
+          if [ ! -f scripts/evaluate_swing.py ]; then
+            echo "::error::scripts/evaluate_swing.py not found"
+            ls -la scripts/ | tee -a eval.log
+            exit 1
+          fi
+
+      - name: Run evaluator
+        id: eval
+        continue-on-error: true
+        env:
+          RESEARCH_MODE: "true"
+        run: |
+          set -o pipefail
+          python3 scripts/evaluate_swing.py 2>&1 | tee -a eval.log
+
+      - name: AFTER evaluate — diagnostic
+        if: always()
+        run: |
+          echo "=== AFTER evaluate ===" | tee -a eval.log
+          sqlite3 -header -column data/alerts.db "SELECT 'outcomes_total' AS metric, COUNT(*) AS value FROM outcomes UNION ALL SELECT 'valid_outcomes', COUNT(*) FROM outcomes WHERE net_r_status='VALID' UNION ALL SELECT 'win_count', SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID' UNION ALL SELECT 'loss_count', SUM(CASE WHEN net_r <= 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID';" 2>&1 | tee -a eval.log || true
+          echo "" | tee -a eval.log
+          echo "--- win rate & avg Net R ---" | tee -a eval.log
+          sqlite3 -header -column data/alerts.db "SELECT COUNT(*) AS n, ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / COUNT(*), 2) AS win_pct, ROUND(AVG(net_r), 4) AS avg_net_r, ROUND(MIN(net_r), 4) AS min_net_r, ROUND(MAX(net_r), 4) AS max_net_r FROM outcomes WHERE net_r_status='VALID';" 2>&1 | tee -a eval.log || true
+
+      - name: Upload eval artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: |
+            data/alerts.db
+            eval.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ══════════════════════════════════════════════════════════
+  # JOB 3 — DIAGNOSE (manual only)
+  # ══════════════════════════════════════════════════════════
+  diagnose:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'diagnose'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Find latest DB artifact (all workflows)
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              echo "run=$RID" >> $GITHUB_OUTPUT
+              echo "artifact=$ART" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Download DB
+        if: steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Diagnostic report
+        run: |
+          if [ ! -f /tmp/prev/data/alerts.db ]; then
+            echo "::error::No DB found"; exit 1
+          fi
+          mkdir -p data
+          cp /tmp/prev/data/alerts.db data/alerts.db
+          echo "══════════════════════════════════════════════════"
+          echo "DIAGNOSTIC REPORT"
+          echo "══════════════════════════════════════════════════"
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'swing_snaps', COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D' UNION ALL SELECT 'pf1_snaps', COUNT(*) FROM snapshots WHERE preflight_passed=1 UNION ALL SELECT 'pf0_snaps', COUNT(*) FROM snapshots WHERE preflight_passed=0;"
+          echo ""
+          echo "── Per scan_date ──"
+          sqlite3 -header -column data/alerts.db "SELECT scan_date, COUNT(*) AS snaps, SUM(CASE WHEN snapshot_id IN (SELECT snapshot_id FROM outcomes) THEN 1 ELSE 0 END) AS evaluated FROM snapshots GROUP BY scan_date ORDER BY scan_date DESC LIMIT 20;"
+          echo ""
+          echo "── Outcomes stats ──"
+          sqlite3 -header -column data/alerts.db "SELECT COUNT(*) AS n, ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / MAX(COUNT(*),1), 2) AS win_pct, ROUND(AVG(net_r), 4) AS avg_net_r FROM outcomes WHERE net_r_status='VALID';"
+
+  # ══════════════════════════════════════════════════════════
+  # JOB 4 — BACKFILL (manual only)
+  # ══════════════════════════════════════════════════════════
+  backfill:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backfill'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Find latest DB (all workflows)
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              echo "run=$RID" >> $GITHUB_OUTPUT
+              echo "artifact=$ART" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Download
+        if: steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Backfill preflight_passed
+        run: |
+          mkdir -p data
+          cp /tmp/prev/data/alerts.db data/alerts.db
+          echo "── Before ──"
+          sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE preflight_passed=0;"
+          sqlite3 data/alerts.db "UPDATE snapshots SET preflight_passed = 1 WHERE preflight_passed = 0 AND trade_type = 'SWING_1_3D';"
+          echo "── After ──"
+          sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE preflight_passed=0;"
+
+      - name: Upload backfilled DB
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backfill-${{ github.run_number }}
+          path: data/alerts.db
+          retention-days: 30name: DAYS-BOT V5.0.8 Swing Pipeline
+
+on:
+  schedule:
+    - cron: '0 9 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '30 16 * * 1-5'
+      timezone: "America/New_York"
+    - cron: '30 17 * * 1-5'
+      timezone: "America/New_York"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'scan | evaluate | both | diagnose | backfill'
+        type: choice
+        options: [scan, evaluate, both, diagnose, backfill]
+        default: both
+      force:
+        description: 'Skip dedup'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: days-bot-pipeline
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  DB_PATH: data/alerts.db
+  PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
+
+jobs:
+  # ══════════════════════════════════════════════════════════
+  # JOB 1 — SCAN
+  # ══════════════════════════════════════════════════════════
+  scan:
+    if: |
+      always() && (
+        (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both')) ||
+        (github.event_name == 'schedule' && github.event.schedule != '30 17 * * 1-5')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Dedup check
+        id: dedup
+        if: github.event.inputs.force != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          LAST_RUN=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?per_page=5" \
+            --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\")] | .[0] | .updated_at" \
+            2>/dev/null || echo "")
+          if [ -z "$LAST_RUN" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Dedup: no previous successful run"
+            exit 0
+          fi
+          LAST_EPOCH=$(date -d "$LAST_RUN" +%s 2>/dev/null || echo 0)
+          NOW_EPOCH=$(date +%s)
+          DIFF_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
+          if [ "$DIFF_MIN" -lt 120 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Dedup: SKIPPING ($DIFF_MIN min < 120)"
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "Dedup: PROCEEDING ($DIFF_MIN min)"
+          fi
+
+      - name: Compute time env
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+          echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
+          echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "IS_SCHEDULED=1" >> $GITHUB_ENV
+          else
+            echo "IS_SCHEDULED=0" >> $GITHUB_ENV
+          fi
+
+      - name: Banner
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          {
+            echo "══════════════════════════════════════════════════"
+            echo "DAYS-BOT V5.0.8 — SCAN"
+            echo "Run:    ${{ github.run_id }} (#${{ github.run_number }})"
+            echo "Event:  ${{ github.event_name }}"
+            echo "UTC:    $(date -u +%FT%TZ)"
+            echo "ET:     $(TZ=America/New_York date '+%F %T %Z')"
+            echo "Israel: $(TZ=Asia/Jerusalem date '+%F %T %Z')"
+            echo "══════════════════════════════════════════════════"
+          } | tee scan.log
+
+      - uses: actions/checkout@v4
+        if: steps.dedup.outputs.skip != 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.dedup.outputs.skip != 'true'
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Find latest DB artifact (all workflows)
+        id: prev
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          FOUND_RUN=""; FOUND_ART=""
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              FOUND_RUN="$RID"; FOUND_ART="$ART"; break
+            fi
+          done
+          if [ -n "$FOUND_RUN" ]; then
+            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
+            echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+            echo "[prev] Found: $FOUND_ART from run $FOUND_RUN"
+          else
+            echo "[prev] No prior artifact found"
+          fi
+
+      - name: Download previous artifact
+        if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Restore DB
+        if: steps.dedup.outputs.skip != 'true' && steps.prev.outputs.artifact != ''
+        run: |
+          mkdir -p data summaries
+          [ -f /tmp/prev/data/alerts.db ]         && cp /tmp/prev/data/alerts.db         data/alerts.db
+          [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
+          [ -f /tmp/prev/run_summary_prior.json ] && cp /tmp/prev/run_summary_prior.json run_summary_prior.json
+          echo "DB restored (if present)."
+
+      - name: Verify DB restore
+        if: steps.dedup.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          PRIOR_SUCCESS=$(gh api \
+            "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success")] | length' \
+            2>/dev/null || echo 0)
+          if [ -f data/alerts.db ]; then
+            ROWS=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots;" 2>/dev/null || echo "?")
+            echo "[restore] DB present — snapshots rows: $ROWS"
+            exit 0
+          fi
+          if [ "$PRIOR_SUCCESS" -gt 0 ]; then
+            echo "[restore] FATAL: $PRIOR_SUCCESS prior runs but no DB restored"
+            exit 1
+          fi
+          echo "[restore] first-ever run — empty DB is OK"
+
+      - name: Verify DB integrity
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          set +e
+          [ ! -f data/alerts.db ] && exit 0
+          R=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
+          if [ "$R" = "ok" ]; then
+            echo "[integrity] ok"
+          else
+            echo "[integrity] WARN: $R — renaming to .corrupt"
+            mv data/alerts.db data/alerts.db.corrupt
+          fi
+
+      - name: Pre-scan DB state
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          python3 -c "
+          import sqlite3, os
+          p = os.environ.get('DB_PATH', 'data/alerts.db')
+          if not os.path.exists(p):
+              print('  no DB yet'); raise SystemExit
+          con = sqlite3.connect(p)
+          for t in ['snapshots','alerts','outcomes','trigger_results']:
+              try: print(f'  {t}: {con.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]}')
+              except: pass
+          con.close()
+          " 2>&1 | tee -a scan.log
+
+      - name: Capture PRE-scan snapshot count
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          PRE=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots;" 2>/dev/null || echo 0)
+          echo "PRE_SCAN_COUNT=$PRE" >> $GITHUB_ENV
+          echo "[pre] snapshots before scan: $PRE"
+
+      - name: Outcome engine tests
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        run: python3 tests/test_outcome_engine.py 2>&1 | tee -a scan.log || true
+
+      - name: Migrations
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          python3 scripts/migrate_event_rank.py    >> scan.log 2>&1 || true
+          python3 scripts/migrate_research_meta.py >> scan.log 2>&1 || true
+          python3 scripts/migrate_cost_columns.py  >> scan.log 2>&1 || true
+
+      - name: Preflight (swing, inline)
+        id: preflight
+        if: steps.dedup.outputs.skip != 'true'
+        run: |
+          set +e
+          echo "=== preflight.py output (diagnostic only) ===" | tee preflight.log
+          python3 scripts/preflight.py --mode swing >> preflight.log 2>&1 || true
+          cat preflight.log
+          echo ""
+          echo "=== inline swing preflight ===" | tee -a preflight.log
+          if [ -f data/alerts.db ]; then
+            INTEG=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
+            if [ "$INTEG" != "ok" ]; then
+              echo "[preflight] DB corrupted: $INTEG" | tee -a preflight.log
+              echo "PREFLIGHT_PASSED=0" >> $GITHUB_ENV
+              exit 0
+            fi
+            echo "[preflight] DB integrity OK" | tee -a preflight.log
+          else
+            echo "[preflight] no DB yet — OK for swing first run" | tee -a preflight.log
+          fi
+          echo "PREFLIGHT_PASSED=1" >> $GITHUB_ENV
+          echo "PREFLIGHT PASSED (swing inline)" | tee -a preflight.log
+          exit 0
+
+      - name: Run scanner
+        id: scan
+        if: steps.dedup.outputs.skip != 'true'
+        continue-on-error: true
+        env:
+          RESEARCH_MODE:     "true"
+          ALPACA_API_KEY:    ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          FINNHUB_API_KEY:   ${{ secrets.FINNHUB_API_KEY }}
+          FMP_API_KEY:       ${{ secrets.FMP_API_KEY }}
+          GEMINI_API_KEY:    ${{ secrets.GEMINI_API_KEY }}
+          POLYGON_API_KEY:   ${{ secrets.POLYGON_API_KEY }}
+          TELEGRAM_TOKEN:    ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:  ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          set -o pipefail
+          python3 main.py swing_v1 --manual 2>&1 | tee -a scan.log
+
+      - name: Backfill preflight_passed for today's snapshots
+        if: steps.dedup.outputs.skip != 'true' && env.PREFLIGHT_PASSED == '1'
+        run: |
+          set +e
+          [ ! -f data/alerts.db ] && exit 0
+          BAD=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE scan_date='$TODAY_ET' AND preflight_passed=0;")
+          echo "[backfill] snapshots with preflight_passed=0 today: $BAD"
+          if [ "$BAD" -gt 0 ]; then
+            sqlite3 data/alerts.db "UPDATE snapshots SET preflight_passed=1 WHERE scan_date='$TODAY_ET' AND preflight_passed=0;"
+            echo "[backfill] fixed $BAD snapshots"
+          fi
+
+      - name: Write run metadata
+        if: steps.dedup.outputs.skip != 'true' && always()
+        env:
+          PREFLIGHT_PASSED: ${{ env.PREFLIGHT_PASSED }}
+          SCAN_DATE:        ${{ env.TODAY_ET }}
+          TIME_ET:          ${{ env.TIME_ET }}
+          IS_SCHEDULED:     ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:     ${{ env.IN_PM_WINDOW }}
+        run: python3 scripts/write_run_metadata.py 2>&1 | tee -a scan.log || true
+
+      - name: Build run_summary.json
+        if: steps.dedup.outputs.skip != 'true' && always()
+        env:
+          PRE_SCAN_COUNT:   ${{ env.PRE_SCAN_COUNT }}
+          PREFLIGHT_PASSED: ${{ env.PREFLIGHT_PASSED }}
+          SCAN_DATE:        ${{ env.TODAY_ET }}
+          TIME_ET:          ${{ env.TIME_ET }}
+          IS_SCHEDULED:     ${{ env.IS_SCHEDULED }}
+          IN_PM_WINDOW:     ${{ env.IN_PM_WINDOW }}
+        run: |
+          python3 scripts/summarize_run.py scan.log run_summary.json \
+            || echo '{"error":"summarize_failed"}' > run_summary.json
+
+      - name: Append to all_runs.csv
+        if: steps.dedup.outputs.skip != 'true' && always()
+        run: |
+          mkdir -p summaries
+          python3 scripts/append_run_summary.py run_summary.json summaries/all_runs.csv || true
+
+      - name: Post-scan summary
+        if: steps.dedup.outputs.skip != 'true' && always()
+        run: |
+          echo "=== POST-SCAN SUMMARY ===" | tee -a scan.log
+          cat run_summary.json | tee -a scan.log
+          echo "" | tee -a scan.log
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'today_snaps', COUNT(*) FROM snapshots WHERE scan_date = date('now');" 2>&1 | tee -a scan.log || true
+
+      - name: Upload scan artifact
+        if: steps.dedup.outputs.skip != 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: |
+            data/alerts.db
+            run_summary.json
+            run_summary_prior.json
+            summaries/all_runs.csv
+            scan.log
+            preflight.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ══════════════════════════════════════════════════════════
+  # JOB 2 — EVALUATE
+  # ══════════════════════════════════════════════════════════
+  evaluate:
+    needs: [scan]
+    if: |
+      always() && (
+        (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'evaluate' || github.event.inputs.mode == 'both')) ||
+        (github.event_name == 'schedule' && github.event.schedule == '30 17 * * 1-5')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Compute time env
+        run: |
+          echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
+          echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
+
+      - name: Banner
+        run: |
+          {
+            echo "══════════════════════════════════════════════════"
+            echo "DAYS-BOT V5.0.8 — EVALUATE"
+            echo "Run:    ${{ github.run_id }} (#${{ github.run_number }})"
+            echo "ET:     $(TZ=America/New_York date '+%F %T %Z')"
+            echo "══════════════════════════════════════════════════"
+          } | tee eval.log
+
+      - name: Download scan artifact (same workflow)
+        id: same
+        if: needs.scan.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: scan-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: /tmp/prev
+
+      - name: Find latest DB artifact (all workflows)
+        id: prev
+        if: steps.same.outcome != 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              echo "run=$RID" >> $GITHUB_OUTPUT
+              echo "artifact=$ART" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Download previous artifact
+        if: steps.same.outcome != 'success' && steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Restore DB
+        run: |
+          mkdir -p data
+          if [ -f /tmp/prev/data/alerts.db ]; then
+            cp /tmp/prev/data/alerts.db data/alerts.db
+            echo "[eval] DB restored"
+          else
+            echo "::error::No DB available for evaluation"
+            exit 1
+          fi
+
+      - name: Verify DB integrity
+        run: |
+          R=$(sqlite3 data/alerts.db "PRAGMA integrity_check;" 2>&1 | head -1)
+          [ "$R" = "ok" ] || { echo "::error::DB corrupt: $R"; exit 1; }
+          echo "[eval] DB integrity ok"
+
+      - name: BEFORE evaluate — diagnostic
+        run: |
+          echo "=== BEFORE evaluate ===" | tee -a eval.log
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'swing_snaps', COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D';" 2>&1 | tee -a eval.log || true
+
+      - name: Check evaluator script exists
+        run: |
+          if [ ! -f scripts/evaluate_swing.py ]; then
+            echo "::error::scripts/evaluate_swing.py not found"
+            ls -la scripts/ | tee -a eval.log
+            exit 1
+          fi
+
+      - name: Run evaluator
+        id: eval
+        continue-on-error: true
+        env:
+          RESEARCH_MODE: "true"
+        run: |
+          set -o pipefail
+          python3 scripts/evaluate_swing.py 2>&1 | tee -a eval.log
+
+      - name: AFTER evaluate — diagnostic
+        if: always()
+        run: |
+          echo "=== AFTER evaluate ===" | tee -a eval.log
+          sqlite3 -header -column data/alerts.db "SELECT 'outcomes_total' AS metric, COUNT(*) AS value FROM outcomes UNION ALL SELECT 'valid_outcomes', COUNT(*) FROM outcomes WHERE net_r_status='VALID' UNION ALL SELECT 'win_count', SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID' UNION ALL SELECT 'loss_count', SUM(CASE WHEN net_r <= 0 THEN 1 ELSE 0 END) FROM outcomes WHERE net_r_status='VALID';" 2>&1 | tee -a eval.log || true
+          echo "" | tee -a eval.log
+          echo "--- win rate & avg Net R ---" | tee -a eval.log
+          sqlite3 -header -column data/alerts.db "SELECT COUNT(*) AS n, ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / COUNT(*), 2) AS win_pct, ROUND(AVG(net_r), 4) AS avg_net_r, ROUND(MIN(net_r), 4) AS min_net_r, ROUND(MAX(net_r), 4) AS max_net_r FROM outcomes WHERE net_r_status='VALID';" 2>&1 | tee -a eval.log || true
+
+      - name: Upload eval artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-${{ env.TODAY_ET }}-r${{ github.run_number }}
+          path: |
+            data/alerts.db
+            eval.log
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ══════════════════════════════════════════════════════════
+  # JOB 3 — DIAGNOSE (manual only)
+  # ══════════════════════════════════════════════════════════
+  diagnose:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'diagnose'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Find latest DB artifact (all workflows)
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              echo "run=$RID" >> $GITHUB_OUTPUT
+              echo "artifact=$ART" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Download DB
+        if: steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Diagnostic report
+        run: |
+          if [ ! -f /tmp/prev/data/alerts.db ]; then
+            echo "::error::No DB found"; exit 1
+          fi
+          mkdir -p data
+          cp /tmp/prev/data/alerts.db data/alerts.db
+          echo "══════════════════════════════════════════════════"
+          echo "DIAGNOSTIC REPORT"
+          echo "══════════════════════════════════════════════════"
+          sqlite3 -header -column data/alerts.db "SELECT 'snapshots_total' AS metric, COUNT(*) AS value FROM snapshots UNION ALL SELECT 'outcomes_total', COUNT(*) FROM outcomes UNION ALL SELECT 'swing_snaps', COUNT(*) FROM snapshots WHERE trade_type='SWING_1_3D' UNION ALL SELECT 'pf1_snaps', COUNT(*) FROM snapshots WHERE preflight_passed=1 UNION ALL SELECT 'pf0_snaps', COUNT(*) FROM snapshots WHERE preflight_passed=0;"
+          echo ""
+          echo "── Per scan_date ──"
+          sqlite3 -header -column data/alerts.db "SELECT scan_date, COUNT(*) AS snaps, SUM(CASE WHEN snapshot_id IN (SELECT snapshot_id FROM outcomes) THEN 1 ELSE 0 END) AS evaluated FROM snapshots GROUP BY scan_date ORDER BY scan_date DESC LIMIT 20;"
+          echo ""
+          echo "── Outcomes stats ──"
+          sqlite3 -header -column data/alerts.db "SELECT COUNT(*) AS n, ROUND(100.0 * SUM(CASE WHEN net_r > 0 THEN 1 ELSE 0 END) / MAX(COUNT(*),1), 2) AS win_pct, ROUND(AVG(net_r), 4) AS avg_net_r FROM outcomes WHERE net_r_status='VALID';"
+
+  # ══════════════════════════════════════════════════════════
+  # JOB 4 — BACKFILL (manual only)
+  # ══════════════════════════════════════════════════════════
+  backfill:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backfill'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install sqlite3
+        run: sudo apt-get install -y sqlite3
+
+      - name: Find latest DB (all workflows)
+        id: prev
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
+            --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
+          for RID in $RUNS; do
+            ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
+            if [ -n "$ART" ]; then
+              echo "run=$RID" >> $GITHUB_OUTPUT
+              echo "artifact=$ART" >> $GITHUB_OUTPUT
+              break
+            fi
+          done
+
+      - name: Download
+        if: steps.prev.outputs.artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.prev.outputs.artifact }}
+          path: /tmp/prev
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ steps.prev.outputs.run }}
+          repository: ${{ github.repository }}
+
+      - name: Backfill preflight_passed
+        run: |
+          mkdir -p data
+          cp /tmp/prev/data/alerts.db data/alerts.db
+          echo "── Before ──"
+          sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE preflight_passed=0;"
+          sqlite3 data/alerts.db "UPDATE snapshots SET preflight_passed = 1 WHERE preflight_passed = 0 AND trade_type = 'SWING_1_3D';"
+          echo "── After ──"
+          sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots WHERE preflight_passed=0;"
+
+      - name: Upload backfilled DB
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backfill-${{ github.run_number }}
           path: data/alerts.db
           retention-days: 30
