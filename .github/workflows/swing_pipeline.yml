@@ -129,7 +129,7 @@ jobs:
           [ -f requirements.txt ] && pip install -r requirements.txt
 
       # ---------- Restore DB from latest artifact (scan- or eval-) ----------
-      - name: Find latest DB artifact
+            - name: Find latest DB artifact (all workflows)
         id: prev
         if: steps.dedup.outputs.skip != 'true'
         continue-on-error: true
@@ -137,17 +137,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUNS=$(gh api "repos/${{ github.repository }}/actions/workflows/swing_pipeline.yml/runs?per_page=15" \
+          # Search ALL workflow runs, not just swing_pipeline
+          RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=30" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success") | .id' 2>/dev/null || echo "")
           FOUND_RUN=""; FOUND_ART=""
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 0) | .name' 2>/dev/null | head -n 1 || true)
+              --jq '.artifacts[] | select(.name | test("^(scan|eval|db|db-restored)-")) | select(.size_in_bytes > 10000) | .name' 2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
           done
           if [ -n "$FOUND_RUN" ]; then
-            echo "run=$FOUND_RUN"      >> $GITHUB_OUTPUT
+            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
             echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+            echo "Found: $FOUND_ART from run $FOUND_RUN"
           fi
 
       - name: Download previous artifact
