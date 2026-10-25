@@ -1,15 +1,25 @@
-# --- pinned to avoid Pandas4Warning spam ---
-pandas==2.2.3
+# ---------------------------------------------------------------------------
+# NOTE on pandas version — READ BEFORE EDITING
+#
+# We observed ~150 Pandas4Warning lines from yfinance per run. Two remedies:
+#   (a) Suppress via PYTHONWARNINGS env (already set in scan.yml) — chosen
+#   (b) Pin pandas to a version that predates the deprecation
+#
+# (a) was chosen because pinning pandas blindly risks breaking yfinance's
+# internal code. Before tightening the constraint below, verify yfinance's
+# actual pandas requirement for the version that pip resolves.
+# ---------------------------------------------------------------------------
+
+pandas>=2.2,<3.1
 numpy>=1.26,<2.3
 yfinance>=0.2.40
 
-# --- runtime ---
 requests>=2.31
 pytz>=2024.1
 python-dateutil>=2.9
 
-# --- optional (paper data, not active) ---
+# optional (paper data — not active in current mode)
 alpaca-py>=0.21
 
-# --- dev ---
+# dev
 pytest>=8.0
