@@ -1,10 +1,15 @@
-pandas
-numpy
-pytz
-requests
-yfinance
-beautifulsoup4
-lxml
-finnhub-python
-google-generativeai
-pytrends
+# --- pinned to avoid Pandas4Warning spam ---
+pandas==2.2.3
+numpy>=1.26,<2.3
+yfinance>=0.2.40
+
+# --- runtime ---
+requests>=2.31
+pytz>=2024.1
+python-dateutil>=2.9
+
+# --- optional (paper data, not active) ---
+alpaca-py>=0.21
+
+# --- dev ---
+pytest>=8.0
