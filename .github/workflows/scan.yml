@@ -1,16 +1,13 @@
 name: DAYS-BOT V5.0.8 Swing Scanner
 
 on:
-  # GitHub Actions תומך ב-timezone (IANA) ולכן לא צריך לחשב UTC ידנית.
-  # הזמנים כאן הם לפי שעון ניו יורק (ET) והם אוטומטיים לקיץ/חורף.
+  # GitHub Actions תומך ב-timezone (IANA), לכן הזמנים כאן הם לפי שעון ניו יורק
+  # ולא צריך לחשב UTC ידנית. המעבר בין קיץ לחורף אוטומטי.
   #
-  # ריצת בוקר: 09:00 ET (לפני פתיחת השוק)
-  #   - שעון חורף ישראלי (IST): 16:00
-  #   - שעון קיץ ישראלי (IDT):  17:00
-  #
-  # ריצת סגירה: 16:30 ET (אחרי סגירת השוק)
-  #   - שעון חורף ישראלי (IST): 23:30
-  #   - שעון קיץ ישראלי (IDT):  00:30 (למחרת)
+  # 09:00 ET  = לפני פתיחת השוק (נרות של אתמול — שלם)
+  #             שעון ישראל חורף (IST): 16:00 / קיץ (IDT): 17:00
+  # 16:30 ET  = אחרי סגירת השוק (נר היום — סופי)
+  #             שעון ישראל חורף (IST): 23:30 / קיץ (IDT): 00:30 (למחרת)
   schedule:
     - cron: '0 9 * * 1-5'
       timezone: "America/New_York"
@@ -34,7 +31,6 @@ concurrency:
 env:
   PYTHONUNBUFFERED: "1"
   DB_PATH: data/alerts.db
-  # מנטרל את שטף אזהרות Pandas4 שמקורו ב-yfinance
   PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
 
 jobs:
@@ -43,7 +39,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      # ---------- Dedup: מונע ריצה כפולה בתוך חלון של 120 דקות ----------
+      # ---------- Dedup ----------
       - name: Dedup check
         id: dedup
         if: github.event.inputs.force != 'true'
@@ -55,19 +51,15 @@ jobs:
             "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=5" \
             --jq "[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status == \"completed\" and .conclusion == \"success\")] | .[0] | .updated_at" \
             2>/dev/null || echo "")
-
           if [ -z "$LAST_RUN" ]; then
             echo "skip=false" >> $GITHUB_OUTPUT
             echo "Dedup: no previous successful run — proceeding"
             exit 0
           fi
-
           LAST_EPOCH=$(date -d "$LAST_RUN" +%s 2>/dev/null || echo 0)
           NOW_EPOCH=$(date +%s)
           DIFF_MIN=$(( (NOW_EPOCH - LAST_EPOCH) / 60 ))
-
           echo "Dedup: last successful run was $DIFF_MIN minutes ago ($LAST_RUN)"
-
           if [ "$DIFF_MIN" -lt 120 ]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "Dedup: SKIPPING — a successful run was $DIFF_MIN min ago (< 120)"
@@ -76,16 +68,13 @@ jobs:
             echo "Dedup: PROCEEDING — last successful run was $DIFF_MIN min ago"
           fi
 
-      # ---------- 0. חישוב משתני זמן (לפי ET, אך נשמרים גם עבור התצוגה) ----------
+      # ---------- 0. זמן ----------
       - name: Compute time env
         if: steps.dedup.outputs.skip != 'true'
         run: |
           echo "TODAY_ET=$(TZ=America/New_York date +%Y-%m-%d)" >> $GITHUB_ENV
           echo "TIME_ET=$(TZ=America/New_York date +%H:%M)"     >> $GITHUB_ENV
-
-          # מצב Swing אינו תלוי בחלון Pre-Market
           echo "IN_PM_WINDOW=0" >> $GITHUB_ENV
-
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo "IS_SCHEDULED=1" >> $GITHUB_ENV
           else
@@ -121,7 +110,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # ---------- 2. שחזור DB מהריצה הקודמת ----------
+      # ---------- 2. שחזור DB ----------
       - name: Find previous run with valid scan artifact
         id: prev
         if: steps.dedup.outputs.skip != 'true'
@@ -140,7 +129,7 @@ jobs:
             if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
           done
           if [ -n "$FOUND_RUN" ]; then
-            echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
+            echo "run=$FOUND_RUN"      >> $GITHUB_OUTPUT
             echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
           fi
 
@@ -162,6 +151,36 @@ jobs:
           [ -f /tmp/prev/summaries/all_runs.csv ] && cp /tmp/prev/summaries/all_runs.csv summaries/all_runs.csv
           [ -f /tmp/prev/run_summary_prior.json ] && cp /tmp/prev/run_summary_prior.json run_summary_prior.json
           echo "DB restored (if present)."
+
+      # NEW: distinguish "first run" from "restore silently failed"
+      - name: Verify DB restore (fail loudly if expected but missing)
+        if: steps.dedup.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          PRIOR_SUCCESS=$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/scan.yml/runs?per_page=20" \
+            --jq '[.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed" and .conclusion=="success")] | length' \
+            2>/dev/null || echo 0)
+          echo "[restore] prior successful runs visible via API: $PRIOR_SUCCESS"
+
+          if [ -f data/alerts.db ]; then
+            ROWS=$(sqlite3 data/alerts.db "SELECT COUNT(*) FROM snapshots;" 2>/dev/null || echo "?")
+            echo "[restore] DB present, snapshots rows: $ROWS"
+            exit 0
+          fi
+
+          if [ "$PRIOR_SUCCESS" -gt 0 ]; then
+            echo "[restore] FATAL: $PRIOR_SUCCESS prior successful runs exist, but no"
+            echo "[restore] data/alerts.db was restored. This is NOT a first-ever run."
+            echo "[restore] Refusing to silently start from an empty database."
+            echo "[restore] Investigate: artifact missing, expired, or download step skipped?"
+            exit 1
+          fi
+
+          echo "[restore] first-ever run (no prior successful runs) — proceeding with empty DB"
+          exit 0
 
       - name: Verify DB integrity
         if: steps.dedup.outputs.skip != 'true'
@@ -218,7 +237,7 @@ jobs:
           python3 scripts/migrate_research_meta.py || true
           python3 scripts/migrate_cost_columns.py  || true
 
-      # ---------- 4. Preflight (מצב Swing) ----------
+      # ---------- 4. Preflight (swing mode) ----------
       - name: Preflight check
         id: preflight
         if: steps.dedup.outputs.skip != 'true'
