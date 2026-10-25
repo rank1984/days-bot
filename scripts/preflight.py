@@ -2,16 +2,11 @@
 """
 preflight.py — preflight checks.
 
-Two modes:
-  --mode premarket  (default for legacy fullscan_v34)
-        Requires: PM window 04:00-09:30 ET AND trigger window 09:30-11:00 ET.
-  --mode swing      (new default for swing_v1)
-        Skips PM-window / trigger-window checks (not applicable to daily bars).
-        Still runs DB sanity checks (PMH consistency, event_rank column, etc.)
+Modes:
+  --mode premarket  (legacy: PM window 04:00-09:30 ET, trigger 09:30-11:00)
+  --mode swing      (default for swing_v1: skips PM/trigger, keeps DB checks)
 
-Usage:
-    python3 scripts/preflight.py --mode swing
-    python3 scripts/preflight.py --mode premarket
+Exit 0 only if all applicable checks pass. Emits `PREFLIGHT_RESULT=passed|failed`.
 """
 from __future__ import annotations
 
@@ -31,8 +26,6 @@ ET = pytz.timezone("America/New_York")
 def now_et() -> datetime:
     return datetime.now(ET)
 
-
-# ---------- checks ----------
 
 def check_pm_window(now: datetime) -> tuple[bool, str]:
     cur = now.hour * 60 + now.minute
@@ -59,7 +52,6 @@ def check_pmh_consistent(conn: sqlite3.Connection) -> tuple[bool, str]:
         ok_count = cur.fetchone()[0]
         return True, f"{ok_count} snapshots with pm_bars+pm_high"
     except sqlite3.OperationalError as e:
-        # snapshot columns missing → still pass (not blocking swing)
         return True, f"skipped ({e})"
 
 
@@ -85,8 +77,6 @@ def check_event_rank_column(conn: sqlite3.Connection) -> tuple[bool, str]:
         return False, str(e)
 
 
-# ---------- runner ----------
-
 def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
     print("=" * 74)
     print(f"PREFLIGHT CHECK — {now_et().strftime('%Y-%m-%d %H:%M:%S %Z')}")
@@ -96,7 +86,6 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
     now = now_et()
     checks: list[tuple[str, bool, str]] = []
 
-    # 1. Window check
     if mode == "premarket":
         ok, info = check_pm_window(now)
         checks.append(("1. inside PM window", ok, info))
@@ -104,7 +93,6 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
         checks.append(("1. PM window (N/A for swing)", True,
                        "swing mode — daily bars, no PM window required"))
 
-    # Open DB if exists
     conn = None
     if os.path.exists(db_path):
         try:
@@ -113,17 +101,13 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
             print(f"  [WARN] cannot open DB: {e}")
 
     if conn is not None:
-        checks.append(("2. PMH consistent with pm_bars",
-                       *check_pmh_consistent(conn)))
-        checks.append(("3. pm_bars>0 implies pm_high",
-                       *check_pm_bars_imply_high(conn)))
-        checks.append(("4. event_rank column present",
-                       *check_event_rank_column(conn)))
+        checks.append(("2. PMH consistent with pm_bars", *check_pmh_consistent(conn)))
+        checks.append(("3. pm_bars>0 implies pm_high", *check_pm_bars_imply_high(conn)))
+        checks.append(("4. event_rank column present", *check_event_rank_column(conn)))
     else:
         for i in (2, 3, 4):
             checks.append((f"{i}. (SKIPPED — no DB)", True, "no DB"))
 
-    # 5. Trigger window (premarket only)
     if mode == "premarket":
         ok, info = check_trigger_window(now)
         checks.append(("5. trigger window 09:30-11:00", ok, info))
@@ -145,8 +129,10 @@ def run_preflight(mode: str = "swing", db_path: str = DB_PATH) -> int:
     print(f"  RESULT: {passed}/{total} passed")
     if passed == total:
         print("  PREFLIGHT PASSED")
+        print("  PREFLIGHT_RESULT=passed")
         return 0
     print("  PREFLIGHT FAILED — run NOT eligible for counting")
+    print("  PREFLIGHT_RESULT=failed")
     return 1
 
 
