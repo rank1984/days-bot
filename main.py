@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fixed: Loads universe before passing to run_swing_discovery + Top 3 Telegram Alerts
+Fixed: Extracts candidates safely from tuple/dict + Top 3 Telegram Alerts
 """
 import sys
 import os
@@ -23,7 +23,7 @@ except ImportError:
         print("[WARN] load_universe not found. Will pass empty list.")
         def load_universe(): return []
 
-# 2. Discovery Engine (Explicitly using the correct function name and signature)
+# 2. Discovery Engine
 from scanner.swing_discovery import run_swing_discovery
 
 # 3. Database (Defensive)
@@ -64,6 +64,24 @@ except ImportError:
         return cand.get('swing_score', cand.get('composite_score', 0))
 
 ET = pytz.timezone("America/New_York")
+
+# ==============================================================================
+# HELPER: Safe Candidate Extractor
+# ==============================================================================
+def _extract_candidates(result):
+    """Safely extracts the list of candidates from whatever the discovery returns."""
+    if isinstance(result, list):
+        return result
+    if isinstance(result, tuple):
+        # Usually returns (candidates_list, diagnostics_dict)
+        for item in result:
+            if isinstance(item, list):
+                return item
+    if isinstance(result, dict):
+        for key in ['candidates', 'results', 'snapshots', 'data']:
+            if key in result and isinstance(result[key], list):
+                return result[key]
+    return []
 
 # ==============================================================================
 # TRADE PLAN BUILDER
@@ -135,7 +153,8 @@ def run_swing_v1(manual=False):
     # 3. Discovery
     print(f"[Main] Starting Swing Discovery on {len(universe)} symbols...")
     try:
-        candidates = run_swing_discovery(universe)
+        raw_result = run_swing_discovery(universe)
+        candidates = _extract_candidates(raw_result)
     except Exception as e:
         print(f"[FATAL] Discovery failed: {e}")
         return
@@ -155,9 +174,13 @@ def run_swing_v1(manual=False):
     all_valid_plans = []
     
     for cand in candidates:
+        # Safety check: Ensure we are dealing with a dictionary
+        if not isinstance(cand, dict):
+            continue
+            
         ticker = cand.get('ticker', 'UNKNOWN')
-        price = cand.get('price', 0)
-        atr = cand.get('atr', 0)
+        price = float(cand.get('price', 0) or 0)
+        atr = float(cand.get('atr', 0) or 0)
         
         # Calculate or extract Score
         score = cand.get('score', cand.get('swing_score', cand.get('composite_score', 0)))
@@ -178,7 +201,7 @@ def run_swing_v1(manual=False):
         if cand.get('plan_valid'):
             valid_alerts += 1
             all_valid_plans.append(cand)
-            print(f"[SwingScan] ✅ {ticker} | Score: {score} | Entry: ${cand['entry']} | Stop: ${cand['stop']} ({((price-cand['stop'])/price)*100:.1f}%) | T1: ${cand['target_1']}")
+            print(f"[SwingScan] ✅ {ticker} | Score: {score} | Entry: ${cand['entry']} | Stop: ${cand['stop']} | T1: ${cand['target_1']}")
         else:
             plan_blocked += 1
             err = cand.get('plan_error', 'UNKNOWN')
