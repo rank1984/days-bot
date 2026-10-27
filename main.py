@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fixed: Handles dict return types from score engines safely + Top 3 Telegram Alerts
+Fixed: save_snapshot arguments + Top 3 Telegram Alerts
 """
 import sys
 import os
 import argparse
+import uuid
 from datetime import datetime
 import pytz
 
@@ -30,7 +31,7 @@ from scanner.swing_discovery import run_swing_discovery
 try:
     from database.snapshot_schema import save_snapshot
 except ImportError:
-    def save_snapshot(cand):
+    def save_snapshot(cand, scan_id, now_et):
         print(f"[WARN] save_snapshot not found. Skipping DB save for {cand.get('ticker')}")
 
 try:
@@ -69,7 +70,6 @@ ET = pytz.timezone("America/New_York")
 # HELPERS (Safe extraction for Dict/List/Int)
 # ==============================================================================
 def _extract_candidates(result):
-    """Safely extracts the list of candidates from whatever the discovery returns."""
     if isinstance(result, list):
         return result
     if isinstance(result, tuple):
@@ -83,7 +83,6 @@ def _extract_candidates(result):
     return []
 
 def _safe_score(val):
-    """Safely converts int, float, str, or dict into a float score."""
     if isinstance(val, (int, float)):
         return float(val)
     if isinstance(val, dict):
@@ -143,9 +142,12 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
 # ==============================================================================
 def run_swing_v1(manual=False):
     now_et = datetime.now(ET)
+    scan_id = str(uuid.uuid4())  # Unique ID for this scan session
+    
     print("==========================================================================")
     print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'AUTO'}")
+    print(f"Scan ID: {scan_id}")
     print("Stop range: 2.0%-10.0% | Min Score: 60")
     print("Telegram: max 3 alerts, score >= 95")
     print("==========================================================================")
@@ -226,9 +228,9 @@ def run_swing_v1(manual=False):
             elif "SCORE" in err: blocked_reasons["LOW_SCORE"] += 1
             print(f"[SwingScan] ⚠️ {ticker} | Score: {score} | BLOCKED: {err}")
             
-        # SAVE TO DB
+        # SAVE TO DB (Passing scan_id and now_et!)
         try:
-            save_snapshot(cand)
+            save_snapshot(cand, scan_id, now_et)
         except Exception as e:
             print(f"[WARN] Failed to save snapshot for {ticker}: {e}")
             
