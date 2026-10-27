@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fully defensive imports to prevent any ImportError crash.
+Fully defensive imports + Smart discovery detection + Top 3 Telegram Alerts
 """
 import sys
 import os
 import json
 import argparse
+import inspect
 from datetime import datetime
 import pytz
 
 # ==============================================================================
-# DEFENSIVE IMPORTS (Won't crash if a specific function is missing)
+# DEFENSIVE IMPORTS
 # ==============================================================================
 
 # 1. Database imports
 try:
     from database.snapshot_schema import save_snapshot
 except ImportError:
-    def save_snapshot(cand):
-        pass # Fallback if missing
+    def save_snapshot(cand): pass
 
 try:
     from database.db import init_db
@@ -27,8 +27,7 @@ except ImportError:
     try:
         from database.snapshot_schema import init_db
     except ImportError:
-        def init_db():
-            pass # Fallback if missing
+        def init_db(): pass
 
 # 2. Config imports
 try:
@@ -46,40 +45,65 @@ except ImportError:
     def format_swing_alert(a): return ""
     def format_swing_summary(c, v, b, s): return ""
 
-# 4. Discovery imports (Dynamic mapping)
+# 4. Discovery import
 import scanner.swing_discovery as sd
 
-def get_discovery_run():
-    """Dynamically finds the run function or class in swing_discovery.py"""
-    # Try specific class names first
-    for name in ['SwingDiscovery', 'DiscoveryEngine', 'Discovery']:
-        if hasattr(sd, name):
-            obj = getattr(sd, name)
-            if isinstance(obj, type):
-                inst = obj()
-                if hasattr(inst, 'run'): return inst.run
-                if hasattr(inst, 'scan'): return inst.scan
+# ==============================================================================
+# SMART DISCOVERY RUNNER
+# ==============================================================================
+def run_discovery_smart():
+    """Finds and runs the discovery function/class dynamically."""
     
-    # Try module-level functions
-    for name in ['run_discovery', 'run', 'scan', 'discover']:
-        if hasattr(sd, name) and callable(getattr(sd, name)):
-            return getattr(sd, name)
-            
-    # Fallback: scan dir for anything callable
-    for name in dir(sd):
-        obj = getattr(sd, name)
-        if isinstance(obj, type) and hasattr(obj, 'run'):
-            return obj().run
-            
-    raise RuntimeError("Could not find a valid entry point in scanner.swing_discovery")
+    # Option A: Look for known class names
+    for cls_name in ['SwingDiscovery', 'DiscoveryEngine', 'SwingScanner', 'Discovery']:
+        if hasattr(sd, cls_name):
+            cls = getattr(sd, cls_name)
+            try:
+                inst = cls()
+                if hasattr(inst, 'run'):
+                    return inst.run()
+                elif hasattr(inst, 'scan'):
+                    return inst.scan()
+            except Exception as e:
+                print(f"[WARN] Tried {cls_name} but failed: {e}")
 
-try:
-    from scanner.swing_engine import calculate_swing_score
-except ImportError:
-    def calculate_swing_score(cand):
-        return cand.get('swing_score', cand.get('composite_score', 0))
+    # Option B: Look for known function names
+    for func_name in ['run_discovery', 'run_swing', 'run', 'scan', 'discover', 'main']:
+        if hasattr(sd, func_name):
+            func = getattr(sd, func_name)
+            try:
+                # Check if function requires arguments
+                sig = inspect.signature(func)
+                params = [p for p in sig.parameters.values() if p.default == inspect.Parameter.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+                
+                if not params:
+                    return func()
+                else:
+                    # Try calling with default args if possible
+                    print(f"[WARN] {func_name} requires arguments, trying without...")
+                    return func()
+            except Exception as e:
+                print(f"[WARN] Tried function {func_name} but failed: {e}")
 
-ET = pytz.timezone("America/New_York")
+    # Option C: Scan all classes and functions
+    for name, obj in inspect.getmembers(sd):
+        if name.startswith('_'):
+            continue
+        if inspect.isclass(obj):
+            try:
+                inst = obj()
+                if hasattr(inst, 'run'): return inst.run()
+                if hasattr(inst, 'scan'): return inst.scan()
+            except: pass
+        elif inspect.isfunction(obj):
+            try:
+                res = obj()
+                if isinstance(res, list): return res
+            except: pass
+
+    # Option D: Print what's available to help debug
+    available = [x for x in dir(sd) if not x.startswith('_')]
+    raise RuntimeError(f"Could not find discovery entry point. Available objects: {available}")
 
 # ==============================================================================
 # TRADE PLAN BUILDER
@@ -125,7 +149,7 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
 # MAIN ENGINE
 # ==============================================================================
 def run_swing_v1(manual=False):
-    now_et = datetime.now(ET)
+    now_et = datetime.now(pytz.timezone("America/New_York"))
     print("==========================================================================")
     print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'AUTO'}")
@@ -142,8 +166,7 @@ def run_swing_v1(manual=False):
     # 2. Discovery
     print("[Main] Starting Swing Discovery on 500 symbols...")
     try:
-        discovery_run_func = get_discovery_run()
-        candidates = discovery_run_func()
+        candidates = run_discovery_smart()
     except Exception as e:
         print(f"[FATAL] Discovery failed: {e}")
         return
@@ -168,11 +191,7 @@ def run_swing_v1(manual=False):
         atr = cand.get('atr', 0)
         
         # Calculate Score
-        try:
-            score = calculate_swing_score(cand)
-        except Exception:
-            score = cand.get('swing_score', cand.get('composite_score', 0))
-            
+        score = cand.get('score', cand.get('swing_score', cand.get('composite_score', 0)))
         cand['score'] = score
         cand['composite_score'] = score
         
@@ -200,13 +219,13 @@ def run_swing_v1(manual=False):
         try:
             save_snapshot(cand)
         except Exception as e:
-            pass # Silently ignore save errors to keep the loop running
+            pass # Silent ignore to keep the loop running
             
         snapshots_saved += 1
 
     print(f"\n[Main] V5.0.8 snapshots saved: {snapshots_saved}\n")
     
-    # 4. Send Telegram Alerts
+    # 4. Send Telegram Alerts (Top 3)
     print("[Main] Selecting Top 3 Alerts to Telegram (score >= 95)...")
     top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 95]
     
