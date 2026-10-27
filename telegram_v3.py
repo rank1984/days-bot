@@ -1,6 +1,7 @@
 """
 telegram_v3.py – V5.0.5.2 Telegram Formatter
 FIX: Lesson shows Observations instead of Recommendations
+UPDATE: Added compact format_swing_alert and format_swing_summary for Top 3 alerts
 """
 import requests
 from datetime import datetime
@@ -13,7 +14,7 @@ def send_message(token: str, chat_id: str, text: str) -> bool:
     if not token or not chat_id:
         return False
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    for parse_mode in ["HTML", None]:
+    for parse_mode in ["HTML", "Markdown", None]:
         try:
             payload = {
                 "chat_id": chat_id,
@@ -47,6 +48,61 @@ def _fmt_num(value, default=0.0):
     except (TypeError, ValueError):
         return default
 
+
+# ==========================================
+# NEW: Swing Alert & Summary Formatters
+# ==========================================
+
+def format_swing_alert(alert: dict) -> str:
+    """Formats the top swing alert for Telegram (Compact version)."""
+    ticker = alert.get('ticker', 'UNKNOWN')
+    score = alert.get('score', 0)
+    
+    entry = _fmt_num(alert.get('entry'), 0)
+    stop = _fmt_num(alert.get('stop'), 0)
+    t1 = _fmt_num(alert.get('target_1'), 0)
+    t2 = _fmt_num(alert.get('target_2'), 0)
+    
+    size = alert.get('position_size', 0)
+    max_loss = _fmt_num(alert.get('max_loss'), 0)
+    
+    # Calculate percentages
+    stop_pct = ((stop - entry) / entry) * 100 if entry else 0
+    t1_pct = ((t1 - entry) / entry) * 100 if entry else 0
+    t2_pct = ((t2 - entry) / entry) * 100 if entry else 0
+
+    msg = f"🎯 *TOP ALERT: {ticker}* ({int(score)}/100)\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"💰 Entry: ${entry:.2f}\n"
+    msg += f"🛑 Stop: ${stop:.2f} ({stop_pct:.1f}%)\n"
+    msg += f"🎯 T1: ${t1:.2f} (+{t1_pct:.1f}%, R:R 1:2)\n"
+    msg += f"🎯 T2: ${t2:.2f} (+{t2_pct:.1f}%, R:R 1:4)\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📦 Size: {size} shares\n"
+    msg += f"💵 Max Loss: ${max_loss:.2f}\n"
+    msg += f"⏳ Hold: 1-3 days\n"
+    
+    return msg
+
+
+def format_swing_summary(candidates_count: int, valid_alerts: int, blocked: int, telegram_sent: int) -> str:
+    """Formats the daily summary for the swing scan."""
+    now_et = datetime.now(ET)
+    msg = f"📊 *DAYS-BOT Swing Summary*\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📅 Date: {now_et.strftime('%Y-%m-%d')}\n"
+    msg += f"🔍 Candidates: {candidates_count}\n"
+    msg += f"✅ Valid Alerts: {valid_alerts}\n"
+    msg += f"⚠️ Blocked: {blocked}\n"
+    msg += f"📱 Sent to Telegram: {telegram_sent}\n"
+    msg += f"━━━━━━━━━━━━━━━━━━\n"
+    msg += f"🤖 Data collection continues normally."
+    return msg
+
+
+# ==========================================
+# LEGACY: Research Report & Lesson Formatters
+# ==========================================
 
 def format_research_report(candidates: list, now_et: datetime) -> str:
     lines = []
