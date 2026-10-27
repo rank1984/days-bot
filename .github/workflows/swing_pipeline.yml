@@ -2,12 +2,14 @@ name: DAYS-BOT V5.0.8 Swing Pipeline
 
 on:
   schedule:
-    - cron: '0 9 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '30 16 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '30 17 * * 1-5'
-      timezone: "America/New_York"
+  - cron: '3 9 * * 1-5'
+    timezone: "America/New_York"
+  - cron: '37 16 * * 1-5'
+    timezone: "America/New_York"
+  - cron: '7 17 * * 1-5'
+    timezone: "America/New_York"
+  - cron: '33 17 * * 1-5'
+    timezone: "America/New_York"
   workflow_dispatch:
     inputs:
       mode:
