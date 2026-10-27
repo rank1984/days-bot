@@ -1,25 +1,27 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fully defensive imports + Smart discovery detection + Top 3 Telegram Alerts
+Fixed: Explicit import of run_swing_discovery + Top 3 Telegram Alerts
 """
 import sys
 import os
-import json
 import argparse
-import inspect
 from datetime import datetime
 import pytz
 
 # ==============================================================================
-# DEFENSIVE IMPORTS
+# IMPORTS
 # ==============================================================================
 
-# 1. Database imports
+# 1. Discovery Engine (Explicitly using the correct function name we found)
+from scanner.swing_discovery import run_swing_discovery
+
+# 2. Database (Defensive)
 try:
     from database.snapshot_schema import save_snapshot
 except ImportError:
-    def save_snapshot(cand): pass
+    def save_snapshot(cand):
+        print(f"[WARN] save_snapshot not found. Skipping DB save for {cand.get('ticker')}")
 
 try:
     from database.db import init_db
@@ -27,83 +29,31 @@ except ImportError:
     try:
         from database.snapshot_schema import init_db
     except ImportError:
-        def init_db(): pass
+        def init_db(): pass # If missing, just skip
 
-# 2. Config imports
+# 3. Config & Telegram
 try:
     from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 except ImportError:
     TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
     TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-# 3. Telegram imports
 try:
     from telegram_v3 import send_message, format_swing_alert, format_swing_summary
 except ImportError:
-    print("[WARN] telegram_v3 not found or incomplete. Alerts will not be sent.")
+    print("[WARN] telegram_v3 not found. Alerts will not be sent.")
     def send_message(t, c, m): return False
     def format_swing_alert(a): return ""
     def format_swing_summary(c, v, b, s): return ""
 
-# 4. Discovery import
-import scanner.swing_discovery as sd
+# Optional: Calculate score if it's not in the candidate dict
+try:
+    from scanner.swing_engine import calculate_swing_score
+except ImportError:
+    def calculate_swing_score(cand):
+        return cand.get('swing_score', cand.get('composite_score', 0))
 
-# ==============================================================================
-# SMART DISCOVERY RUNNER
-# ==============================================================================
-def run_discovery_smart():
-    """Finds and runs the discovery function/class dynamically."""
-    
-    # Option A: Look for known class names
-    for cls_name in ['SwingDiscovery', 'DiscoveryEngine', 'SwingScanner', 'Discovery']:
-        if hasattr(sd, cls_name):
-            cls = getattr(sd, cls_name)
-            try:
-                inst = cls()
-                if hasattr(inst, 'run'):
-                    return inst.run()
-                elif hasattr(inst, 'scan'):
-                    return inst.scan()
-            except Exception as e:
-                print(f"[WARN] Tried {cls_name} but failed: {e}")
-
-    # Option B: Look for known function names
-    for func_name in ['run_discovery', 'run_swing', 'run', 'scan', 'discover', 'main']:
-        if hasattr(sd, func_name):
-            func = getattr(sd, func_name)
-            try:
-                # Check if function requires arguments
-                sig = inspect.signature(func)
-                params = [p for p in sig.parameters.values() if p.default == inspect.Parameter.empty and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
-                
-                if not params:
-                    return func()
-                else:
-                    # Try calling with default args if possible
-                    print(f"[WARN] {func_name} requires arguments, trying without...")
-                    return func()
-            except Exception as e:
-                print(f"[WARN] Tried function {func_name} but failed: {e}")
-
-    # Option C: Scan all classes and functions
-    for name, obj in inspect.getmembers(sd):
-        if name.startswith('_'):
-            continue
-        if inspect.isclass(obj):
-            try:
-                inst = obj()
-                if hasattr(inst, 'run'): return inst.run()
-                if hasattr(inst, 'scan'): return inst.scan()
-            except: pass
-        elif inspect.isfunction(obj):
-            try:
-                res = obj()
-                if isinstance(res, list): return res
-            except: pass
-
-    # Option D: Print what's available to help debug
-    available = [x for x in dir(sd) if not x.startswith('_')]
-    raise RuntimeError(f"Could not find discovery entry point. Available objects: {available}")
+ET = pytz.timezone("America/New_York")
 
 # ==============================================================================
 # TRADE PLAN BUILDER
@@ -113,8 +63,9 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
     MAX_STOP_PCT = 10.0
     
     if not atr or atr <= 0:
-        atr = price * 0.03 
+        atr = price * 0.03 # Fallback to 3% if ATR missing
         
+    # Calculate stop based on 1.5 * ATR, but ensure it's at least 2% away
     stop = min(price - (1.5 * atr), price * (1 - (MIN_STOP_PCT / 100.0)))
     stop_distance_pct = ((price - stop) / price) * 100
     
@@ -128,7 +79,7 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
     target_2 = price + (risk_per_share * 4)
     
     account_size = 5000.0
-    risk_pct = 0.005 
+    risk_pct = 0.005 # 0.5%
     max_loss = account_size * risk_pct
     position_size = int(max_loss / risk_per_share) if risk_per_share > 0 else 0
     
@@ -149,7 +100,7 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
 # MAIN ENGINE
 # ==============================================================================
 def run_swing_v1(manual=False):
-    now_et = datetime.now(pytz.timezone("America/New_York"))
+    now_et = datetime.now(ET)
     print("==========================================================================")
     print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'AUTO'}")
@@ -166,7 +117,7 @@ def run_swing_v1(manual=False):
     # 2. Discovery
     print("[Main] Starting Swing Discovery on 500 symbols...")
     try:
-        candidates = run_discovery_smart()
+        candidates = run_swing_discovery()
     except Exception as e:
         print(f"[FATAL] Discovery failed: {e}")
         return
@@ -190,8 +141,11 @@ def run_swing_v1(manual=False):
         price = cand.get('price', 0)
         atr = cand.get('atr', 0)
         
-        # Calculate Score
+        # Calculate or extract Score
         score = cand.get('score', cand.get('swing_score', cand.get('composite_score', 0)))
+        if score == 0:
+            score = calculate_swing_score(cand)
+            
         cand['score'] = score
         cand['composite_score'] = score
         
@@ -215,11 +169,11 @@ def run_swing_v1(manual=False):
             elif "SCORE" in err: blocked_reasons["LOW_SCORE"] += 1
             print(f"[SwingScan] ⚠️ {ticker} | Score: {score} | BLOCKED: {err}")
             
-        # SAVE EVERYTHING TO DB
+        # SAVE EVERYTHING TO DB (Crucial for data collection!)
         try:
             save_snapshot(cand)
         except Exception as e:
-            pass # Silent ignore to keep the loop running
+            print(f"[WARN] Failed to save snapshot for {ticker}: {e}")
             
         snapshots_saved += 1
 
@@ -227,6 +181,8 @@ def run_swing_v1(manual=False):
     
     # 4. Send Telegram Alerts (Top 3)
     print("[Main] Selecting Top 3 Alerts to Telegram (score >= 95)...")
+    
+    # Filter: Only score >= 95
     top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 95]
     
     # Sort: Score -> RVOL -> ATR
@@ -238,14 +194,15 @@ def run_swing_v1(manual=False):
         ), 
         reverse=True
     )
+    
+    # Slice: Top 3 only
     top_alerts = top_alerts[:3]
     
     telegram_sent = 0
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         for alert in top_alerts:
             msg = format_swing_alert(alert)
-            if not msg:
-                continue
+            if not msg: continue
             success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
             if success:
                 print(f"[Main]   → {alert['ticker']} (score {alert['score']}) - sent")
