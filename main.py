@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fixed: Extracts candidates safely from tuple/dict + Top 3 Telegram Alerts
+Fixed: Handles dict return types from score engines safely + Top 3 Telegram Alerts
 """
 import sys
 import os
@@ -56,24 +56,23 @@ except ImportError:
     def format_swing_alert(a): return ""
     def format_swing_summary(c, v, b, s): return ""
 
-# Optional: Calculate score if it's not in the candidate dict
+# Optional: Calculate score
 try:
     from scanner.swing_engine import calculate_swing_score
 except ImportError:
     def calculate_swing_score(cand):
-        return cand.get('swing_score', cand.get('composite_score', 0))
+        return 0
 
 ET = pytz.timezone("America/New_York")
 
 # ==============================================================================
-# HELPER: Safe Candidate Extractor
+# HELPERS (Safe extraction for Dict/List/Int)
 # ==============================================================================
 def _extract_candidates(result):
     """Safely extracts the list of candidates from whatever the discovery returns."""
     if isinstance(result, list):
         return result
     if isinstance(result, tuple):
-        # Usually returns (candidates_list, diagnostics_dict)
         for item in result:
             if isinstance(item, list):
                 return item
@@ -82,6 +81,22 @@ def _extract_candidates(result):
             if key in result and isinstance(result[key], list):
                 return result[key]
     return []
+
+def _safe_score(val):
+    """Safely converts int, float, str, or dict into a float score."""
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, dict):
+        for k in ['score', 'swing_score', 'total', 'composite_score']:
+            if k in val and isinstance(val[k], (int, float)):
+                return float(val[k])
+        return 0.0
+    if isinstance(val, str):
+        try:
+            return float(val)
+        except ValueError:
+            return 0.0
+    return 0.0
 
 # ==============================================================================
 # TRADE PLAN BUILDER
@@ -174,7 +189,6 @@ def run_swing_v1(manual=False):
     all_valid_plans = []
     
     for cand in candidates:
-        # Safety check: Ensure we are dealing with a dictionary
         if not isinstance(cand, dict):
             continue
             
@@ -182,10 +196,12 @@ def run_swing_v1(manual=False):
         price = float(cand.get('price', 0) or 0)
         atr = float(cand.get('atr', 0) or 0)
         
-        # Calculate or extract Score
-        score = cand.get('score', cand.get('swing_score', cand.get('composite_score', 0)))
-        if score == 0:
-            score = calculate_swing_score(cand)
+        # Safely calculate score
+        raw_score = cand.get('score') or cand.get('swing_score') or cand.get('composite_score')
+        score = _safe_score(raw_score)
+        if score == 0.0:
+            raw_calc = calculate_swing_score(cand)
+            score = _safe_score(raw_calc)
             
         cand['score'] = score
         cand['composite_score'] = score
@@ -210,7 +226,7 @@ def run_swing_v1(manual=False):
             elif "SCORE" in err: blocked_reasons["LOW_SCORE"] += 1
             print(f"[SwingScan] ⚠️ {ticker} | Score: {score} | BLOCKED: {err}")
             
-        # SAVE EVERYTHING TO DB (Crucial for data collection!)
+        # SAVE TO DB
         try:
             save_snapshot(cand)
         except Exception as e:
@@ -223,20 +239,17 @@ def run_swing_v1(manual=False):
     # 5. Send Telegram Alerts (Top 3)
     print("[Main] Selecting Top 3 Alerts to Telegram (score >= 95)...")
     
-    # Filter: Only score >= 95
     top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 95]
     
-    # Sort: Score -> RVOL -> ATR
     top_alerts.sort(
         key=lambda x: (
             x.get('score', 0), 
-            x.get('rvol', 0) or 0, 
-            x.get('atr', 0) or 0
+            _safe_score(x.get('rvol', 0)), 
+            _safe_score(x.get('atr', 0))
         ), 
         reverse=True
     )
     
-    # Slice: Top 3 only
     top_alerts = top_alerts[:3]
     
     telegram_sent = 0
@@ -249,7 +262,6 @@ def run_swing_v1(manual=False):
                 print(f"[Main]   → {alert['ticker']} (score {alert['score']}) - sent")
                 telegram_sent += 1
                 
-        # Send Summary
         if telegram_sent > 0:
             summary_msg = format_swing_summary(
                 candidates_count=len(candidates),
