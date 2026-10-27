@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fixed: Explicit import of run_swing_discovery + Top 3 Telegram Alerts
+Fixed: Loads universe before passing to run_swing_discovery + Top 3 Telegram Alerts
 """
 import sys
 import os
@@ -13,10 +13,20 @@ import pytz
 # IMPORTS
 # ==============================================================================
 
-# 1. Discovery Engine (Explicitly using the correct function name we found)
+# 1. Universe Loader
+try:
+    from scanner.universe import load_universe
+except ImportError:
+    try:
+        from scanner.universe import get_universe as load_universe
+    except ImportError:
+        print("[WARN] load_universe not found. Will pass empty list.")
+        def load_universe(): return []
+
+# 2. Discovery Engine (Explicitly using the correct function name and signature)
 from scanner.swing_discovery import run_swing_discovery
 
-# 2. Database (Defensive)
+# 3. Database (Defensive)
 try:
     from database.snapshot_schema import save_snapshot
 except ImportError:
@@ -29,9 +39,9 @@ except ImportError:
     try:
         from database.snapshot_schema import init_db
     except ImportError:
-        def init_db(): pass # If missing, just skip
+        def init_db(): pass
 
-# 3. Config & Telegram
+# 4. Config & Telegram
 try:
     from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 except ImportError:
@@ -63,9 +73,8 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
     MAX_STOP_PCT = 10.0
     
     if not atr or atr <= 0:
-        atr = price * 0.03 # Fallback to 3% if ATR missing
+        atr = price * 0.03 
         
-    # Calculate stop based on 1.5 * ATR, but ensure it's at least 2% away
     stop = min(price - (1.5 * atr), price * (1 - (MIN_STOP_PCT / 100.0)))
     stop_distance_pct = ((price - stop) / price) * 100
     
@@ -79,7 +88,7 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
     target_2 = price + (risk_per_share * 4)
     
     account_size = 5000.0
-    risk_pct = 0.005 # 0.5%
+    risk_pct = 0.005 
     max_loss = account_size * risk_pct
     position_size = int(max_loss / risk_per_share) if risk_per_share > 0 else 0
     
@@ -114,10 +123,19 @@ def run_swing_v1(manual=False):
     except Exception as e:
         print(f"[WARN] init_db failed or skipped: {e}")
     
-    # 2. Discovery
-    print("[Main] Starting Swing Discovery on 500 symbols...")
+    # 2. Build Universe
+    print("[Main] Building clean dynamic universe...")
     try:
-        candidates = run_swing_discovery()
+        universe = load_universe()
+        print(f"[Main] Universe ready: {len(universe)} symbols")
+    except Exception as e:
+        print(f"[FATAL] Could not build universe: {e}")
+        return
+
+    # 3. Discovery
+    print(f"[Main] Starting Swing Discovery on {len(universe)} symbols...")
+    try:
+        candidates = run_swing_discovery(universe)
     except Exception as e:
         print(f"[FATAL] Discovery failed: {e}")
         return
@@ -128,7 +146,7 @@ def run_swing_v1(manual=False):
         
     print(f"[Main] Analyzing {len(candidates)} swing candidates...")
     
-    # 3. Analyze and Save
+    # 4. Analyze and Save
     snapshots_saved = 0
     valid_alerts = 0
     plan_blocked = 0
@@ -179,7 +197,7 @@ def run_swing_v1(manual=False):
 
     print(f"\n[Main] V5.0.8 snapshots saved: {snapshots_saved}\n")
     
-    # 4. Send Telegram Alerts (Top 3)
+    # 5. Send Telegram Alerts (Top 3)
     print("[Main] Selecting Top 3 Alerts to Telegram (score >= 95)...")
     
     # Filter: Only score >= 95
@@ -222,7 +240,7 @@ def run_swing_v1(manual=False):
     else:
         print("[Main] No Telegram credentials found. Skipping alerts.")
     
-    # 5. Final Summary
+    # 6. Final Summary
     print("\n==========================================================================")
     print("SWING SUMMARY:")
     print(f"  Candidates analyzed:    {len(candidates)}")
