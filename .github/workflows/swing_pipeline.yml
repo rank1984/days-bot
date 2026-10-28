@@ -42,7 +42,7 @@ env:
 jobs:
   scan:
     if: >-
-      ${{ (github.event_name == 'schedule' && github.event.schedule != '30 17 * * 1-5')
+      ${{ (github.event_name == 'schedule' && github.event.schedule != '33 17 * * 1-5')
       || (github.event_name == 'workflow_dispatch'
       && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both')) }}
     runs-on: ubuntu-latest
@@ -123,38 +123,25 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "[prev] === SEARCHING ALL RUNS (including failed) ==="
+          echo "[prev] === SEARCHING ALL RUNS (newest first) ==="
           RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed") | .id' \
             2>/dev/null || echo "")
           echo "[prev] Total completed runs to scan: $(echo "$RUNS" | wc -w)"
-          FOUND_RUN=""; FOUND_ART=""
+          FOUND_RUN=""
+          FOUND_ART=""
 
-          echo "[prev] Pass 1: searching for db-restored-* (highest priority)"
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | startswith("db-restored-")) | select(.size_in_bytes > 10000) | .name' \
+              --jq '.artifacts[] | select(.name | test("^(scan|db-restored|db|eval)-")) | select(.size_in_bytes > 10000) | .name' \
               2>/dev/null | head -n 1 || true)
             if [ -n "$ART" ]; then
-              FOUND_RUN="$RID"; FOUND_ART="$ART"
-              echo "[prev]   HIT: $ART (run $RID)"
+              FOUND_RUN="$RID"
+              FOUND_ART="$ART"
+              echo "[prev] HIT: $ART (run $RID)"
               break
             fi
           done
-
-          if [ -z "$FOUND_RUN" ]; then
-            echo "[prev] Pass 1 found nothing. Pass 2: fallback to scan-* / eval-* / db-*"
-            for RID in $RUNS; do
-              ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-                --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 10000) | .name' \
-                2>/dev/null | head -n 1 || true)
-              if [ -n "$ART" ]; then
-                FOUND_RUN="$RID"; FOUND_ART="$ART"
-                echo "[prev]   HIT: $ART (run $RID)"
-                break
-              fi
-            done
-          fi
 
           if [ -n "$FOUND_RUN" ]; then
             echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
@@ -343,7 +330,7 @@ jobs:
     needs: [scan]
     if: >-
       ${{ always()
-      && ((github.event_name == 'schedule' && github.event.schedule == '30 17 * * 1-5')
+      && ((github.event_name == 'schedule' && github.event.schedule == '33 17 * * 1-5')
       || (github.event_name == 'workflow_dispatch'
       && (github.event.inputs.mode == 'evaluate' || github.event.inputs.mode == 'both'))) }}
     runs-on: ubuntu-latest
@@ -396,27 +383,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "[prev] Searching all completed runs (including failed)"
+          echo "[prev] === SEARCHING ALL RUNS (newest first) ==="
           RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed") | .id' \
             2>/dev/null || echo "")
-          FOUND_RUN=""; FOUND_ART=""
+          FOUND_RUN=""
+          FOUND_ART=""
 
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | startswith("db-restored-")) | select(.size_in_bytes > 10000) | .name' \
+              --jq '.artifacts[] | select(.name | test("^(scan|db-restored|db|eval)-")) | select(.size_in_bytes > 10000) | .name' \
               2>/dev/null | head -n 1 || true)
-            if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
+            if [ -n "$ART" ]; then
+              FOUND_RUN="$RID"
+              FOUND_ART="$ART"
+              echo "[prev] HIT: $ART (run $RID)"
+              break
+            fi
           done
-
-          if [ -z "$FOUND_RUN" ]; then
-            for RID in $RUNS; do
-              ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-                --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 10000) | .name' \
-                2>/dev/null | head -n 1 || true)
-              if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
-            done
-          fi
 
           if [ -n "$FOUND_RUN" ]; then
             echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
@@ -531,27 +515,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          echo "[prev] === SEARCHING ALL RUNS (newest first) ==="
           RUNS=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
             --jq '.workflow_runs[] | select(.id != ${{ github.run_id }}) | select(.status=="completed") | .id' \
             2>/dev/null || echo "")
-          FOUND_RUN=""; FOUND_ART=""
+          FOUND_RUN=""
+          FOUND_ART=""
+
           for RID in $RUNS; do
             ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-              --jq '.artifacts[] | select(.name | startswith("db-restored-")) | select(.size_in_bytes > 10000) | .name' \
+              --jq '.artifacts[] | select(.name | test("^(scan|db-restored|db|eval)-")) | select(.size_in_bytes > 10000) | .name' \
               2>/dev/null | head -n 1 || true)
-            if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
+            if [ -n "$ART" ]; then
+              FOUND_RUN="$RID"
+              FOUND_ART="$ART"
+              echo "[prev] HIT: $ART (run $RID)"
+              break
+            fi
           done
-          if [ -z "$FOUND_RUN" ]; then
-            for RID in $RUNS; do
-              ART=$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts" \
-                --jq '.artifacts[] | select(.name | test("^(scan|eval|db)-")) | select(.size_in_bytes > 10000) | .name' \
-                2>/dev/null | head -n 1 || true)
-              if [ -n "$ART" ]; then FOUND_RUN="$RID"; FOUND_ART="$ART"; break; fi
-            done
-          fi
+
           if [ -n "$FOUND_RUN" ]; then
             echo "run=$FOUND_RUN" >> $GITHUB_OUTPUT
             echo "artifact=$FOUND_ART" >> $GITHUB_OUTPUT
+            echo "[prev] Selected: $FOUND_ART (run $FOUND_RUN)"
           fi
 
       - name: Download DB
