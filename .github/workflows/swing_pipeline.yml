@@ -492,6 +492,10 @@ jobs:
         if: ${{ always() }}
         run: python3 scripts/simulate_exits.py 2>&1 | tee -a eval.log
 
+      - name: Analyze Features
+        if: ${{ always() }}
+        run: python3 scripts/analyze_features.py 2>&1 | tee -a eval.log
+
       - name: Upload eval artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
