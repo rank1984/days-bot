@@ -2,14 +2,14 @@ name: DAYS-BOT V5.0.8 Swing Pipeline
 
 on:
   schedule:
-    - cron: '3 9 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '37 16 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '7 17 * * 1-5'
-      timezone: "America/New_York"
-    - cron: '33 17 * * 1-5'
-      timezone: "America/New_York"
+  - cron: '3 9 * * 1-5'
+    timezone: "America/New_York"
+  - cron: '37 16 * * 1-5'
+    timezone: "America/New_York"
+  - cron: '7 17 * * 1-5'
+    timezone: "America/New_York"
+  - cron: '33 17 * * 1-5'
+    timezone: "America/New_York"
   workflow_dispatch:
     inputs:
       mode:
@@ -588,3 +588,14 @@ jobs:
             FROM outcomes WHERE net_r_status='VALID';
           SQL
           }
+
+      - name: Deep Diagnostic Report
+        run: python3 scripts/diagnose_deep.py 2>&1 | tee -a deep_diag.log
+
+      - name: Upload Diagnostic Log
+        uses: actions/upload-artifact@v4
+        with:
+          name: deep-diagnostic-log
+          path: deep_diag.log
+          retention-days: 7
+          if-no-files-found: warn
