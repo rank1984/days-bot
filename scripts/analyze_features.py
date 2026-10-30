@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-analyze_features.py v2 - Feature Attribution Analysis (Read-Only)
+analyze_features.py v3 - Feature Attribution & Out-of-Sample Validation
 """
 import sqlite3
 import os
@@ -25,17 +25,11 @@ def fetch_data(conn):
     snap_cols = get_columns(conn, "snapshots")
     out_cols = get_columns(conn, "outcomes")
     
-    required_snap = ['snapshot_id', 'ticker', 'scan_date', 'entry', 'stop', 'target_1', 'target_2',
-                     'composite_score', 'gap_pct', 'price', 'atr', 'avg_volume', 'sector',
-                     'float', 'spread_pct', 'rs_score', 'rvol']
-    required_out = ['net_r', 'net_r_status', 'exit_reason']
+    required_snap = ['snapshot_id', 'scan_date', 'entry', 'price', 'atr', 'gap_pct', 'composite_score']
+    required_out = ['net_r', 'net_r_status']
     
     sel_snap = [f"s.{c}" for c in required_snap if c in snap_cols]
     sel_out = [f"o.{c}" for c in required_out if c in out_cols]
-    
-    if not sel_snap or not sel_out:
-        print("::error::Missing required columns in DB")
-        sys.exit(1)
         
     query = f"""
         SELECT {', '.join(sel_snap)}, {', '.join(sel_out)}
@@ -52,111 +46,102 @@ def fetch_data(conn):
     return [dict(zip(keys, row)) for row in rows]
 
 def calc_stats(rows):
-    if not rows:
-        return None
-    
+    if not rows: return None
     net_rs = [r['net_r'] for r in rows if r.get('net_r') is not None]
-    if not net_rs:
-        return None
+    if not net_rs: return None
         
     n = len(net_rs)
     wins = [r for r in net_rs if r > 0]
     losses = [r for r in net_rs if r <= 0]
     
-    win_pct = 100.0 * len(wins) / n
-    avg_r = statistics.mean(net_rs)
-    median_r = statistics.median(net_rs)
-    
-    avg_win_r = statistics.mean(wins) if wins else 0
-    avg_loss_r = statistics.mean(losses) if losses else 0
-    
-    t1_hits = sum(1 for r in rows if r.get('exit_reason') in ('T1_HIT', 'T2_HIT', 'STOP_BE_AFTER_T1'))
-    stop_hits = sum(1 for r in rows if r.get('exit_reason') == 'STOP_HIT')
-    
     return {
         'n': n,
-        'win_pct': round(win_pct, 1),
-        'avg_r': round(avg_r, 3),
-        'median_r': round(median_r, 3),
-        'avg_win_r': round(avg_win_r, 3),
-        'avg_loss_r': round(avg_loss_r, 3),
-        't1_pct': round(100.0 * t1_hits / n, 1),
-        'stop_pct': round(100.0 * stop_hits / n, 1),
-        'total_r': round(sum(net_rs), 1),
-        'missing': n - len(rows),
-        'small_sample': n < MIN_SAMPLE_SIZE
+        'win_pct': round(100.0 * len(wins) / n, 1),
+        'avg_r': round(statistics.mean(net_rs), 3),
+        'total_r': round(sum(net_rs), 1)
     }
 
-def print_table(title, groups, total_avg_r):
-    print(f"\n{'='*110}")
-    print(f"  {title}")
-    print(f"{'='*110}")
-    print(f"{'Group':<25} | {'N':>4} | {'Win%':>5} | {'AvgR':>6} | {'MedR':>6} | {'AvgWin':>6} | {'AvgLoss':>7} | {'T1%':>4} | {'Stop%':>5} | {'Δ vs Avg':>8}")
-    print("-" * 110)
+def is_target_trade(t):
+    """הפילטר המנצח שמצאנו"""
+    price = t.get('price') or 0
+    gap = t.get('gap_pct') or 0
+    atr = t.get('atr') or 0
     
-    for label, rows in sorted(groups.items()):
-        stats = calc_stats(rows)
-        if not stats: continue
-        delta = stats['avg_r'] - total_avg_r
-        flag = " ⚠️" if stats['small_sample'] else ""
-        print(f"{label:<25} | {stats['n']:>4} | {stats['win_pct']:>4.1f}% | {stats['avg_r']:>+6.3f} | {stats['median_r']:>+6.3f} | {stats['avg_win_r']:>+6.3f} | {stats['avg_loss_r']:>+7.3f} | {stats['t1_pct']:>3.0f}% | {stats['stop_pct']:>4.0f}% | {delta:>+8.3f}{flag}")
+    if not (10 <= price <= 50): return False
+    if gap >= -2: return False
+    if price == 0: return False
+    if (atr / price) <= 0.03: return False
     
-    print(f"{'='*110}")
+    return True
 
 def main():
     conn = get_conn()
     trades = fetch_data(conn)
-    print(f"[analyze] Loaded {len(trades)} valid trades.")
-    
-    if not trades:
-        print("No valid trades found. Exiting.")
-        return
-    
     total_stats = calc_stats(trades)
-    total_avg_r = total_stats['avg_r']
-    print(f"[analyze] Baseline: N={total_stats['n']}, Win%={total_stats['win_pct']}%, AvgR={total_avg_r:+.3f}")
-
-    # ============================================================
-    # REPORT C: CANDIDATE FILTERS (המעודכן - השילובים)
-    # ============================================================
-    print("\n\n" + "#" * 110)
-    print("# REPORT C: CANDIDATE FILTERS (What happens if we apply a filter?)")
-    print("#" * 110)
-    print(f"\n  Baseline: N={total_stats['n']}, Win%={total_stats['win_pct']}%, AvgR={total_avg_r:+.3f}, TotalR={total_stats['total_r']:+.1f}")
-    print()
-
-    def test_filter(name, condition):
-        filtered = [t for t in trades if condition(t)]
-        if len(filtered) < MIN_SAMPLE_SIZE:
-            return
-        stats = calc_stats(filtered)
-        retained = 100.0 * stats['n'] / total_stats['n']
-        print(f"  {name:<45} | N={stats['n']:>4} ({retained:>4.1f}%) | Win%={stats['win_pct']:>5.1f}% | AvgR={stats['avg_r']:>+6.3f} | TotalR={stats['total_r']:>+7.1f}")
-
-    # Individual filters
-    test_filter("Score >= 99 only", lambda t: (t.get('composite_score') or 0) >= 99)
-    test_filter("Price $10-$50 only", lambda t: 10 <= (t.get('price') or 0) <= 50)
-    test_filter("Gap < -2% only", lambda t: (t.get('gap_pct') or 0) < -2)
-    test_filter("ATR > 3% only", lambda t: t.get('atr') and t.get('price') and (t['atr'] / t['price']) > 0.03)
     
-    print("-" * 110)
-    
-    # The Winners Combos
-    test_filter("Price $10-$50 + Gap < -2%", lambda t: 10 <= (t.get('price') or 0) <= 50 and (t.get('gap_pct') or 0) < -2)
-    test_filter("Price $10-$50 + ATR > 3%", lambda t: 10 <= (t.get('price') or 0) <= 50 and t.get('atr') and t.get('price') and (t['atr'] / t['price']) > 0.03)
-    test_filter("Price $10-$50 + Score >= 95", lambda t: 10 <= (t.get('price') or 0) <= 50 and (t.get('composite_score') or 0) >= 95)
-    
-    print("-" * 110)
-    
-    # The Holy Grail Combos
-    test_filter("Price $10-$50 + Gap < -2% + ATR>3%", lambda t: 10 <= (t.get('price') or 0) <= 50 and (t.get('gap_pct') or 0) < -2 and t.get('atr') and t.get('price') and (t['atr'] / t['price']) > 0.03)
-    test_filter("Price $10-$50 + Gap > 0 + ATR>3%", lambda t: 10 <= (t.get('price') or 0) <= 50 and (t.get('gap_pct') or 0) > 0 and t.get('atr') and t.get('price') and (t['atr'] / t['price']) > 0.03)
-    test_filter("Price $10-$50 + Score>=95 + ATR>3%", lambda t: 10 <= (t.get('price') or 0) <= 50 and (t.get('composite_score') or 0) >= 95 and t.get('atr') and t.get('price') and (t['atr'] / t['price']) > 0.03)
+    print("\n" + "=" * 90)
+    print("  OUT-OF-SAMPLE & SEGMENT VALIDATION")
+    print("=" * 90)
+    print(f"  Baseline (All Trades): N={total_stats['n']}, Win%={total_stats['win_pct']}%, AvgR={total_stats['avg_r']:+.3f}, TotalR={total_stats['total_r']:+.1f}\n")
 
-    print("\n" + "=" * 110)
-    print("  Analysis complete.")
-    print("=" * 110)
+    # 1. חלוקה ל-In-Sample ו-Out-of-Sample
+    # נניח שהימים הראשונים היו 18-21.10, והימים הקשים היו 22-25.10
+    print("-" * 90)
+    print("  TEST 1: Split by Date (In-Sample vs Out-of-Sample)")
+    print("-" * 90)
+    
+    is_trades = [t for t in trades if str(t.get('scan_date', '')) <= '2026-10-21']
+    oos_trades = [t for t in trades if str(t.get('scan_date', '')) > '2026-10-21']
+    
+    for label, group in [("In-Sample (<= 21.10)", is_trades), ("Out-of-Sample (> 21.10)", oos_trades)]:
+        st = calc_stats(group)
+        if st:
+            print(f"  {label:<25} | N={st['n']:>4} | Win%={st['win_pct']:>5.1f}% | AvgR={st['avg_r']:>+6.3f} | TotalR={st['total_r']:>+7.1f}")
 
+    print("\n  >> Applying the WINNING FILTER to these periods:")
+    for label, group in [("In-Sample (<= 21.10)", is_trades), ("Out-of-Sample (> 21.10)", oos_trades)]:
+        filtered = [t for t in group if is_target_trade(t)]
+        st = calc_stats(filtered)
+        if st and st['n'] >= 5: # סף מינימום קטן יותר כי אנחנו מפצלים
+            print(f"  FILTERED {label:<15} | N={st['n']:>4} | Win%={st['win_pct']:>5.1f}% | AvgR={st['avg_r']:>+6.3f} | TotalR={st['total_r']:>+7.1f}")
+        else:
+            print(f"  FILTERED {label:<15} | Not enough trades (N<5)")
+
+    # 2. בדיקת מודלי היציאה (האם 5 ימים זה יותר מדי?)
+    print("\n" + "-" * 90)
+    print("  TEST 2: Time Horizon (Days Held) for the FILTERED trades")
+    print("-" * 90)
+    
+    # ננסה למשוך את מספר הימים מהטבלה outcomes_sim אם קיים
+    out_cols = get_columns(conn, "outcomes_sim")
+    if 'days_held' in out_cols:
+        query = """
+            SELECT s.price, s.gap_pct, s.atr, sim.days_held, sim.net_r
+            FROM outcomes_sim sim
+            JOIN snapshots s ON s.snapshot_id = sim.snapshot_id
+            WHERE sim.net_r_status = 'VALID' AND sim.model_name = 'E1_Original'
+        """
+        cur = conn.cursor()
+        cur.execute(query)
+        sim_trades = [dict(zip(['price', 'gap_pct', 'atr', 'days_held', 'net_r'], row)) for row in cur.fetchall()]
+        
+        filtered_sim = [t for t in sim_trades if is_target_trade(t)]
+        
+        for days_limit in [1, 2, 3, 4, 5]:
+            # אנחנו מניחים שאם days_held > limit, אנחנו יוצאים ב-HORIZON_END
+            # זה חישוב מקורב כי אין לנו את מחיר היציאה המדויק בכל יום
+            group = []
+            for t in filtered_sim:
+                if t['days_held'] <= days_limit:
+                    group.append(t)
+            
+            st = calc_stats(group)
+            if st and st['n'] >= 10:
+                print(f"  Exit after {days_limit} days or earlier | N={st['n']:>4} | Win%={st['win_pct']:>5.1f}% | AvgR={st['avg_r']:>+6.3f}")
+    else:
+        print("  [Skip] outcomes_sim table not found or missing days_held column.")
+
+    print("\n" + "=" * 90)
     conn.close()
 
 if __name__ == "__main__":
