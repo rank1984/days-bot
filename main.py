@@ -2,6 +2,7 @@
 """
 DAYS-BOT V5.0.8 - Main Entry Point
 Fixed: save_snapshot arguments + Top 3 Telegram Alerts
+Added: Dip Filter (Price 10-50, Gap < -2%, ATR > 3%)
 """
 import sys
 import os
@@ -98,32 +99,61 @@ def _safe_score(val):
     return 0.0
 
 # ==============================================================================
+# NEW: DIP FILTER (The Winning Strategy)
+# ==============================================================================
+def _passes_dip_filter(candidate: dict) -> bool:
+    """
+    פילטר ה-Dip המנצח: 
+    קונה רק מניות Mid-Cap (10-50$) שקרסו בפתיחה (Gap < -2%) עם תנודתיות גבוהה (ATR > 3%).
+    """
+    try:
+        price = float(candidate.get('price') or candidate.get('entry') or 0)
+        gap = float(candidate.get('gap_pct') or 0)
+        atr = float(candidate.get('atr') or 0)
+        
+        # תנאי 1: מחיר בין 10 ל-50 דולר
+        if not (10 <= price <= 50):
+            return False
+            
+        # תנאי 2: גאפ שלילי חד (מתחת ל-2%)
+        if gap >= -2.0:
+            return False
+            
+        # תנאי 3: ATR גבוה מ-3% (תנודתיות)
+        if price > 0 and (atr / price) > 0.03:
+            return True
+            
+        return False
+    except Exception:
+        return False
+
+# ==============================================================================
 # TRADE PLAN BUILDER
 # ==============================================================================
 def _build_swing_plan(ticker, price, atr, score, candidate_data):
     MIN_STOP_PCT = 2.0
     MAX_STOP_PCT = 10.0
-    
+
     if not atr or atr <= 0:
         atr = price * 0.03 
-        
+
     stop = min(price - (1.5 * atr), price * (1 - (MIN_STOP_PCT / 100.0)))
     stop_distance_pct = ((price - stop) / price) * 100
-    
+
     if stop_distance_pct > MAX_STOP_PCT:
         return {"plan_valid": False, "plan_error": f"STOP_TOO_WIDE ({stop_distance_pct:.2f}% > {MAX_STOP_PCT}%)"}
     if stop_distance_pct < MIN_STOP_PCT:
         return {"plan_valid": False, "plan_error": f"STOP_TOO_TIGHT ({stop_distance_pct:.2f}% < {MIN_STOP_PCT}%)"}
-        
+
     risk_per_share = price - stop
     target_1 = price + (risk_per_share * 2)
     target_2 = price + (risk_per_share * 4)
-    
+
     account_size = 5000.0
     risk_pct = 0.005 
     max_loss = account_size * risk_pct
     position_size = int(max_loss / risk_per_share) if risk_per_share > 0 else 0
-    
+
     return {
         "plan_valid": True,
         "plan_error": None,
@@ -143,21 +173,22 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
 def run_swing_v1(manual=False):
     now_et = datetime.now(ET)
     scan_id = str(uuid.uuid4())  # Unique ID for this scan session
-    
+
     print("==========================================================================")
     print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'AUTO'}")
     print(f"Scan ID: {scan_id}")
     print("Stop range: 2.0%-10.0% | Min Score: 60")
+    print("Filter: DIP ONLY (Price 10-50, Gap < -2%, ATR > 3%)")
     print("Telegram: max 3 alerts, score >= 95")
     print("==========================================================================")
-    
+
     # 1. Initialize DB
     try:
         init_db()
     except Exception as e:
         print(f"[WARN] init_db failed or skipped: {e}")
-    
+
     # 2. Build Universe
     print("[Main] Building clean dynamic universe...")
     try:
@@ -179,43 +210,52 @@ def run_swing_v1(manual=False):
     if not candidates:
         print("[Main] No candidates found. Exiting.")
         return
-        
+
     print(f"[Main] Analyzing {len(candidates)} swing candidates...")
-    
+
     # 4. Analyze and Save
     snapshots_saved = 0
     valid_alerts = 0
     plan_blocked = 0
+    dip_filter_blocked = 0
     blocked_reasons = {"STOP_TOO_WIDE": 0, "STOP_TOO_TIGHT": 0, "LOW_SCORE": 0}
-    
+
     all_valid_plans = []
-    
+
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
-            
+
         ticker = cand.get('ticker', 'UNKNOWN')
         price = float(cand.get('price', 0) or 0)
         atr = float(cand.get('atr', 0) or 0)
-        
+
         # Safely calculate score
         raw_score = cand.get('score') or cand.get('swing_score') or cand.get('composite_score')
         score = _safe_score(raw_score)
         if score == 0.0:
             raw_calc = calculate_swing_score(cand)
             score = _safe_score(raw_calc)
-            
+
         cand['score'] = score
         cand['composite_score'] = score
-        
+
+        # =====================================================================
+        # APPLY DIP FILTER HERE (Before Plan Building & DB Save)
+        # =====================================================================
+        if not _passes_dip_filter(cand):
+            dip_filter_blocked += 1
+            continue # Skip this candidate completely
+        # =====================================================================
+
         # Build Plan
         plan = _build_swing_plan(ticker, price, atr, score, cand)
         cand.update(plan)
-        
+
         if score < 60:
             cand['plan_valid'] = False
             cand['plan_error'] = "LOW_SCORE"
-            
+
         if cand.get('plan_valid'):
             valid_alerts += 1
             all_valid_plans.append(cand)
@@ -227,22 +267,23 @@ def run_swing_v1(manual=False):
             elif "TIGHT" in err: blocked_reasons["STOP_TOO_TIGHT"] += 1
             elif "SCORE" in err: blocked_reasons["LOW_SCORE"] += 1
             print(f"[SwingScan] ⚠️ {ticker} | Score: {score} | BLOCKED: {err}")
-            
+
         # SAVE TO DB (Passing scan_id and now_et!)
         try:
             save_snapshot(cand, scan_id, now_et)
         except Exception as e:
             print(f"[WARN] Failed to save snapshot for {ticker}: {e}")
-            
+
         snapshots_saved += 1
 
-    print(f"\n[Main] V5.0.8 snapshots saved: {snapshots_saved}\n")
-    
+    print(f"\n[Main] V5.0.8 snapshots saved: {snapshots_saved}")
+    print(f"[Main] Candidates filtered out by Dip Filter: {dip_filter_blocked}\n")
+
     # 5. Send Telegram Alerts (Top 3)
     print("[Main] Selecting Top 3 Alerts to Telegram (score >= 95)...")
-    
+
     top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 95]
-    
+
     top_alerts.sort(
         key=lambda x: (
             x.get('score', 0), 
@@ -251,9 +292,9 @@ def run_swing_v1(manual=False):
         ), 
         reverse=True
     )
-    
+
     top_alerts = top_alerts[:3]
-    
+
     telegram_sent = 0
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         for alert in top_alerts:
@@ -263,7 +304,7 @@ def run_swing_v1(manual=False):
             if success:
                 print(f"[Main]   → {alert['ticker']} (score {alert['score']}) - sent")
                 telegram_sent += 1
-                
+
         if telegram_sent > 0:
             summary_msg = format_swing_summary(
                 candidates_count=len(candidates),
@@ -276,11 +317,12 @@ def run_swing_v1(manual=False):
                 print("[Main]   → Summary sent")
     else:
         print("[Main] No Telegram credentials found. Skipping alerts.")
-    
+
     # 6. Final Summary
     print("\n==========================================================================")
     print("SWING SUMMARY:")
     print(f"  Candidates analyzed:    {len(candidates)}")
+    print(f"  Dip Filter blocked:     {dip_filter_blocked}")
     print(f"  Snapshots saved:        {snapshots_saved}")
     print(f"  Valid alerts (saved):   {valid_alerts}")
     print(f"  Plan blocked:           {plan_blocked}")
@@ -295,7 +337,7 @@ if __name__ == "__main__":
     parser.add_argument("command", nargs="?", default="swing_v1")
     parser.add_argument("--manual", action="store_true")
     args = parser.parse_args()
-    
+
     if args.command == "swing_v1":
         run_swing_v1(manual=args.manual)
     else:
