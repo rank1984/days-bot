@@ -488,6 +488,10 @@ jobs:
           SQL
           } | tee -a eval.log
 
+      - name: Simulate Exit Models
+        if: ${{ always() }}
+        run: python3 scripts/simulate_exits.py 2>&1 | tee -a eval.log
+
       - name: Upload eval artifact
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -592,7 +596,7 @@ jobs:
       - name: Deep Diagnostic Report
         run: python3 scripts/diagnose_deep.py 2>&1 | tee -a deep_diag.log
 
-      - name: Upload Diagnostic Log
+      - name: Upload Deep Diagnostic Log
         uses: actions/upload-artifact@v4
         with:
           name: deep-diagnostic-log
