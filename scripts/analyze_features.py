@@ -3,8 +3,7 @@ import sqlite3
 import os
 import sys
 import statistics
-import yfinance as yf
-import pandas as pd
+from collections import defaultdict
 
 DB_PATH = os.environ.get("DB_PATH", "data/alerts.db")
 
@@ -42,7 +41,6 @@ def is_dip_trade(t):
     return (10 <= price <= 50) and (gap < -2) and (price > 0) and ((atr / price) > 0.03)
 
 def is_momentum_trade(t):
-    # הבוט הקיים - קונה מניות עם גאפ חיובי
     gap = t.get('gap_pct') or 0
     return gap > 0
 
@@ -50,46 +48,46 @@ def main():
     conn = get_conn()
     trades = fetch_data(conn)
     
-    print("Fetching SPY data for market context...")
-    spy = yf.download("SPY", start="2026-10-01", end="2026-11-01", progress=False)
-    if isinstance(spy.columns, pd.MultiIndex):
-        spy.columns = spy.columns.get_level_values(0)
-    spy['SMA20'] = spy['Close'].rolling(window=20).mean()
-    
-    spy_ok_dates = {}
-    for date, row in spy.iterrows():
-        date_str = date.strftime('%Y-%m-%d')
-        if pd.notna(row['SMA20']):
-            spy_ok_dates[date_str] = row['Close'] > row['SMA20']
-        else:
-            spy_ok_dates[date_str] = False
+    # 1. קביעת מצב השוק לכל יום (לפי אחוז המניות עם גאפ שלילי באותו יום)
+    date_gaps = defaultdict(list)
+    for t in trades:
+        date_str = str(t['scan_date'])[:10]
+        date_gaps[date_str].append(t.get('gap_pct') or 0)
+        
+    bear_dates = set()
+    for date, gaps in date_gaps.items():
+        if not gaps: continue
+        neg_gaps = sum(1 for g in gaps if g < 0)
+        pct_neg = neg_gaps / len(gaps)
+        # אם יותר מ-60% מהמניות ירדו - זה יום BEAR
+        if pct_neg > 0.6:
+            bear_dates.add(date)
 
-    # סינון לתקופות
-    bull_trades = [] # SPY > SMA20
-    bear_trades = [] # SPY < SMA20
+    print("\n" + "=" * 90)
+    print("  MARKET REGIME ANALYSIS (Based on % of Negative Gaps)")
+    print("=" * 90)
+    print(f"  Total Trading Days: {len(date_gaps)} | Bear Days (>60% neg gaps): {len(bear_dates)}")
+
+    # 2. חלוקה לתקופות
+    bull_trades = []
+    bear_trades = []
     
     for t in trades:
         date_str = str(t['scan_date'])[:10]
-        if spy_ok_dates.get(date_str, False):
-            bull_trades.append(t)
-        else:
+        if date_str in bear_dates:
             bear_trades.append(t)
+        else:
+            bull_trades.append(t)
 
-    print("\n" + "=" * 90)
-    print("  MARKET REGIME ANALYSIS (Regime Switching Strategy)")
-    print("=" * 90)
-    
-    for label, group in [("BULL Market (SPY > SMA20)", bull_trades), ("BEAR Market (SPY < SMA20)", bear_trades)]:
+    for label, group in [("BULL Market (Normal Days)", bull_trades), ("BEAR Market (Broad Selloff Days)", bear_trades)]:
         print(f"\n--- {label} ---")
         if not group:
             print("  No trades in this regime.")
             continue
             
-        # 1. כל העסקאות
         st_all = calc_stats(group)
-        print(f"  All Trades:      | N={st_all['n']:>4} | Win%={st_all['win_pct']:>5.1f}% | AvgR={st_all['avg_r']:>+6.3f} | TotalR={st_all['total_r']:>+7.1f}")
+        print(f"  All Trades:       | N={st_all['n']:>4} | Win%={st_all['win_pct']:>5.1f}% | AvgR={st_all['avg_r']:>+6.3f} | TotalR={st_all['total_r']:>+7.1f}")
         
-        # 2. רק מומנטום (הבוט הישן)
         mom = [t for t in group if is_momentum_trade(t)]
         st_mom = calc_stats(mom)
         if st_mom:
@@ -97,7 +95,6 @@ def main():
         else:
              print(f"  Momentum (Gap>0): | No trades")
 
-        # 3. רק Dip (הבוט החדש)
         dip = [t for t in group if is_dip_trade(t)]
         st_dip = calc_stats(dip)
         if st_dip:
@@ -106,8 +103,9 @@ def main():
             print(f"  Dip Filter:       | No trades")
 
     print("\n" + "=" * 90)
-    print("  RECOMMENDATION:")
-    print("  If Momentum is better in BULL and Dip is better in BEAR -> WE HAVE A WINNER.")
+    print("  FINAL DECISION:")
+    print("  1. If Dip has positive AvgR in BOTH regimes -> Use Dip everywhere.")
+    print("  2. If Momentum works in BULL and Dip works in BEAR -> Regime Switch.")
     print("=" * 90)
     conn.close()
 
