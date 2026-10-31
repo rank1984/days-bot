@@ -2,16 +2,9 @@ name: DAYS-BOT V5.0.8 Swing Pipeline
 
 on:
   schedule:
-    # ⚠️ חשוב: הזמנים כאן הם UTC. כרגע הם מותאמים לחורף (EST).
-    # אחרי מרץ 2027 (מעבר לשעון קיץ), צריך להוסיף שעה לכל ה-cron.
-    
-    # סריקה בוקרת (אחרי פתיחה) - 09:03 ET
     - cron: '3 14 * * 1-5' 
-    # סריקה אחרי סגירה - 16:37 ET
     - cron: '37 21 * * 1-5'
-    # ריצת גיבוי - 17:07 ET
     - cron: '7 22 * * 1-5'
-    # הערכה (Evaluator) - 17:33 ET
     - cron: '33 22 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -32,9 +25,6 @@ env:
   PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
 
 jobs:
-  # =========================================================================
-  # JOB 1: SCAN (סורק מניות)
-  # =========================================================================
   scan:
     runs-on: ubuntu-latest
     if: |
@@ -57,9 +47,11 @@ jobs:
           path: data/
 
       - name: Run scanner
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 main.py swing_v1 --manual
 
-      # --- תיקון: שמירת ה-DB המעודכן לריצה הבאה ---
       - name: Upload DB for next run
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +60,6 @@ jobs:
           overwrite: true
           retention-days: 90
       
-      # --- שמירת הארטיפקט של הריצה הנוכחית (לגיבוי) ---
       - name: Upload scan artifact
         uses: actions/upload-artifact@v4
         with:
@@ -76,9 +67,6 @@ jobs:
           path: data/alerts.db
           retention-days: 30
 
-  # =========================================================================
-  # JOB 2: EVALUATE (מעריך תוצאות + ניתוח)
-  # =========================================================================
   evaluate:
     runs-on: ubuntu-latest
     if: |
@@ -101,6 +89,9 @@ jobs:
           path: data/
 
       - name: Run evaluator
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 scripts/evaluate_swing.py
 
       - name: Simulate Exit Models
@@ -109,7 +100,6 @@ jobs:
       - name: Analyze Features
         run: python3 scripts/analyze_features.py
 
-      # --- תיקון: שמירת ה-DB המעודכן לריצה הבאה ---
       - name: Upload DB for next run
         uses: actions/upload-artifact@v4
         with:
@@ -118,7 +108,6 @@ jobs:
           overwrite: true
           retention-days: 90
 
-      # --- שמירת הארטיפקט של הריצה הנוכחית (לגיבוי) ---
       - name: Upload eval artifact
         uses: actions/upload-artifact@v4
         with:
@@ -126,9 +115,6 @@ jobs:
           path: data/alerts.db
           retention-days: 30
 
-  # =========================================================================
-  # JOB 3: BACKTEST (בדיקת הפילטר על שנה אחורה)
-  # =========================================================================
   backtest:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backtest'
