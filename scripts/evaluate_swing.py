@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT - Swing Trade Evaluator
-בודק את ביצועי תוכניות ה-Swing שנוצרו ב-DB.
-עובד על בסיס נרות יומיים (Daily Bars) וממתין 5 ימים לפני שמכריע.
+Fixed: Consistent horizon naming, proper day counting.
 """
 import sqlite3
 import pandas as pd
@@ -13,9 +12,7 @@ import os
 
 ET = pytz.timezone("America/New_York")
 DB_PATH = "data/alerts.db"
-
-# כמה ימי מסחר מינימום צריכים לעבור לפני שנחשב את התוצאה
-MIN_DAYS_TO_EVALUATE = 5
+MIN_DAYS_TO_EVALUATE = 7  # שונה ל-7 כדי למנוע הערכה מוקדמת מדי
 
 def evaluate_swing_trades():
     if not os.path.exists(DB_PATH):
@@ -26,7 +23,6 @@ def evaluate_swing_trades():
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
-    # שולף את כל ה-Snapshots שעדיין לא נבדקו ויש להם תוכנית מסחר תקפה
     rows = cur.execute("""
         SELECT s.snapshot_id, s.ticker, s.scan_date, s.entry, s.stop, s.target_1, s.target_2
         FROM snapshots s
@@ -43,7 +39,6 @@ def evaluate_swing_trades():
         return
 
     print(f"Checking {len(rows)} swing trades against current date...")
-    
     today = datetime.now(ET).date()
     evaluated_count = 0
     pending_count = 0
@@ -59,19 +54,17 @@ def evaluate_swing_trades():
         t2 = float(row["target_2"])
         snap_id = row["snapshot_id"]
 
-        # בדיקת גיל העסקה (חייב לעבור 5 ימים)
         scan_date_obj = datetime.strptime(scan_date_str, "%Y-%m-%d").date()
         days_since_scan = (today - scan_date_obj).days
-        
+
         if days_since_scan < MIN_DAYS_TO_EVALUATE:
             print(f"⏳ {ticker:5s} | PENDING — only {days_since_scan} days old (needs {MIN_DAYS_TO_EVALUATE})")
             pending_count += 1
             continue
 
-        # העסקה בשלה להערכה. מושך נתונים למשך 5 ימים מהסריקה
         start_dt = datetime.strptime(scan_date_str, "%Y-%m-%d") + timedelta(days=1)
         end_dt = start_dt + timedelta(days=7)
-        
+
         try:
             df = yf.download(
                 ticker,
@@ -86,54 +79,44 @@ def evaluate_swing_trades():
                 continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            
+
             df = df.dropna()
             if df.empty:
                 continue
 
-            # מחפשים את הפגיעה הראשונה
             exit_reason = "HORIZON_END"
             exit_price = float(df.iloc[-1]['Close'])
-            exit_date = df.index[-1]
             days_held = len(df)
-            
             t1_hit = False
             current_stop = stop
-            
+
             for i, (date, bar) in enumerate(df.iterrows()):
                 high = float(bar['High'])
                 low = float(bar['Low'])
-                
-                # בדיקת סטופ קודם (שמרני)
+
                 if low <= current_stop:
                     if t1_hit:
                         exit_reason = "STOP_BE_AFTER_T1"
                     else:
                         exit_reason = "STOP_HIT"
                     exit_price = current_stop
-                    exit_date = date
                     days_held = i + 1
                     break
-                
-                # בדיקת T1
+
                 if not t1_hit and high >= t1:
                     t1_hit = True
-                    current_stop = entry # מזיזים סטופ ל-Breakeven
-                
-                # בדיקת T2
+                    current_stop = entry 
+
                 if t1_hit and high >= t2:
                     exit_reason = "T2_HIT"
                     exit_price = t2
-                    exit_date = date
                     days_held = i + 1
                     break
-            
-            # חישוב Net R
+
             risk = entry - stop
             reward = exit_price - entry
             gross_r = reward / risk if risk > 0 else 0
-            
-            # הערכת עלויות (ספרד + החלקה, נניח 1% לכל צד עבור שמרנות)
+
             cost_pct = 1.0 / 100.0 
             cost_dollars = entry * cost_pct
             net_r = (reward - cost_dollars) / risk if risk > 0 else 0
@@ -151,13 +134,12 @@ def evaluate_swing_trades():
             total_net_r += net_r
             evaluated_count += 1
 
-            # שמירה ל-DB
             cur.execute("""
                 INSERT INTO outcomes 
                 (snapshot_id, outcome_horizon, t0_price, exit_price, exit_reason, hold_minutes, gross_r, net_r, net_r_status, outcome, exit_rules_version)
-                VALUES (?, 'SWING_3D', ?, ?, ?, ?, ?, ?, 'VALID', ?, 'SWING-E1')
+                VALUES (?, 'SWING_1_3D', ?, ?, ?, ?, ?, ?, 'VALID', ?, 'SWING-E1')
             """, (snap_id, entry, exit_price, exit_reason, days_held * 390, gross_r, net_r, outcome)) 
-            
+
             print(f"✅ {ticker:5s} | {exit_reason:20s} | Net R: {net_r:+.2f} | {outcome}")
 
         except Exception as e:
@@ -165,7 +147,7 @@ def evaluate_swing_trades():
 
     conn.commit()
     conn.close()
-    
+
     print(f"\n--- SWING EVALUATION SUMMARY ---")
     print(f"Evaluated: {evaluated_count} | Pending: {pending_count}")
     if evaluated_count > 0:
