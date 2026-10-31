@@ -3,67 +3,81 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import random
-from datetime import datetime, timedelta
 import sys
-import os
+from datetime import datetime, timedelta
 
-# טעינת רשימת המניות
+# =====================================================================
+# טעינת ה-Universe בדיוק כמו main.py (עם מנגנון הגנה)
+# =====================================================================
 try:
     from scanner.universe import load_universe
 except ImportError:
-    print("Could not load universe.")
-    sys.exit(1)
+    try:
+        from scanner.universe import get_universe as load_universe
+    except ImportError:
+        print("[FATAL] Could not import load_universe from scanner.universe")
+        sys.exit(1)
 
 def check_dip_condition(df, i):
     """בודק אם ביום ה-i התקיימו תנאי הפילטר"""
     row = df.iloc[i]
     
     # תנאי 1: מחיר בין 10 ל-50
-    if not (10 <= row['Close'] <= 50): return False
+    if not (10 <= row['Close'] <= 50): 
+        return False
     
-    # תנאי 2: גאפ שלילי של יותר מ-2% (פתיחה נמוכה מהסגירה הקודמת)
+    # תנאי 2: גאפ שלילי של יותר מ-2%
     prev_close = df.iloc[i-1]['Close']
+    if prev_close == 0: return False
     gap_pct = ((row['Open'] - prev_close) / prev_close) * 100
-    if gap_pct >= -2.0: return False
+    if gap_pct >= -2.0: 
+        return False
     
-    # תנאי 3: ATR (תנודתיות) גבוה - נשתמש בטווח היומי (High-Low) כפרוקסי ל-ATR
-    # ATR אמיתי דורש חישוב של 14 יום. כאן נבדוק אם הטווח היומי הוא מעל 3%
+    # תנאי 3: ATR (תנודתיות) גבוה - טווח יומי מעל 3%
     daily_range = ((row['High'] - row['Low']) / row['Close']) * 100
-    if daily_range < 3.0: return False
+    if daily_range < 3.0: 
+        return False
     
     return True
 
 def simulate_trade(df, i):
     """מדמה עסקה: קונה בפתיחה של יום i, מוכר אחרי 5 ימים או בסטופ"""
     entry = df.iloc[i]['Open']
-    # סטופ של 2% מתחת לכניסה (כמו בבוט)
-    stop = entry * 0.98
+    stop = entry * 0.98 # סטופ של 2%
     
     # בדיקת 5 הימים הבאים
     for j in range(i+1, min(i+6, len(df))):
         day = df.iloc[j]
-        # אם נגע בסטופ
         if day['Low'] <= stop:
             return -1.0 # הפסד של 1R
-        # אם הגיע ליעד T1 (2R)
-        target = entry + (entry - stop) * 2
+        target = entry + (entry - stop) * 2 # יעד T1 (2R)
         if day['High'] >= target:
             return 2.0 # רווח של 2R
     
-    # אם לא הגיע לאף אחד מהם, יוצאים ביום ה-5 לפי מחיר הסגירה
+    # יציאה ביום ה-5
     final_price = df.iloc[min(i+5, len(df)-1)]['Close']
+    if entry == stop: return 0
     r_multiple = (final_price - entry) / (entry - stop)
     return r_multiple
 
 def main():
     print("Loading universe...")
-    universe = load_universe()
+    try:
+        universe = load_universe()
+        print(f"Loaded {len(universe)} tickers from scanner.universe")
+    except Exception as e:
+        print(f"[FATAL] load_universe() crashed: {e}")
+        sys.exit(1)
     
-    # ניקח 100 מניות אקראיות כדי שהריצה תהיה מהירה (אפשר להגדיל ל-500)
+    if not universe:
+        print("[FATAL] Universe is empty. Check scanner/universe.py")
+        sys.exit(1)
+
+    # ניקח 100 מניות אקראיות כדי שהריצה תהיה מהירה
     if len(universe) > 100:
         universe = random.sample(universe, 100)
     
-    print(f"Testing {len(universe)} tickers over the last 1 year...")
+    print(f"Testing {len(universe)} random tickers over the last 1 year...")
     
     end_date = datetime.today()
     start_date = end_date - timedelta(days=365)
@@ -71,21 +85,22 @@ def main():
     results = []
     trades_found = 0
     
-    for ticker in universe:
+    for idx, ticker in enumerate(universe):
+        if idx % 20 == 0:
+            print(f"  Processing ticker {idx+1}/{len(universe)}...")
+            
         try:
-            # הורדת נתונים
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)
             if df.empty or len(df) < 20: continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             
-            # מעבר על כל יום
             for i in range(14, len(df)-5):
                 if check_dip_condition(df, i):
                     r = simulate_trade(df, i)
                     results.append(r)
                     trades_found += 1
-        except Exception as e:
+        except Exception:
             continue
 
     print("\n" + "=" * 80)
@@ -94,6 +109,7 @@ def main():
     
     if not results:
         print("  No trades found matching the filter.")
+        print("  Try relaxing the conditions (e.g. gap < -1%, ATR > 2%)")
         return
 
     n = len(results)
@@ -108,8 +124,10 @@ def main():
     print(f"  Win Rate:           {win_rate:.1f}%")
     print(f"  Avg R per Trade:    {avg_r:+.3f}R")
     print(f"  Total Return:       {total_r:+.1f}R")
-    print(f"  Avg Win:            {np.mean(wins):.2f}R" if wins else "  No wins")
-    print(f"  Avg Loss:           {np.mean(losses):.2f}R" if losses else "  No losses")
+    if wins:
+        print(f"  Avg Win:            {np.mean(wins):.2f}R")
+    if losses:
+        print(f"  Avg Loss:           {np.mean(losses):.2f}R")
     print("=" * 80)
     
     if avg_r > 0.3:
