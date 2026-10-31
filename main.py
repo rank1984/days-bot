@@ -184,6 +184,7 @@ def run_swing_v1(manual=False):
     print(f"Scan ID: {scan_id}")
     print("Stop range: 2.0%-10.0% | Min Score: 60")
     print("Filter: DIP ONLY (Price 10-50, Gap < -2%, ATR > 3%)")
+    print("Telegram: max 3 alerts, score >= 80")
     print("==========================================================================")
 
     # 1. Initialize DB - Force creation if missing
@@ -289,9 +290,9 @@ def run_swing_v1(manual=False):
     print(f"[Main] Candidates filtered out by Dip Filter: {dip_filter_blocked}\n")
 
     # 5. Send Telegram Alerts (Top 3)
-    print("[Main] Selecting Top 3 Alerts to Telegram (score >= 95)...")
+    print("[Main] Selecting Top 3 Alerts to Telegram (score >= 80)...")
 
-    top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 95]
+    top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 80]
 
     top_alerts.sort(
         key=lambda x: (
