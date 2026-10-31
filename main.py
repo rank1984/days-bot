@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DAYS-BOT V5.0.8 - Main Entry Point
-Fixed: save_snapshot arguments + Top 3 Telegram Alerts
+Fixed: DB Initialization (init_snapshot_schema) + save_snapshot arguments + Top 3 Telegram Alerts
 Added: Dip Filter (Price 10-50, Gap < -2%, ATR > 3%)
 """
 import sys
@@ -35,13 +35,17 @@ except ImportError:
     def save_snapshot(cand, scan_id, now_et):
         print(f"[WARN] save_snapshot not found. Skipping DB save for {cand.get('ticker')}")
 
+# --- התיקון הקריטי: טעינת init_snapshot_schema ---
 try:
-    from database.db import init_db
+    from database.snapshot_schema import init_snapshot_schema as init_db
 except ImportError:
     try:
-        from database.snapshot_schema import init_db
+        from database.db import init_db
     except ImportError:
-        def init_db(): pass
+        try:
+            from database.snapshot_schema import init_db
+        except ImportError:
+            def init_db(): pass
 
 # 4. Config & Telegram
 try:
@@ -110,19 +114,19 @@ def _passes_dip_filter(candidate: dict) -> bool:
         price = float(candidate.get('price') or candidate.get('entry') or 0)
         gap = float(candidate.get('gap_pct') or 0)
         atr = float(candidate.get('atr') or 0)
-        
+
         # תנאי 1: מחיר בין 10 ל-50 דולר
         if not (10 <= price <= 50):
             return False
-            
+
         # תנאי 2: גאפ שלילי חד (מתחת ל-2%)
         if gap >= -2.0:
             return False
-            
+
         # תנאי 3: ATR גבוה מ-3% (תנודתיות)
         if price > 0 and (atr / price) > 0.03:
             return True
-            
+
         return False
     except Exception:
         return False
@@ -172,7 +176,7 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
 # ==============================================================================
 def run_swing_v1(manual=False):
     now_et = datetime.now(ET)
-    scan_id = str(uuid.uuid4())  # Unique ID for this scan session
+    scan_id = str(uuid.uuid4())
 
     print("==========================================================================")
     print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
@@ -180,14 +184,17 @@ def run_swing_v1(manual=False):
     print(f"Scan ID: {scan_id}")
     print("Stop range: 2.0%-10.0% | Min Score: 60")
     print("Filter: DIP ONLY (Price 10-50, Gap < -2%, ATR > 3%)")
-    print("Telegram: max 3 alerts, score >= 95")
     print("==========================================================================")
 
-    # 1. Initialize DB
+    # 1. Initialize DB - Force creation if missing
     try:
+        os.makedirs("data", exist_ok=True)
+        print(f"[Main] Initializing DB at data/alerts.db...")
         init_db()
+        print("[Main] DB initialized successfully.")
     except Exception as e:
-        print(f"[WARN] init_db failed or skipped: {e}")
+        print(f"[FATAL] Could not init DB: {e}")
+        return
 
     # 2. Build Universe
     print("[Main] Building clean dynamic universe...")
@@ -268,13 +275,15 @@ def run_swing_v1(manual=False):
             elif "SCORE" in err: blocked_reasons["LOW_SCORE"] += 1
             print(f"[SwingScan] ⚠️ {ticker} | Score: {score} | BLOCKED: {err}")
 
-        # SAVE TO DB (Passing scan_id and now_et!)
+        # SAVE TO DB (Fixed)
         try:
-            save_snapshot(cand, scan_id, now_et)
+            snap_id = save_snapshot(cand, scan_id, now_et)
+            if snap_id:
+                snapshots_saved += 1
+            else:
+                print(f"[WARN] Failed to save snapshot for {ticker} (returned None)")
         except Exception as e:
-            print(f"[WARN] Failed to save snapshot for {ticker}: {e}")
-
-        snapshots_saved += 1
+            print(f"[WARN] Exception while saving snapshot for {ticker}: {e}")
 
     print(f"\n[Main] V5.0.8 snapshots saved: {snapshots_saved}")
     print(f"[Main] Candidates filtered out by Dip Filter: {dip_filter_blocked}\n")
