@@ -1,10 +1,14 @@
-name: DAYS-BOT V5.0.8 Swing Pipeline
+name: DAYS-BOT V5.0.9 Swing Pipeline
 
 on:
   schedule:
-    - cron: '3 14 * * 1-5' 
+    # בדיקת מאקרו בוקר - 09:37 ET (14:37 UTC בחורף)
+    - cron: '37 14 * * 1-5' 
+    # סריקה אחרי סגירה - 16:37 ET (21:37 UTC בחורף)
     - cron: '37 21 * * 1-5'
+    # ריצת גיבוי - 17:07 ET (22:07 UTC בחורף)
     - cron: '7 22 * * 1-5'
+    # הערכה - 17:33 ET (22:33 UTC בחורף)
     - cron: '33 22 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -18,8 +22,8 @@ on:
           - evaluate
           - both
           - backtest
+          - macro
 
-# מונע משתי ריצות לרוץ במקביל על אותו DB
 concurrency:
   group: days-bot-pipeline
   cancel-in-progress: false
@@ -30,10 +34,57 @@ env:
   PYTHONWARNINGS: "ignore::DeprecationWarning,ignore::FutureWarning"
 
 jobs:
+  # =========================================================================
+  # JOB 0: MACRO (בודק SPY בבוקר - לא שולח התראות)
+  # =========================================================================
+  macro:
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'schedule' && github.event.schedule == '37 14 * * 1-5') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'macro')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Restore DB
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, name: 'db-restored-latest'
+            });
+            const latest = artifacts.data.artifacts[0];
+            if (!latest) { console.log('No previous DB artifact found.'); return; }
+            const dl = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner, repo: context.repo.repo,
+              artifact_id: latest.id, archive_format: 'zip'
+            });
+            require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
+            require('child_process').execSync('unzip -o db.zip -d data/');
+
+      - name: Check Macro
+        run: python3 scripts/check_macro.py
+
+      - name: Upload DB for next run
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-restored-latest
+          path: data/alerts.db
+          overwrite: true
+          retention-days: 90
+
+  # =========================================================================
+  # JOB 1: SCAN (סורק מניות - רק אם המאקרו BULLISH)
+  # =========================================================================
   scan:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'schedule' && (github.event.schedule == '3 14 * * 1-5' || github.event.schedule == '37 21 * * 1-5' || github.event.schedule == '7 22 * * 1-5')) ||
+      (github.event_name == 'schedule' && (github.event.schedule == '37 21 * * 1-5' || github.event.schedule == '7 22 * * 1-5')) ||
       (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both'))
     steps:
       - uses: actions/checkout@v4
@@ -44,31 +95,21 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # --- שחזור ה-DB האחרון באמצעות GitHub API ---
-      - name: Restore DB from latest artifact
+      - name: Restore DB
         uses: actions/github-script@v7
         with:
           script: |
             const artifacts = await github.rest.actions.listArtifactsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'db-restored-latest'
+              owner: context.repo.owner, repo: context.repo.repo, name: 'db-restored-latest'
             });
             const latest = artifacts.data.artifacts[0];
-            if (!latest) {
-              console.log('No previous DB artifact found. Starting fresh.');
-              return;
-            }
-            const download = await github.rest.actions.downloadArtifact({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              artifact_id: latest.id,
-              archive_format: 'zip'
+            if (!latest) { console.log('No previous DB artifact found.'); return; }
+            const dl = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner, repo: context.repo.repo,
+              artifact_id: latest.id, archive_format: 'zip'
             });
-            const fs = require('fs');
-            fs.writeFileSync('db.zip', Buffer.from(download.data));
+            require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
-            console.log(`Restored DB from artifact ${latest.id}`);
 
       - name: Run scanner
         env:
@@ -91,9 +132,11 @@ jobs:
           path: data/alerts.db
           retention-days: 30
 
+  # =========================================================================
+  # JOB 2: EVALUATE (מעריך תוצאות)
+  # =========================================================================
   evaluate:
     runs-on: ubuntu-latest
-    # תלוי ב-scan, אבל מאפשר ריצה גם אם scan דולג (ריצה ידנית)
     if: |
       always() && 
       (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'evaluate' || github.event.inputs.mode == 'both')) ||
@@ -108,30 +151,21 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      - name: Restore DB from latest artifact
+      - name: Restore DB
         uses: actions/github-script@v7
         with:
           script: |
             const artifacts = await github.rest.actions.listArtifactsForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'db-restored-latest'
+              owner: context.repo.owner, repo: context.repo.repo, name: 'db-restored-latest'
             });
             const latest = artifacts.data.artifacts[0];
-            if (!latest) {
-              console.log('No previous DB artifact found.');
-              return;
-            }
-            const download = await github.rest.actions.downloadArtifact({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              artifact_id: latest.id,
-              archive_format: 'zip'
+            if (!latest) { console.log('No previous DB artifact found.'); return; }
+            const dl = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner, repo: context.repo.repo,
+              artifact_id: latest.id, archive_format: 'zip'
             });
-            const fs = require('fs');
-            fs.writeFileSync('db.zip', Buffer.from(download.data));
+            require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
-            console.log(`Restored DB from artifact ${latest.id}`);
 
       - name: Run evaluator
         env:
@@ -160,6 +194,9 @@ jobs:
           path: data/alerts.db
           retention-days: 30
 
+  # =========================================================================
+  # JOB 3: BACKTEST (בדיקה היסטורית)
+  # =========================================================================
   backtest:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'backtest'
