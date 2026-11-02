@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
+"""
+backtest_dip_filter.py V2 - Regime-Aware Backtest
+Tests the Dip Filter under 3 macro regimes:
+  - BULLISH: SPY > SMA20 AND SPY > SMA50
+  - NEUTRAL: SPY between SMA50 and SMA20 (or within ±1.5% of SMA20)
+  - BEARISH: SPY < SMA50 (or >2.5% below SMA20)
+"""
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-# רשימה עצמאית של 100 מניות גדולות (S&P 100) - לא תלויה בקבצים שלך
+# רשימת 100 מניות גדולות (S&P 100)
 TICKERS = [
     "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK-B", "UNH", "XOM",
     "JNJ", "JPM", "V", "PG", "MA", "HD", "CVX", "MRK", "ABBV", "LLY",
@@ -13,10 +20,58 @@ TICKERS = [
     "BMY", "UPS", "RTX", "QCOM", "HON", "T", "LOW", "INTU", "SPGI", "CAT",
     "GS", "ELV", "DE", "BLK", "AXP", "BKNG", "PLD", "MDT", "SYK", "GILD",
     "ADI", "MMC", "VRTX", "C", "LMT", "ADP", "CB", "SBUX", "CI", "MO",
-    "NOW", "ZTS", "PGR", "SCHW", "SO", "DUK", "BMY", "REGN", "VRTX", "BSX",
-    "ETN", "ITW", "AON", "MDLZ", "CL", "CME", "EQIX", "SNPS", "CDNS", "KLAC",
+    "NOW", "ZTS", "PGR", "SCHW", "SO", "DUK", "REGN", "BSX", "ETN", "ITW",
+    "AON", "MDLZ", "CL", "CME", "EQIX", "SNPS", "CDNS", "KLAC",
     "LRCX", "PANW", "MU", "FTNT", "MRNA", "PYPL", "ADSK", "WDAY", "ROP", "APH"
 ]
+
+def get_market_regime():
+    """
+    מוריד נתוני SPY ומחזיר מילון של {date: regime}
+    """
+    print("[Regime] Fetching SPY data...")
+    spy = yf.download("SPY", period="1y", interval="1d", progress=False, auto_adjust=False)
+    if spy.empty:
+        print("[Regime] ERROR: Could not fetch SPY data.")
+        return {}
+
+    if isinstance(spy.columns, pd.MultiIndex):
+        spy.columns = spy.columns.get_level_values(0)
+
+    spy['SMA20'] = spy['Close'].rolling(window=20).mean()
+    spy['SMA50'] = spy['Close'].rolling(window=50).mean()
+
+    regimes = {}
+    for date, row in spy.iterrows():
+        if pd.isna(row['SMA20']) or pd.isna(row['SMA50']):
+            continue
+
+        date_str = date.strftime("%Y-%m-%d")
+        price = row['Close']
+        sma20 = row['SMA20']
+        sma50 = row['SMA50']
+
+        # חישוב מרחק מה-SMA20 באחוזים
+        dist_from_sma20_pct = ((price - sma20) / sma20) * 100
+
+        # הגדרת מצב
+        if price > sma20 and price > sma50:
+            regime = "BULLISH"
+        elif price < sma50 or dist_from_sma20_pct < -2.5:
+            regime = "BEARISH"
+        elif abs(dist_from_sma20_pct) <= 1.5:
+            regime = "NEUTRAL"
+        else:
+            regime = "NEUTRAL"  # בין SMA50 ל-SMA20
+
+        regimes[date_str] = regime
+
+    print(f"[Regime] Calculated regimes for {len(regimes)} days.")
+    bull = sum(1 for r in regimes.values() if r == "BULLISH")
+    neut = sum(1 for r in regimes.values() if r == "NEUTRAL")
+    bear = sum(1 for r in regimes.values() if r == "BEARISH")
+    print(f"[Regime] Distribution: BULLISH={bull} | NEUTRAL={neut} | BEARISH={bear}")
+    return regimes
 
 def check_dip_condition(df, i):
     row = df.iloc[i]
@@ -48,63 +103,96 @@ def simulate_trade(df, i):
     return r_multiple
 
 def main():
-    print(f"Testing {len(TICKERS)} large-cap tickers over the last 1 year...")
-    
+    # 1. טוען מצבי שוק
+    regimes = get_market_regime()
+    if not regimes:
+        print("Cannot proceed without market regime data.")
+        return
+
+    print(f"\nTesting {len(TICKERS)} tickers over the last 1 year...")
     end_date = datetime.today()
     start_date = end_date - timedelta(days=365)
-    
-    results = []
-    
+
+    # 2. מריץ את הפילטר
+    results_by_regime = {
+        "BULLISH": [],
+        "NEUTRAL": [],
+        "BEARISH": []
+    }
+    skipped_no_regime = 0
+
     for idx, ticker in enumerate(TICKERS):
         if idx % 20 == 0:
             print(f"  Processing ticker {idx+1}/{len(TICKERS)}...")
-            
+
         try:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)
             if df.empty or len(df) < 20: continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-            
+
             for i in range(14, len(df)-5):
-                if check_dip_condition(df, i):
-                    r = simulate_trade(df, i)
-                    results.append(r)
-        except Exception:
+                if not check_dip_condition(df, i):
+                    continue
+
+                # --- בדיקת מצב שוק לאותו יום ---
+                trade_date = df.index[i].strftime("%Y-%m-%d")
+                if trade_date not in regimes:
+                    skipped_no_regime += 1
+                    continue
+
+                regime = regimes[trade_date]
+                r = simulate_trade(df, i)
+                results_by_regime[regime].append(r)
+
+        except Exception as e:
             continue
 
-    print("\n" + "=" * 80)
-    print("  BACKTEST RESULTS: DIP FILTER (1 Year, 100 Large-Caps)")
-    print("=" * 80)
-    
-    if not results:
-        print("  No trades found matching the filter.")
-        print("  Try relaxing the conditions (e.g. gap < -1%, ATR > 2%)")
-        return
+    # 3. מדפיס תוצאות
+    print("\n" + "=" * 90)
+    print("  REGIME-AWARE BACKTEST RESULTS")
+    print("=" * 90)
+    print(f"{'Regime':<12} | {'N':>4} | {'Win%':>6} | {'Avg R':>7} | {'Total R':>8} | {'Avg Win':>8} | {'Avg Loss':>9}")
+    print("-" * 90)
 
-    n = len(results)
-    wins = [r for r in results if r > 0]
-    losses = [r for r in results if r <= 0]
-    
-    win_rate = (len(wins) / n) * 100
-    avg_r = np.mean(results)
-    total_r = np.sum(results)
-    
-    print(f"  Total Trades Found: {n}")
-    print(f"  Win Rate:           {win_rate:.1f}%")
-    print(f"  Avg R per Trade:    {avg_r:+.3f}R")
-    print(f"  Total Return:       {total_r:+.1f}R")
-    if wins:
-        print(f"  Avg Win:            {np.mean(wins):.2f}R")
-    if losses:
-        print(f"  Avg Loss:           {np.mean(losses):.2f}R")
-    print("=" * 80)
-    
-    if avg_r > 0.3:
-        print("  ✅ VERDICT: The Edge is REAL. Ready for live money.")
-    elif avg_r > 0:
-        print("  ⚠️ VERDICT: Marginal Edge. Need more data or tighter filter.")
-    else:
-        print("  ❌ VERDICT: Filter failed on historical data. Do NOT trade live.")
+    for regime in ["BULLISH", "NEUTRAL", "BEARISH"]:
+        results = results_by_regime[regime]
+        if not results:
+            print(f"{regime:<12} | {0:>4} | {'N/A':>6} | {'N/A':>7} | {'N/A':>8} | {'N/A':>8} | {'N/A':>9}")
+            continue
+
+        n = len(results)
+        wins = [r for r in results if r > 0]
+        losses = [r for r in results if r <= 0]
+        win_rate = 100.0 * len(wins) / n
+        avg_r = np.mean(results)
+        total_r = np.sum(results)
+        avg_win = np.mean(wins) if wins else 0
+        avg_loss = np.mean(losses) if losses else 0
+
+        print(f"{regime:<12} | {n:>4} | {win_rate:>5.1f}% | {avg_r:>+7.3f} | {total_r:>+8.1f} | {avg_win:>+8.2f} | {avg_loss:>+9.2f}")
+
+    print("-" * 90)
+
+    # 4. סיכום
+    print("\n=== VERDICT ===")
+    bull = results_by_regime["BULLISH"]
+    neut = results_by_regime["NEUTRAL"]
+    bear = results_by_regime["BEARISH"]
+
+    if bull:
+        print(f"BULLISH: {len(bull)} trades, AvgR = {np.mean(bull):+.3f}")
+    if neut:
+        print(f"NEUTRAL: {len(neut)} trades, AvgR = {np.mean(neut):+.3f}")
+    if bear:
+        print(f"BEARISH: {len(bear)} trades, AvgR = {np.mean(bear):+.3f}")
+
+    print("\nRECOMMENDATION:")
+    print("  - If BULLISH AvgR > 1.0 → Keep strict filter (current strategy).")
+    print("  - If NEUTRAL AvgR > 0.5 → Consider adding NEUTRAL mode in future.")
+    print("  - If NEUTRAL AvgR <= 0  → Do NOT add NEUTRAL. Strict is better.")
+    print("  - If BEARISH AvgR > 0 → Reconsider the macro filter entirely.")
+    print("=" * 90)
 
 if __name__ == "__main__":
     main()
