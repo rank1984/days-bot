@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT V5.0.8 - Main Entry Point
-Fixed: DB Initialization (init_snapshot_schema) + save_snapshot arguments + Top 3 Telegram Alerts
-Added: Dip Filter (Price 10-50, Gap < -2%, ATR > 3%)
+DAYS-BOT V5.0.9 - Main Entry Point
+Added: Macro Filter (SPY > SMA20) - Protects against broad market selloffs.
 """
 import sys
 import os
@@ -10,12 +9,13 @@ import argparse
 import uuid
 from datetime import datetime
 import pytz
+import yfinance as yf
+import pandas as pd
 
 # ==============================================================================
 # IMPORTS
 # ==============================================================================
 
-# 1. Universe Loader
 try:
     from scanner.universe import load_universe
 except ImportError:
@@ -25,17 +25,14 @@ except ImportError:
         print("[WARN] load_universe not found. Will pass empty list.")
         def load_universe(): return []
 
-# 2. Discovery Engine
 from scanner.swing_discovery import run_swing_discovery
 
-# 3. Database (Defensive)
 try:
     from database.snapshot_schema import save_snapshot
 except ImportError:
     def save_snapshot(cand, scan_id, now_et):
         print(f"[WARN] save_snapshot not found. Skipping DB save for {cand.get('ticker')}")
 
-# --- התיקון הקריטי: טעינת init_snapshot_schema ---
 try:
     from database.snapshot_schema import init_snapshot_schema as init_db
 except ImportError:
@@ -47,7 +44,6 @@ except ImportError:
         except ImportError:
             def init_db(): pass
 
-# 4. Config & Telegram
 try:
     from utils.config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 except ImportError:
@@ -62,7 +58,6 @@ except ImportError:
     def format_swing_alert(a): return ""
     def format_swing_summary(c, v, b, s): return ""
 
-# Optional: Calculate score
 try:
     from scanner.swing_engine import calculate_swing_score
 except ImportError:
@@ -72,7 +67,45 @@ except ImportError:
 ET = pytz.timezone("America/New_York")
 
 # ==============================================================================
-# HELPERS (Safe extraction for Dict/List/Int)
+# MACRO FILTER (NEW)
+# ==============================================================================
+def check_macro_environment():
+    """
+    בודק אם השוק הכללי (SPY) נמצא מעל הממוצע הנע ל-20 יום.
+    מחזיר: (is_bullish, spy_price, sma20)
+    """
+    print("[Macro] Checking market regime (SPY vs SMA20)...")
+    try:
+        # מורידים 40 יום כדי להבטיח שיש מספיק נתונים ל-SMA20
+        spy = yf.download("SPY", period="40d", interval="1d", progress=False, auto_adjust=False)
+        
+        if isinstance(spy.columns, pd.MultiIndex):
+            spy.columns = spy.columns.get_level_values(0)
+            
+        if spy.empty or len(spy) < 20:
+            print("[Macro] WARNING: Could not fetch enough SPY data. Defaulting to SAFE (no trades).")
+            return False, 0.0, 0.0
+
+        spy['SMA20'] = spy['Close'].rolling(window=20).mean()
+        last_row = spy.iloc[-1]
+        current_price = float(last_row['Close'])
+        sma20 = float(last_row['SMA20'])
+
+        if pd.isna(sma20):
+            return False, current_price, 0.0
+
+        is_bullish = current_price > sma20
+        status = "BULLISH ✅" if is_bullish else "BEARISH ❌"
+        
+        print(f"[Macro] SPY: ${current_price:.2f} | SMA20: ${sma20:.2f} | Status: {status}")
+        return is_bullish, current_price, sma20
+
+    except Exception as e:
+        print(f"[Macro] ERROR: {e}. Defaulting to SAFE (no trades).")
+        return False, 0.0, 0.0
+
+# ==============================================================================
+# HELPERS
 # ==============================================================================
 def _extract_candidates(result):
     if isinstance(result, list):
@@ -102,31 +135,18 @@ def _safe_score(val):
             return 0.0
     return 0.0
 
-# ==============================================================================
-# NEW: DIP FILTER (The Winning Strategy)
-# ==============================================================================
 def _passes_dip_filter(candidate: dict) -> bool:
-    """
-    פילטר ה-Dip המנצח: 
-    קונה רק מניות Mid-Cap (10-50$) שקרסו בפתיחה (Gap < -2%) עם תנודתיות גבוהה (ATR > 3%).
-    """
     try:
         price = float(candidate.get('price') or candidate.get('entry') or 0)
         gap = float(candidate.get('gap_pct') or 0)
         atr = float(candidate.get('atr') or 0)
 
-        # תנאי 1: מחיר בין 10 ל-50 דולר
         if not (10 <= price <= 50):
             return False
-
-        # תנאי 2: גאפ שלילי חד (מתחת ל-2%)
         if gap >= -2.0:
             return False
-
-        # תנאי 3: ATR גבוה מ-3% (תנודתיות)
         if price > 0 and (atr / price) > 0.03:
             return True
-
         return False
     except Exception:
         return False
@@ -179,15 +199,24 @@ def run_swing_v1(manual=False):
     scan_id = str(uuid.uuid4())
 
     print("==========================================================================")
-    print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.8")
+    print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.9")
     print(f"Date: {now_et.strftime('%Y-%m-%d')} | Mode: {'MANUAL' if manual else 'AUTO'}")
     print(f"Scan ID: {scan_id}")
     print("Stop range: 2.0%-10.0% | Min Score: 60")
-    print("Filter: DIP ONLY (Price 10-50, Gap < -2%, ATR > 3%)")
+    print("Filters: DIP (10-50$, Gap<-2%, ATR>3%) + MACRO (SPY > SMA20)")
     print("Telegram: max 3 alerts, score >= 80")
     print("==========================================================================")
 
-    # 1. Initialize DB - Force creation if missing
+    # 1. MACRO FILTER CHECK (NEW - before everything else)
+    is_bullish, spy_price, sma20 = check_macro_environment()
+    
+    if not is_bullish:
+        print("\n⚠️ MACRO FILTER: Market is BEARISH (SPY below SMA20).")
+        print("⚠️ Skipping scan to protect capital. No trades today.")
+        print("==========================================================================")
+        return
+
+    # 2. Initialize DB
     try:
         os.makedirs("data", exist_ok=True)
         print(f"[Main] Initializing DB at data/alerts.db...")
@@ -197,7 +226,7 @@ def run_swing_v1(manual=False):
         print(f"[FATAL] Could not init DB: {e}")
         return
 
-    # 2. Build Universe
+    # 3. Build Universe
     print("[Main] Building clean dynamic universe...")
     try:
         universe = load_universe()
@@ -206,7 +235,7 @@ def run_swing_v1(manual=False):
         print(f"[FATAL] Could not build universe: {e}")
         return
 
-    # 3. Discovery
+    # 4. Discovery
     print(f"[Main] Starting Swing Discovery on {len(universe)} symbols...")
     try:
         raw_result = run_swing_discovery(universe)
@@ -221,7 +250,7 @@ def run_swing_v1(manual=False):
 
     print(f"[Main] Analyzing {len(candidates)} swing candidates...")
 
-    # 4. Analyze and Save
+    # 5. Analyze and Save
     snapshots_saved = 0
     valid_alerts = 0
     plan_blocked = 0
@@ -238,7 +267,6 @@ def run_swing_v1(manual=False):
         price = float(cand.get('price', 0) or 0)
         atr = float(cand.get('atr', 0) or 0)
 
-        # Safely calculate score
         raw_score = cand.get('score') or cand.get('swing_score') or cand.get('composite_score')
         score = _safe_score(raw_score)
         if score == 0.0:
@@ -248,13 +276,10 @@ def run_swing_v1(manual=False):
         cand['score'] = score
         cand['composite_score'] = score
 
-        # =====================================================================
-        # APPLY DIP FILTER HERE (Before Plan Building & DB Save)
-        # =====================================================================
+        # DIP FILTER
         if not _passes_dip_filter(cand):
             dip_filter_blocked += 1
-            continue # Skip this candidate completely
-        # =====================================================================
+            continue
 
         # Build Plan
         plan = _build_swing_plan(ticker, price, atr, score, cand)
@@ -276,33 +301,23 @@ def run_swing_v1(manual=False):
             elif "SCORE" in err: blocked_reasons["LOW_SCORE"] += 1
             print(f"[SwingScan] ⚠️ {ticker} | Score: {score} | BLOCKED: {err}")
 
-        # SAVE TO DB (Fixed)
+        # SAVE TO DB
         try:
             snap_id = save_snapshot(cand, scan_id, now_et)
             if snap_id:
                 snapshots_saved += 1
             else:
-                print(f"[WARN] Failed to save snapshot for {ticker} (returned None)")
+                print(f"[WARN] Failed to save snapshot for {ticker}")
         except Exception as e:
             print(f"[WARN] Exception while saving snapshot for {ticker}: {e}")
 
-    print(f"\n[Main] V5.0.8 snapshots saved: {snapshots_saved}")
+    print(f"\n[Main] V5.0.9 snapshots saved: {snapshots_saved}")
     print(f"[Main] Candidates filtered out by Dip Filter: {dip_filter_blocked}\n")
 
-    # 5. Send Telegram Alerts (Top 3)
+    # 6. Send Telegram Alerts
     print("[Main] Selecting Top 3 Alerts to Telegram (score >= 80)...")
-
     top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 80]
-
-    top_alerts.sort(
-        key=lambda x: (
-            x.get('score', 0), 
-            _safe_score(x.get('rvol', 0)), 
-            _safe_score(x.get('atr', 0))
-        ), 
-        reverse=True
-    )
-
+    top_alerts.sort(key=lambda x: (x.get('score', 0), _safe_score(x.get('rvol', 0)), _safe_score(x.get('atr', 0))), reverse=True)
     top_alerts = top_alerts[:3]
 
     telegram_sent = 0
@@ -328,17 +343,16 @@ def run_swing_v1(manual=False):
     else:
         print("[Main] No Telegram credentials found. Skipping alerts.")
 
-    # 6. Final Summary
+    # 7. Final Summary
     print("\n==========================================================================")
     print("SWING SUMMARY:")
+    print(f"  Macro Status:           {'BULLISH ✅' if is_bullish else 'BEARISH ❌'}")
+    print(f"  SPY: ${spy_price:.2f} | SMA20: ${sma20:.2f}")
     print(f"  Candidates analyzed:    {len(candidates)}")
     print(f"  Dip Filter blocked:     {dip_filter_blocked}")
     print(f"  Snapshots saved:        {snapshots_saved}")
     print(f"  Valid alerts (saved):   {valid_alerts}")
     print(f"  Plan blocked:           {plan_blocked}")
-    print(f"    - Stop too tight:     {blocked_reasons['STOP_TOO_TIGHT']}")
-    print(f"    - Stop too wide:      {blocked_reasons['STOP_TOO_WIDE']}")
-    print(f"    - Other (low score):  {blocked_reasons['LOW_SCORE']}")
     print(f"  Telegram sent:          {telegram_sent}")
     print("==========================================================================")
 
