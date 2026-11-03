@@ -2,13 +2,11 @@ name: DAYS-BOT V5.0.9 Swing Pipeline
 
 on:
   schedule:
-    # בדיקת מאקרו בוקר - 09:37 ET (14:37 UTC בחורף)
+    # Macro (בוקר) - 09:37 ET (14:37 UTC בחורף)
     - cron: '37 14 * * 1-5' 
-    # סריקה אחרי סגירה - 16:37 ET (21:37 UTC בחורף)
+    # Scan (אחרי סגירה) - 16:37 ET (21:37 UTC בחורף)
     - cron: '37 21 * * 1-5'
-    # ריצת גיבוי - 17:07 ET (22:07 UTC בחורף)
-    - cron: '7 22 * * 1-5'
-    # הערכה - 17:33 ET (22:33 UTC בחורף)
+    # Evaluate - 17:33 ET (22:33 UTC בחורף)
     - cron: '33 22 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -24,6 +22,10 @@ on:
           - backtest
           - macro
 
+permissions:
+  actions: read
+  contents: read
+
 concurrency:
   group: days-bot-pipeline
   cancel-in-progress: false
@@ -35,7 +37,7 @@ env:
 
 jobs:
   # =========================================================================
-  # JOB 0: MACRO (בודק SPY בבוקר - לא שולח התראות)
+  # JOB 0: MACRO (בוקר בלבד)
   # =========================================================================
   macro:
     runs-on: ubuntu-latest
@@ -56,9 +58,12 @@ jobs:
         with:
           script: |
             const artifacts = await github.rest.actions.listArtifactsForRepo({
-              owner: context.repo.owner, repo: context.repo.repo, name: 'db-restored-latest'
+              owner: context.repo.owner, repo: context.repo.repo
             });
-            const latest = artifacts.data.artifacts[0];
+            const filtered = artifacts.data.artifacts
+              .filter(a => a.name === 'db-restored-latest' && !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const latest = filtered[0];
             if (!latest) { console.log('No previous DB artifact found.'); return; }
             const dl = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -79,12 +84,12 @@ jobs:
           retention-days: 90
 
   # =========================================================================
-  # JOB 1: SCAN (סורק מניות - רק אם המאקרו BULLISH)
+  # JOB 1: SCAN (אחרי סגירה - כולל רענון מאקרו)
   # =========================================================================
   scan:
     runs-on: ubuntu-latest
     if: |
-      (github.event_name == 'schedule' && (github.event.schedule == '37 21 * * 1-5' || github.event.schedule == '7 22 * * 1-5')) ||
+      (github.event_name == 'schedule' && github.event.schedule == '37 21 * * 1-5') ||
       (github.event_name == 'workflow_dispatch' && (github.event.inputs.mode == 'scan' || github.event.inputs.mode == 'both'))
     steps:
       - uses: actions/checkout@v4
@@ -100,9 +105,12 @@ jobs:
         with:
           script: |
             const artifacts = await github.rest.actions.listArtifactsForRepo({
-              owner: context.repo.owner, repo: context.repo.repo, name: 'db-restored-latest'
+              owner: context.repo.owner, repo: context.repo.repo
             });
-            const latest = artifacts.data.artifacts[0];
+            const filtered = artifacts.data.artifacts
+              .filter(a => a.name === 'db-restored-latest' && !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const latest = filtered[0];
             if (!latest) { console.log('No previous DB artifact found.'); return; }
             const dl = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -110,6 +118,10 @@ jobs:
             });
             require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
+
+      # --- תיקון: רענון מאקרו לפני הסריקה ---
+      - name: Refresh Macro
+        run: python3 scripts/check_macro.py
 
       - name: Run scanner
         env:
@@ -133,7 +145,7 @@ jobs:
           retention-days: 30
 
   # =========================================================================
-  # JOB 2: EVALUATE (מעריך תוצאות)
+  # JOB 2: EVALUATE (לילה)
   # =========================================================================
   evaluate:
     runs-on: ubuntu-latest
@@ -156,9 +168,12 @@ jobs:
         with:
           script: |
             const artifacts = await github.rest.actions.listArtifactsForRepo({
-              owner: context.repo.owner, repo: context.repo.repo, name: 'db-restored-latest'
+              owner: context.repo.owner, repo: context.repo.repo
             });
-            const latest = artifacts.data.artifacts[0];
+            const filtered = artifacts.data.artifacts
+              .filter(a => a.name === 'db-restored-latest' && !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const latest = filtered[0];
             if (!latest) { console.log('No previous DB artifact found.'); return; }
             const dl = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner, repo: context.repo.repo,
@@ -195,7 +210,7 @@ jobs:
           retention-days: 30
 
   # =========================================================================
-  # JOB 3: BACKTEST (בדיקה היסטורית)
+  # JOB 3: BACKTEST
   # =========================================================================
   backtest:
     runs-on: ubuntu-latest
