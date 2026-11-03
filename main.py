@@ -68,7 +68,7 @@ except ImportError:
 
 ET = pytz.timezone("America/New_York")
 DB_PATH = os.environ.get("DB_PATH", "data/alerts.db")
-MAX_MACRO_AGE_MINUTES = 60
+MAX_MACRO_AGE_MINUTES = 600
 
 # ==============================================================================
 # HELPERS
