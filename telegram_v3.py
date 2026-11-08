@@ -2,6 +2,7 @@
 telegram_v3.py – V5.0.5.2 Telegram Formatter
 FIX: Lesson shows Observations instead of Recommendations
 UPDATE: Added compact format_swing_alert and format_swing_summary for Top 3 alerts
+FIX: Robust score parsing to prevent empty messages
 """
 import requests
 from datetime import datetime
@@ -56,22 +57,30 @@ def _fmt_num(value, default=0.0):
 def format_swing_alert(alert: dict) -> str:
     """Formats the top swing alert for Telegram (Compact version)."""
     ticker = alert.get('ticker', 'UNKNOWN')
-    score = alert.get('score', 0)
+    
+    # Safe score conversion (handles None, NaN, strings, floats)
+    raw_score = alert.get('score', 0)
+    try:
+        score = int(float(raw_score)) if raw_score is not None else 0
+    except (TypeError, ValueError):
+        score = 0
     
     entry = _fmt_num(alert.get('entry'), 0)
     stop = _fmt_num(alert.get('stop'), 0)
     t1 = _fmt_num(alert.get('target_1'), 0)
     t2 = _fmt_num(alert.get('target_2'), 0)
-    
-    size = alert.get('position_size', 0)
+    size = int(_fmt_num(alert.get('position_size'), 0))
     max_loss = _fmt_num(alert.get('max_loss'), 0)
     
-    # Calculate percentages
-    stop_pct = ((stop - entry) / entry) * 100 if entry else 0
-    t1_pct = ((t1 - entry) / entry) * 100 if entry else 0
-    t2_pct = ((t2 - entry) / entry) * 100 if entry else 0
+    if entry <= 0:
+        return ""  # Cannot format without valid entry price
+    
+    # Calculate percentages (safe from division by zero)
+    stop_pct = ((stop - entry) / entry) * 100
+    t1_pct = ((t1 - entry) / entry) * 100
+    t2_pct = ((t2 - entry) / entry) * 100
 
-    msg = f"🎯 *TOP ALERT: {ticker}* ({int(score)}/100)\n"
+    msg = f"🎯 *TOP ALERT: {ticker}* ({score}/100)\n"
     msg += f"━━━━━━━━━━━━━━━━━━\n"
     msg += f"💰 Entry: ${entry:.2f}\n"
     msg += f"🛑 Stop: ${stop:.2f} ({stop_pct:.1f}%)\n"
