@@ -23,9 +23,15 @@ def _safe_float(val, default=0.0):
 def _compute_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> float:
     if df is None or len(df) < period + 1:
         return 0.0
-    high = df['High']; low = df['Low']; close = df['Close']
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
     prev_close = close.shift(1)
-    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
     atr = float(tr.iloc[-period:].mean())
     return atr if atr > 0 else 0.0
 
@@ -72,30 +78,34 @@ def run_swing_discovery(universe_tickers: List[str]) -> Tuple[List[dict], dict]:
 
             # --- FIXED: Gap uses OPEN, not Close ---
             price = _safe_float(latest['Close'])
-            latest_open = _safe_float(latest['Open'])  # NEW
+            latest_open = _safe_float(latest['Open'])
             prev_close = _safe_float(prev['Close'])
             volume = _safe_float(latest['Volume'])
             avg_volume_5d = _safe_float(df['Volume'].tail(5).mean())
 
+            # 1. פילטר מחיר
             if price < 1.0 or price > 100.0:
                 diagnostics["reject_price"] += 1
                 continue
 
+            # 2. פילטר נפח
             if avg_volume_5d < 500_000:
                 diagnostics["reject_volume"] += 1
                 continue
 
+            # 3. פילטר מגמה (SMA20)
             sma20 = _safe_float(df['Close'].tail(20).mean())
             if price < sma20:
                 diagnostics["reject_trend"] += 1
                 continue
 
-            # --- FIXED: TRUE Gap = (Open - Prev_Close) / Prev_Close ---
+            # 4. פילטר Gap אמיתי
             gap_pct = ((latest_open - prev_close) / prev_close) * 100 if prev_close > 0 else 0
             if gap_pct > 10.0:
                 diagnostics["reject_gap"] += 1
                 continue
 
+            # 5. ATR אמיתי
             atr = _compute_atr(df)
             if atr <= 0:
                 diagnostics["reject_atr"] += 1
