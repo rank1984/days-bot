@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""
-backtest_dip_filter.py V2 - Regime-Aware Backtest
-Tests the Dip Filter under 3 macro regimes:
-  - BULLISH: SPY > SMA20 AND SPY > SMA50
-  - NEUTRAL: SPY between SMA50 and SMA20 (or within ±1.5% of SMA20)
-  - BEARISH: SPY < SMA50 (or >2.5% below SMA20)
-"""
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-# רשימת 100 מניות גדולות (S&P 100)
+# רשימת 100 מניות גדולות (S&P 100) - בדיוק כמו קודם
 TICKERS = [
     "AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "TSLA", "BRK-B", "UNH", "XOM",
     "JNJ", "JPM", "V", "PG", "MA", "HD", "CVX", "MRK", "ABBV", "LLY",
@@ -25,53 +18,25 @@ TICKERS = [
     "LRCX", "PANW", "MU", "FTNT", "MRNA", "PYPL", "ADSK", "WDAY", "ROP", "APH"
 ]
 
-def get_market_regime():
-    """
-    מוריד נתוני SPY ומחזיר מילון של {date: regime}
-    """
-    print("[Regime] Fetching SPY data...")
+def get_bullish_days():
+    """מוריד SPY ומחזיר סט של תאריכים שבהם SPY היה מעל SMA20"""
+    print("Fetching SPY data for macro filter...")
     spy = yf.download("SPY", period="1y", interval="1d", progress=False, auto_adjust=False)
     if spy.empty:
-        print("[Regime] ERROR: Could not fetch SPY data.")
-        return {}
-
+        return set()
+    
     if isinstance(spy.columns, pd.MultiIndex):
         spy.columns = spy.columns.get_level_values(0)
-
+        
     spy['SMA20'] = spy['Close'].rolling(window=20).mean()
-    spy['SMA50'] = spy['Close'].rolling(window=50).mean()
-
-    regimes = {}
+    
+    bullish_days = set()
     for date, row in spy.iterrows():
-        if pd.isna(row['SMA20']) or pd.isna(row['SMA50']):
-            continue
-
-        date_str = date.strftime("%Y-%m-%d")
-        price = row['Close']
-        sma20 = row['SMA20']
-        sma50 = row['SMA50']
-
-        # חישוב מרחק מה-SMA20 באחוזים
-        dist_from_sma20_pct = ((price - sma20) / sma20) * 100
-
-        # הגדרת מצב
-        if price > sma20 and price > sma50:
-            regime = "BULLISH"
-        elif price < sma50 or dist_from_sma20_pct < -2.5:
-            regime = "BEARISH"
-        elif abs(dist_from_sma20_pct) <= 1.5:
-            regime = "NEUTRAL"
-        else:
-            regime = "NEUTRAL"  # בין SMA50 ל-SMA20
-
-        regimes[date_str] = regime
-
-    print(f"[Regime] Calculated regimes for {len(regimes)} days.")
-    bull = sum(1 for r in regimes.values() if r == "BULLISH")
-    neut = sum(1 for r in regimes.values() if r == "NEUTRAL")
-    bear = sum(1 for r in regimes.values() if r == "BEARISH")
-    print(f"[Regime] Distribution: BULLISH={bull} | NEUTRAL={neut} | BEARISH={bear}")
-    return regimes
+        if pd.notna(row['SMA20']) and row['Close'] > row['SMA20']:
+            bullish_days.add(date.strftime("%Y-%m-%d"))
+            
+    print(f"Found {len(bullish_days)} bullish days out of {len(spy)} total days.")
+    return bullish_days
 
 def check_dip_condition(df, i):
     row = df.iloc[i]
@@ -103,96 +68,71 @@ def simulate_trade(df, i):
     return r_multiple
 
 def main():
-    # 1. טוען מצבי שוק
-    regimes = get_market_regime()
-    if not regimes:
-        print("Cannot proceed without market regime data.")
+    bullish_days = get_bullish_days()
+    if not bullish_days:
+        print("No bullish days found. Cannot run backtest.")
         return
 
-    print(f"\nTesting {len(TICKERS)} tickers over the last 1 year...")
+    print(f"\nTesting {len(TICKERS)} tickers with MACRO FILTER (only trading on bullish days)...")
     end_date = datetime.today()
     start_date = end_date - timedelta(days=365)
-
-    # 2. מריץ את הפילטר
-    results_by_regime = {
-        "BULLISH": [],
-        "NEUTRAL": [],
-        "BEARISH": []
-    }
-    skipped_no_regime = 0
-
+    
+    results = []
+    skipped_due_to_macro = 0
+    
     for idx, ticker in enumerate(TICKERS):
         if idx % 20 == 0:
             print(f"  Processing ticker {idx+1}/{len(TICKERS)}...")
-
+            
         try:
             df = yf.download(ticker, start=start_date, end=end_date, progress=False)
             if df.empty or len(df) < 20: continue
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
-
+            
             for i in range(14, len(df)-5):
-                if not check_dip_condition(df, i):
-                    continue
-
-                # --- בדיקת מצב שוק לאותו יום ---
-                trade_date = df.index[i].strftime("%Y-%m-%d")
-                if trade_date not in regimes:
-                    skipped_no_regime += 1
-                    continue
-
-                regime = regimes[trade_date]
-                r = simulate_trade(df, i)
-                results_by_regime[regime].append(r)
-
-        except Exception as e:
+                if check_dip_condition(df, i):
+                    trade_date = df.index[i].strftime("%Y-%m-%d")
+                    
+                    # --- הפילטר המאקרו ---
+                    if trade_date not in bullish_days:
+                        skipped_due_to_macro += 1
+                        continue
+                        
+                    r = simulate_trade(df, i)
+                    results.append(r)
+        except Exception:
             continue
 
-    # 3. מדפיס תוצאות
-    print("\n" + "=" * 90)
-    print("  REGIME-AWARE BACKTEST RESULTS")
-    print("=" * 90)
-    print(f"{'Regime':<12} | {'N':>4} | {'Win%':>6} | {'Avg R':>7} | {'Total R':>8} | {'Avg Win':>8} | {'Avg Loss':>9}")
-    print("-" * 90)
+    print("\n" + "=" * 80)
+    print("  BACKTEST WITH MACRO FILTER (SPY > SMA20)")
+    print("=" * 80)
+    print(f"  Trades skipped due to BEARISH market: {skipped_due_to_macro}")
+    
+    if not results:
+        print("  No trades executed under bullish conditions.")
+        return
 
-    for regime in ["BULLISH", "NEUTRAL", "BEARISH"]:
-        results = results_by_regime[regime]
-        if not results:
-            print(f"{regime:<12} | {0:>4} | {'N/A':>6} | {'N/A':>7} | {'N/A':>8} | {'N/A':>8} | {'N/A':>9}")
-            continue
-
-        n = len(results)
-        wins = [r for r in results if r > 0]
-        losses = [r for r in results if r <= 0]
-        win_rate = 100.0 * len(wins) / n
-        avg_r = np.mean(results)
-        total_r = np.sum(results)
-        avg_win = np.mean(wins) if wins else 0
-        avg_loss = np.mean(losses) if losses else 0
-
-        print(f"{regime:<12} | {n:>4} | {win_rate:>5.1f}% | {avg_r:>+7.3f} | {total_r:>+8.1f} | {avg_win:>+8.2f} | {avg_loss:>+9.2f}")
-
-    print("-" * 90)
-
-    # 4. סיכום
-    print("\n=== VERDICT ===")
-    bull = results_by_regime["BULLISH"]
-    neut = results_by_regime["NEUTRAL"]
-    bear = results_by_regime["BEARISH"]
-
-    if bull:
-        print(f"BULLISH: {len(bull)} trades, AvgR = {np.mean(bull):+.3f}")
-    if neut:
-        print(f"NEUTRAL: {len(neut)} trades, AvgR = {np.mean(neut):+.3f}")
-    if bear:
-        print(f"BEARISH: {len(bear)} trades, AvgR = {np.mean(bear):+.3f}")
-
-    print("\nRECOMMENDATION:")
-    print("  - If BULLISH AvgR > 1.0 → Keep strict filter (current strategy).")
-    print("  - If NEUTRAL AvgR > 0.5 → Consider adding NEUTRAL mode in future.")
-    print("  - If NEUTRAL AvgR <= 0  → Do NOT add NEUTRAL. Strict is better.")
-    print("  - If BEARISH AvgR > 0 → Reconsider the macro filter entirely.")
-    print("=" * 90)
+    n = len(results)
+    wins = [r for r in results if r > 0]
+    losses = [r for r in results if r <= 0]
+    
+    win_rate = (len(wins) / n) * 100
+    avg_r = np.mean(results)
+    total_r = np.sum(results)
+    
+    print(f"  Total Trades Executed: {n}")
+    print(f"  Win Rate:              {win_rate:.1f}%")
+    print(f"  Avg R per Trade:       {avg_r:+.3f}R")
+    print(f"  Total Return:          {total_r:+.1f}R")
+    print("=" * 80)
+    
+    if avg_r > 0.5:
+        print("  ✅ VERDICT: The Macro Filter SAVES the strategy. Edge is real.")
+    elif avg_r > 0:
+        print("  ⚠️ VERDICT: Marginal. Macro filter helps, but edge is thin.")
+    else:
+        print("  ❌ VERDICT: Even with macro filter, the Dip strategy fails.")
 
 if __name__ == "__main__":
     main()
