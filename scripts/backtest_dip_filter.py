@@ -6,7 +6,6 @@ backtest_dip_filter.py V3 - Fully aligned with V5.0.9
 - Includes entry day in stop/target check
 - Handles gap downs (exit at Open if gap below stop)
 - Includes 1% round-trip costs (Net R)
-- Reports BULLISH, BEARISH, UNKNOWN separately
 """
 import yfinance as yf
 import pandas as pd
@@ -26,7 +25,7 @@ TICKERS = [
     "LRCX", "PANW", "MU", "FTNT", "MRNA", "PYPL", "ADSK", "WDAY", "ROP", "APH"
 ]
 
-COST_PCT = 0.01  # 1% round-trip (0.5% entry + 0.5% exit)
+COST_PCT = 0.01
 
 def get_spy_data():
     print("Fetching SPY data for macro filter...")
@@ -46,7 +45,6 @@ def compute_atr(df, period=14):
     return atr if atr > 0 else 0.0
 
 def check_dip_condition(df, i):
-    """Check if day i (CLOSED) meets Dip conditions."""
     if i < 15: return False, None
     row = df.iloc[i]
     prev_close = df.iloc[i-1]['Close']
@@ -63,14 +61,9 @@ def check_dip_condition(df, i):
     return True, atr
 
 def simulate_trade(df, i, atr, entry_open):
-    """
-    Signal at Close of day i, Entry at Open of day i+1.
-    Checks entry day (i+1) onwards.
-    """
     entry = entry_open
     if entry <= 0: return None
     
-    # Stop logic from main.py: min(entry - 1.5*ATR, entry * 0.98) - the LOWER (wider) one
     stop = min(entry - (1.5 * atr), entry * 0.98)
     stop_dist_pct = ((entry - stop) / entry) * 100
     
@@ -83,41 +76,34 @@ def simulate_trade(df, i, atr, entry_open):
     entry_day = i + 1
     if entry_day >= len(df): return None
     
-    # --- Check entry day (i+1) FIRST (from open onwards) ---
     entry_bar = df.iloc[entry_day]
     
-    # Stop check (with gap handling)
     if entry_bar['Low'] <= stop:
-        exit_price = min(float(entry_bar['Open']), stop)  # if opened below stop, exit at open
+        exit_price = min(float(entry_bar['Open']), stop)
         r_gross = (exit_price - entry) / risk
         r_net = r_gross - COST_PCT
         return {"exit_price": exit_price, "exit_reason": "STOP_HIT", "r_gross": r_gross, "r_net": r_net, "days_held": 1}
     
-    # T1 check
     if entry_bar['High'] >= target_1:
         r_gross = (target_1 - entry) / risk
         r_net = r_gross - COST_PCT
         return {"exit_price": target_1, "exit_reason": "T1_HIT", "r_gross": r_gross, "r_net": r_net, "days_held": 1}
     
-    # --- Check subsequent days ---
     for j in range(entry_day + 1, min(entry_day + 5, len(df))):
         day = df.iloc[j]
         days_held = j - entry_day + 1
         
-        # Stop first (conservative)
         if day['Low'] <= stop:
             exit_price = min(float(day['Open']), stop)
             r_gross = (exit_price - entry) / risk
             r_net = r_gross - COST_PCT
             return {"exit_price": exit_price, "exit_reason": "STOP_HIT", "r_gross": r_gross, "r_net": r_net, "days_held": days_held}
         
-        # T1
         if day['High'] >= target_1:
             r_gross = (target_1 - entry) / risk
             r_net = r_gross - COST_PCT
             return {"exit_price": target_1, "exit_reason": "T1_HIT", "r_gross": r_gross, "r_net": r_net, "days_held": days_held}
     
-    # Horizon end (5 days max)
     exit_day = min(entry_day + 4, len(df) - 1)
     exit_price = float(df.iloc[exit_day]['Close'])
     r_gross = (exit_price - entry) / risk
@@ -130,7 +116,6 @@ def main():
         print("ERROR: No SPY data.")
         return
     
-    # Build SPY lookup
     spy_lookup = {}
     for date, row in spy.iterrows():
         if pd.isna(row['SMA20']): continue
@@ -167,7 +152,6 @@ def main():
                 signal_date_str = df.index[i].strftime("%Y-%m-%d")
                 entry_date_str = df.index[i + 1].strftime("%Y-%m-%d")
                 
-                # Macro from signal day (what was known at close of i)
                 spy_info = spy_lookup.get(signal_date_str)
                 if not spy_info:
                     macro_status = "UNKNOWN"; spy_close = 0; spy_sma20 = 0
@@ -183,25 +167,16 @@ def main():
                 stop_calc = min(entry_open - 1.5*atr, entry_open * 0.98)
                 
                 all_trades.append({
-                    "ticker": ticker,
-                    "signal_date": signal_date_str,
-                    "entry_date": entry_date_str,
-                    "macro": macro_status,
-                    "spy_close": spy_close,
-                    "spy_sma20": spy_sma20,
-                    "entry": entry_open,
-                    "stop": stop_calc,
-                    "exit_price": result["exit_price"],
-                    "exit_reason": result["exit_reason"],
-                    "r_gross": result["r_gross"],
-                    "r_net": result["r_net"],
-                    "days_held": result["days_held"]
+                    "ticker": ticker, "signal_date": signal_date_str, "entry_date": entry_date_str,
+                    "macro": macro_status, "spy_close": spy_close, "spy_sma20": spy_sma20,
+                    "entry": entry_open, "stop": stop_calc, "exit_price": result["exit_price"],
+                    "exit_reason": result["exit_reason"], "r_gross": result["r_gross"],
+                    "r_net": result["r_net"], "days_held": result["days_held"]
                 })
         except Exception as e:
             print(f"  ERR {ticker}: {e}")
             no_data.append(ticker)
     
-    # --- DETAILED TABLE ---
     print("\n" + "=" * 140)
     print("  DETAILED TRADES (Entry at T+1 Open, ATR-based, Costs included)")
     print("=" * 140)
@@ -211,7 +186,6 @@ def main():
     for t in all_trades:
         print(f"{t['ticker']:<7} | {t['signal_date']:<10} | {t['entry_date']:<10} | {t['macro']:<8} | {t['entry']:>7.2f} | {t['stop']:>7.2f} | {t['exit_price']:>7.2f} | {t['exit_reason']:<12} | {t['r_gross']:>+6.2f} | {t['r_net']:>+6.2f}")
     
-    # --- SUMMARY ---
     executed = [t for t in all_trades if t['macro'] == 'BULLISH']
     skipped = [t for t in all_trades if t['macro'] == 'BEARISH']
     unknown = [t for t in all_trades if t['macro'] == 'UNKNOWN']
@@ -243,7 +217,6 @@ def main():
     if unknown:
         summarize("UNKNOWN Macro", unknown)
     
-    # --- SKIPPED LIST (was our filter right?) ---
     print("\n" + "=" * 140)
     print("  SKIPPED TRADES (BEARISH regime) — Did our filter save us?")
     print("=" * 140)
@@ -257,7 +230,6 @@ def main():
     print("\n" + "=" * 140)
     print("  VERDICT: Promising Backtest Result (V5.0.9-aligned)")
     print(f"  Tickers with no data: {', '.join(no_data) if no_data else 'none'}")
-    print("  NOT a guarantee of live profits. Forward test required.")
     print("=" * 140)
 
 if __name__ == "__main__":
