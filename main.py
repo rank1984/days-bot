@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT V5.0.9 - Main Entry Point (Final)
-- Macro freshness check (max 60 min old)
+DAYS-BOT V5.0.10 - Main Entry Point (Track-Only Macro)
+- Macro Filter is now Track-Only (does NOT block scans)
+- Dip Filter intact: Price 10-50, Gap < -2%, ATR > 3%
 - Position value limit (max 20% of account)
 - Safe float conversion
 - Separate counters: valid_plans vs alerts_candidates
@@ -11,7 +12,7 @@ import os
 import argparse
 import uuid
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 # ==============================================================================
@@ -68,7 +69,7 @@ except ImportError:
 
 ET = pytz.timezone("America/New_York")
 DB_PATH = os.environ.get("DB_PATH", "data/alerts.db")
-MAX_MACRO_AGE_MINUTES = 600
+MAX_MACRO_AGE_MINUTES = 600  # 10 שעות
 
 # ==============================================================================
 # HELPERS
@@ -108,16 +109,15 @@ def _extract_candidates(result):
     return []
 
 # ==============================================================================
-# MACRO FILTER (with freshness check)
+# MACRO FILTER (Track-Only)
 # ==============================================================================
 def check_macro_from_db():
     """
-    קורא את מצב המאקרו מה-DB.
-    Fail-Closed: אם הרשומה לא מהיום, לא טרייה, או לא BULLISH - לא סוחרים.
+    קורא את מצב המאקרו מה-DB (למטרות מעקב בלבד).
+    מחזיר: (is_bullish, status_str, checked_at_str)
     """
     print(f"[Macro] Reading market regime from {DB_PATH}...")
     if not os.path.exists(DB_PATH):
-        print("[Macro] ERROR: DB not found. Defaulting to SAFE.")
         return False, "NO_DB", ""
 
     try:
@@ -126,7 +126,6 @@ def check_macro_from_db():
 
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='macro_state'")
         if not cur.fetchone():
-            print("[Macro] ERROR: macro_state table not found. Defaulting to SAFE.")
             conn.close()
             return False, "NO_TABLE", ""
 
@@ -138,37 +137,26 @@ def check_macro_from_db():
         conn.close()
 
         if not row:
-            print(f"[Macro] ERROR: No macro data for {today}. Defaulting to SAFE.")
             return False, "MISSING_TODAY", ""
 
         status, checked_at_str = row
         
-        # --- בדיקת טריות ---
         try:
             checked_at = datetime.fromisoformat(checked_at_str)
             age_minutes = (datetime.now(ET) - checked_at).total_seconds() / 60
-            
             if age_minutes > MAX_MACRO_AGE_MINUTES:
-                print(f"[Macro] ERROR: Macro data is {age_minutes:.0f} min old (max {MAX_MACRO_AGE_MINUTES}). Defaulting to SAFE.")
-                return False, "STALE_DATA", checked_at_str
-            
-            if age_minutes < 0:
-                print(f"[Macro] WARNING: checked_at is in the future ({age_minutes:.0f} min). Treating as STALE.")
-                return False, "FUTURE_DATA", checked_at_str
-        except Exception as e:
-            print(f"[Macro] ERROR parsing checked_at: {e}. Defaulting to SAFE.")
-            return False, "BAD_TIMESTAMP", checked_at_str
+                return False, f"STALE_{int(age_minutes)}m", checked_at_str
+        except Exception:
+            pass
 
         is_bullish = (status == "BULLISH")
-        print(f"[Macro] Status: {status} | Age: {age_minutes:.0f} min | Checked at: {checked_at_str}")
         return is_bullish, status, checked_at_str
 
     except Exception as e:
-        print(f"[Macro] ERROR: {e}. Defaulting to SAFE.")
-        return False, "ERROR", ""
+        return False, f"ERROR_{type(e).__name__}", ""
 
 # ==============================================================================
-# DIP FILTER (with detailed counters)
+# DIP FILTER
 # ==============================================================================
 def _check_dip_filter(candidate: dict) -> tuple:
     """
@@ -189,7 +177,7 @@ def _check_dip_filter(candidate: dict) -> tuple:
     return True, "ok"
 
 # ==============================================================================
-# TRADE PLAN BUILDER (with position value limit)
+# TRADE PLAN BUILDER
 # ==============================================================================
 def _build_swing_plan(ticker, price, atr, score, candidate_data):
     MIN_STOP_PCT = 2.0
@@ -210,7 +198,6 @@ def _build_swing_plan(ticker, price, atr, score, candidate_data):
     target_1 = price + (risk_per_share * 2)
     target_2 = price + (risk_per_share * 4)
 
-    # --- Position sizing with value limit ---
     account_size = 5000.0
     risk_pct = 0.005 
     max_loss = account_size * risk_pct
@@ -242,22 +229,20 @@ def run_swing_v1(manual=False):
     scan_id = str(uuid.uuid4())
 
     print("==========================================================================")
-    print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.9 FINAL")
+    print("DAYS-BOT - SWING ENGINE (Daily Bars) V5.0.10")
     print(f"Date: {now_et.strftime('%Y-%m-%d %H:%M:%S')} ET | Mode: {'MANUAL' if manual else 'AUTO'}")
     print(f"Scan ID: {scan_id}")
-    print("Filters: DIP (10-50$, Gap<-2%, ATR>3%) + MACRO (DB, max 60 min old)")
+    print("Filters: DIP (10-50$, Gap<-2%, ATR>3%) + MACRO (Track-Only)")
     print("Telegram: max 3 alerts, score >= 80")
     print("==========================================================================")
 
-    # 1. MACRO CHECK
+    # 1. MACRO CHECK (Track-Only - does not block)
     is_bullish, status_str, checked_at = check_macro_from_db()
-    
-    if not is_bullish:
-        print(f"\n⚠️ MACRO FILTER: Market is {status_str}. Skipping scan.")
-        print("==========================================================================")
-        return
-
-    print(f"[Macro] ✅ Market is BULLISH. Proceeding with scan.")
+    if is_bullish:
+        print(f"[Macro] ✅ BULLISH (Track-Only). Checked at {checked_at}")
+    else:
+        print(f"[Macro] ⚠️ {status_str} (Track-Only). Checked at {checked_at}")
+    print("[Macro] Proceeding with scan regardless of macro state.\n")
 
     # 2. INIT DB
     try:
@@ -295,8 +280,8 @@ def run_swing_v1(manual=False):
 
     # 5. ANALYZE
     snapshots_saved = 0
-    valid_plans = 0           # plan is valid (entry/stop/targets ok)
-    alerts_candidates = 0     # score >= 80 (would go to telegram)
+    valid_plans = 0
+    alerts_candidates = 0
     dip_filter_blocked = 0
     dip_filter_reasons = {}
     plan_blocked_reasons = {"STOP_TOO_WIDE": 0, "STOP_TOO_TIGHT": 0, "LOW_SCORE": 0}
@@ -311,7 +296,6 @@ def run_swing_v1(manual=False):
         price = _safe_float(cand.get('price'))
         atr = _safe_float(cand.get('atr'))
 
-        # Score
         raw_score = cand.get('score') or cand.get('swing_score') or cand.get('composite_score')
         score = _safe_score(raw_score)
         if score == 0.0:
@@ -319,7 +303,7 @@ def run_swing_v1(manual=False):
         cand['score'] = score
         cand['composite_score'] = score
 
-        # DIP FILTER (with reason tracking)
+        # DIP FILTER
         passed, reason = _check_dip_filter(cand)
         if not passed:
             dip_filter_blocked += 1
@@ -400,7 +384,7 @@ def run_swing_v1(manual=False):
     # 7. FINAL SUMMARY
     print("\n==========================================================================")
     print("SWING SUMMARY:")
-    print(f"  Macro Status:              BULLISH ✅ (Age OK)")
+    print(f"  Macro Status (Track):      {status_str}")
     print(f"  Candidates analyzed:       {len(candidates)}")
     print(f"  Dip Filter blocked:        {dip_filter_blocked}")
     for r, c in sorted(dip_filter_reasons.items(), key=lambda x: -x[1]):
