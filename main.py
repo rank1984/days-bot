@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-DAYS-BOT V5.0.10 - Main Entry Point (Track-Only Macro)
-- Macro Filter is now Track-Only (does NOT block scans)
-- Dip Filter intact: Price 10-50, Gap < -2%, ATR > 3%
-- Position value limit (max 20% of account)
-- Safe float conversion
-- Separate counters: valid_plans vs alerts_candidates
+DAYS-BOT V5.0.10 - Main Entry Point
+- Macro Filter: Track-Only (does not block scans)
+- TRUE Gap Filter (from swing_discovery)
+- Position size limit (max 20% of account)
+- Detailed Telegram debug logs
 """
 import sys
 import os
 import argparse
 import uuid
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # ==============================================================================
@@ -69,7 +68,7 @@ except ImportError:
 
 ET = pytz.timezone("America/New_York")
 DB_PATH = os.environ.get("DB_PATH", "data/alerts.db")
-MAX_MACRO_AGE_MINUTES = 600  # 10 שעות
+MAX_MACRO_AGE_MINUTES = 600  # 10 שעות - מאפשר שימוש בבדיקת הבוקר לסריקת הערב
 
 # ==============================================================================
 # HELPERS
@@ -112,56 +111,32 @@ def _extract_candidates(result):
 # MACRO FILTER (Track-Only)
 # ==============================================================================
 def check_macro_from_db():
-    """
-    קורא את מצב המאקרו מה-DB (למטרות מעקב בלבד).
-    מחזיר: (is_bullish, status_str, checked_at_str)
-    """
-    print(f"[Macro] Reading market regime from {DB_PATH}...")
+    """קורא את מצב המאקרו מה-DB. משמש למעקב בלבד."""
     if not os.path.exists(DB_PATH):
-        return False, "NO_DB", ""
-
+        return "NO_DB"
     try:
         conn = sqlite3.connect(DB_PATH)
         cur = conn.cursor()
-
         cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='macro_state'")
         if not cur.fetchone():
             conn.close()
-            return False, "NO_TABLE", ""
+            return "NO_TABLE"
 
         today = datetime.now(ET).strftime("%Y-%m-%d")
-        row = cur.execute("""
-            SELECT status, checked_at FROM macro_state
-            WHERE scan_date = ?
-        """, (today,)).fetchone()
+        row = cur.execute("SELECT status, checked_at FROM macro_state WHERE scan_date = ?", (today,)).fetchone()
         conn.close()
 
         if not row:
-            return False, "MISSING_TODAY", ""
-
-        status, checked_at_str = row
-        
-        try:
-            checked_at = datetime.fromisoformat(checked_at_str)
-            age_minutes = (datetime.now(ET) - checked_at).total_seconds() / 60
-            if age_minutes > MAX_MACRO_AGE_MINUTES:
-                return False, f"STALE_{int(age_minutes)}m", checked_at_str
-        except Exception:
-            pass
-
-        is_bullish = (status == "BULLISH")
-        return is_bullish, status, checked_at_str
-
-    except Exception as e:
-        return False, f"ERROR_{type(e).__name__}", ""
+            return "MISSING_TODAY"
+        return row[0]
+    except Exception:
+        return "ERROR"
 
 # ==============================================================================
-# DIP FILTER
+# DIP FILTER (with detailed counters)
 # ==============================================================================
 def _check_dip_filter(candidate: dict) -> tuple:
-    """
-    מחזיר (passed: bool, reason: str)
-    """
+    """מחזיר (passed: bool, reason: str)"""
     price = _safe_float(candidate.get('price') or candidate.get('entry'))
     gap = _safe_float(candidate.get('gap_pct'))
     atr = _safe_float(candidate.get('atr'))
@@ -177,7 +152,7 @@ def _check_dip_filter(candidate: dict) -> tuple:
     return True, "ok"
 
 # ==============================================================================
-# TRADE PLAN BUILDER
+# TRADE PLAN BUILDER (with position value limit)
 # ==============================================================================
 def _build_swing_plan(ticker, price, atr, score, candidate_data):
     MIN_STOP_PCT = 2.0
@@ -236,13 +211,14 @@ def run_swing_v1(manual=False):
     print("Telegram: max 3 alerts, score >= 80")
     print("==========================================================================")
 
-    # 1. MACRO CHECK (Track-Only - does not block)
-    is_bullish, status_str, checked_at = check_macro_from_db()
-    if is_bullish:
-        print(f"[Macro] ✅ BULLISH (Track-Only). Checked at {checked_at}")
+    # 1. MACRO CHECK (Track-Only)
+    macro_status = check_macro_from_db()
+    print(f"[Macro] Reading market regime from {DB_PATH}...")
+    if macro_status == "BULLISH":
+        print(f"[Macro] ✅ BULLISH (Track-Only)")
     else:
-        print(f"[Macro] ⚠️ {status_str} (Track-Only). Checked at {checked_at}")
-    print("[Macro] Proceeding with scan regardless of macro state.\n")
+        print(f"[Macro] ⚠️ {macro_status} (Track-Only)")
+    print("[Macro] Proceeding with scan regardless of macro state.")
 
     # 2. INIT DB
     try:
@@ -281,7 +257,7 @@ def run_swing_v1(manual=False):
     # 5. ANALYZE
     snapshots_saved = 0
     valid_plans = 0
-    alerts_candidates = 0
+    alerts_candidates_count = 0
     dip_filter_blocked = 0
     dip_filter_reasons = {}
     plan_blocked_reasons = {"STOP_TOO_WIDE": 0, "STOP_TOO_TIGHT": 0, "LOW_SCORE": 0}
@@ -296,6 +272,7 @@ def run_swing_v1(manual=False):
         price = _safe_float(cand.get('price'))
         atr = _safe_float(cand.get('atr'))
 
+        # Score
         raw_score = cand.get('score') or cand.get('swing_score') or cand.get('composite_score')
         score = _safe_score(raw_score)
         if score == 0.0:
@@ -303,7 +280,7 @@ def run_swing_v1(manual=False):
         cand['score'] = score
         cand['composite_score'] = score
 
-        # DIP FILTER
+        # DIP FILTER (with reason tracking)
         passed, reason = _check_dip_filter(cand)
         if not passed:
             dip_filter_blocked += 1
@@ -322,7 +299,7 @@ def run_swing_v1(manual=False):
             valid_plans += 1
             all_valid_plans.append(cand)
             if score >= 80:
-                alerts_candidates += 1
+                alerts_candidates_count += 1
             print(f"[SwingScan] ✅ {ticker} | Score: {score} | Entry: ${cand['entry']} | Stop: ${cand['stop']} | T1: ${cand['target_1']} | Size: {cand['position_size']} (${cand['position_value']})")
         else:
             err = cand.get('plan_error', 'UNKNOWN')
@@ -341,33 +318,56 @@ def run_swing_v1(manual=False):
 
     print(f"\n[Main] Snapshots saved: {snapshots_saved}")
     print(f"[Main] Valid plans: {valid_plans}")
-    print(f"[Main] Alerts candidates (score >= 80): {alerts_candidates}")
+    print(f"[Main] Alerts candidates (score >= 80): {alerts_candidates_count}")
     print(f"[Main] Dip Filter blocked: {dip_filter_blocked}")
     if dip_filter_reasons:
         for r, c in sorted(dip_filter_reasons.items(), key=lambda x: -x[1]):
             print(f"   - {r}: {c}")
 
-    # 6. SEND TELEGRAM
-    print("\n[Main] Selecting Top 3 Alerts to Telegram...")
-    top_alerts = [a for a in all_valid_plans if a.get('score', 0) >= 80]
-    top_alerts.sort(key=lambda x: (x.get('score', 0), _safe_score(x.get('rvol', 0)), _safe_score(x.get('atr', 0))), reverse=True)
-    top_alerts = top_alerts[:3]
-
+    # 6. SEND TELEGRAM (with detailed logging)
+    print("\n[Main] Selecting Top 3 Alerts to Telegram (score >= 80)...")
+    alerts_candidates = [a for a in all_valid_plans if a.get('score', 0) >= 80]
+    alerts_candidates.sort(
+        key=lambda x: (
+            x.get('score', 0), 
+            _safe_score(x.get('rvol', 0)), 
+            _safe_score(x.get('atr', 0))
+        ), 
+        reverse=True
+    )
+    
+    print(f"[DEBUG] Found {len(alerts_candidates)} alerts with score >= 80:")
+    for i, a in enumerate(alerts_candidates):
+        print(f"[DEBUG]   #{i+1}: {a.get('ticker')} | score={a.get('score')} | rvol={a.get('rvol', 'N/A')} | atr={a.get('atr', 'N/A')}")
+    
+    top_alerts = alerts_candidates[:3]
+    print(f"[DEBUG] Sending top {len(top_alerts)} alerts...")
+    
     telegram_sent = 0
     telegram_failed = 0
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         for alert in top_alerts:
-            msg = format_swing_alert(alert)
-            if not msg:
+            ticker = alert.get('ticker', 'UNKNOWN')
+            try:
+                msg = format_swing_alert(alert)
+            except Exception as e:
+                print(f"[Main]   → {ticker} - FORMAT ERROR: {e}")
+                telegram_failed += 1
                 continue
+            
+            if not msg:
+                print(f"[Main]   → {ticker} - EMPTY MESSAGE (skipped)")
+                continue
+            
             success = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, msg)
             if success:
-                print(f"[Main]   → {alert['ticker']} (score {alert['score']}) - sent")
+                print(f"[Main]   → {ticker} (score {alert.get('score')}) - sent")
                 telegram_sent += 1
             else:
-                print(f"[Main]   → {alert['ticker']} (score {alert['score']}) - FAILED")
+                print(f"[Main]   → {ticker} (score {alert.get('score')}) - FAILED")
                 telegram_failed += 1
 
+        # Send summary ONLY if we sent at least one alert
         if telegram_sent > 0:
             summary_msg = format_swing_summary(
                 candidates_count=len(candidates),
@@ -376,22 +376,25 @@ def run_swing_v1(manual=False):
                 telegram_sent=telegram_sent
             )
             if summary_msg:
-                send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, summary_msg)
-                print("[Main]   → Summary sent")
+                summary_ok = send_message(TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, summary_msg)
+                if summary_ok:
+                    print("[Main]   → Summary sent")
+                else:
+                    print("[Main]   → Summary FAILED")
     else:
         print("[Main] No Telegram credentials found. Skipping alerts.")
 
     # 7. FINAL SUMMARY
     print("\n==========================================================================")
     print("SWING SUMMARY:")
-    print(f"  Macro Status (Track):      {status_str}")
+    print(f"  Macro Status (Track):      {macro_status}")
     print(f"  Candidates analyzed:       {len(candidates)}")
     print(f"  Dip Filter blocked:        {dip_filter_blocked}")
     for r, c in sorted(dip_filter_reasons.items(), key=lambda x: -x[1]):
         print(f"    - {r}: {c}")
     print(f"  Snapshots saved:           {snapshots_saved}")
     print(f"  Valid plans:               {valid_plans}")
-    print(f"  Alerts candidates (>=80):  {alerts_candidates}")
+    print(f"  Alerts candidates (>=80):  {alerts_candidates_count}")
     print(f"  Plan blocked:")
     for r, c in plan_blocked_reasons.items():
         if c > 0: print(f"    - {r}: {c}")
