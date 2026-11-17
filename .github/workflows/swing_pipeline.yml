@@ -2,11 +2,8 @@ name: DAYS-BOT V5.0.9 Swing Pipeline
 
 on:
   schedule:
-    # Macro (בוקר) - 09:37 ET (14:37 UTC בחורף)
     - cron: '37 14 * * 1-5' 
-    # Scan (אחרי סגירה) - 16:37 ET (21:37 UTC בחורף)
     - cron: '37 21 * * 1-5'
-    # Evaluate - 17:33 ET (22:33 UTC בחורף)
     - cron: '33 22 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -21,6 +18,7 @@ on:
           - both
           - backtest
           - macro
+          - cleanup   # <--- נוסף כאן
 
 permissions:
   actions: read
@@ -49,10 +47,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: pip install -r requirements.txt
-
       - name: Restore DB
         uses: actions/github-script@v7
         with:
@@ -64,17 +60,15 @@ jobs:
               .filter(a => a.name === 'db-restored-latest' && !a.expired)
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
             const latest = filtered[0];
-            if (!latest) { console.log('No previous DB artifact found.'); return; }
+            if (!latest) { console.log('No DB found.'); return; }
             const dl = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner, repo: context.repo.repo,
               artifact_id: latest.id, archive_format: 'zip'
             });
             require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
-
       - name: Check Macro
         run: python3 scripts/check_macro.py
-
       - name: Upload DB for next run
         uses: actions/upload-artifact@v4
         with:
@@ -84,7 +78,7 @@ jobs:
           retention-days: 90
 
   # =========================================================================
-  # JOB 1: SCAN (אחרי סגירה - כולל רענון מאקרו)
+  # JOB 1: SCAN (אחרי סגירה)
   # =========================================================================
   scan:
     runs-on: ubuntu-latest
@@ -96,10 +90,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: pip install -r requirements.txt
-
       - name: Restore DB
         uses: actions/github-script@v7
         with:
@@ -111,24 +103,20 @@ jobs:
               .filter(a => a.name === 'db-restored-latest' && !a.expired)
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
             const latest = filtered[0];
-            if (!latest) { console.log('No previous DB artifact found.'); return; }
+            if (!latest) { console.log('No DB found.'); return; }
             const dl = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner, repo: context.repo.repo,
               artifact_id: latest.id, archive_format: 'zip'
             });
             require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
-
-      # --- תיקון: רענון מאקרו לפני הסריקה ---
       - name: Refresh Macro
         run: python3 scripts/check_macro.py
-
       - name: Run scanner
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 main.py swing_v1 --manual
-
       - name: Upload DB for next run
         uses: actions/upload-artifact@v4
         with:
@@ -136,7 +124,6 @@ jobs:
           path: data/alerts.db
           overwrite: true
           retention-days: 90
-      
       - name: Upload scan artifact
         uses: actions/upload-artifact@v4
         with:
@@ -159,10 +146,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: pip install -r requirements.txt
-
       - name: Restore DB
         uses: actions/github-script@v7
         with:
@@ -174,26 +159,22 @@ jobs:
               .filter(a => a.name === 'db-restored-latest' && !a.expired)
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
             const latest = filtered[0];
-            if (!latest) { console.log('No previous DB artifact found.'); return; }
+            if (!latest) { console.log('No DB found.'); return; }
             const dl = await github.rest.actions.downloadArtifact({
               owner: context.repo.owner, repo: context.repo.repo,
               artifact_id: latest.id, archive_format: 'zip'
             });
             require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
-
       - name: Run evaluator
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python3 scripts/evaluate_swing.py
-
       - name: Simulate Exit Models
         run: python3 scripts/simulate_exits.py
-
       - name: Analyze Features
         run: python3 scripts/analyze_features.py
-
       - name: Upload DB for next run
         uses: actions/upload-artifact@v4
         with:
@@ -201,13 +182,53 @@ jobs:
           path: data/alerts.db
           overwrite: true
           retention-days: 90
-
       - name: Upload eval artifact
         uses: actions/upload-artifact@v4
         with:
           name: eval-${{ github.run_id }}
           path: data/alerts.db
           retention-days: 30
+
+  # =========================================================================
+  # JOB 4: CLEANUP (ניקוי כפילויות)
+  # =========================================================================
+  cleanup:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'cleanup'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Restore DB
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const artifacts = await github.rest.actions.listArtifactsForRepo({
+              owner: context.repo.owner, repo: context.repo.repo
+            });
+            const filtered = artifacts.data.artifacts
+              .filter(a => a.name === 'db-restored-latest' && !a.expired)
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            const latest = filtered[0];
+            if (!latest) { console.log('No DB found.'); return; }
+            const dl = await github.rest.actions.downloadArtifact({
+              owner: context.repo.owner, repo: context.repo.repo,
+              artifact_id: latest.id, archive_format: 'zip'
+            });
+            require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
+            require('child_process').execSync('unzip -o db.zip -d data/');
+      - name: Run Cleanup
+        run: python3 scripts/clean_duplicates.py
+      - name: Upload DB for next run
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-restored-latest
+          path: data/alerts.db
+          overwrite: true
+          retention-days: 90
 
   # =========================================================================
   # JOB 3: BACKTEST
@@ -220,9 +241,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install deps
         run: pip install -r requirements.txt
-
       - name: Run Backtest
         run: python3 scripts/backtest_dip_filter.py
