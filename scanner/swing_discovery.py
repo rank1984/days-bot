@@ -1,16 +1,11 @@
 """
-DAYS-BOT V5.0.10 — Swing Discovery
-CHANGES:
-1. Drops partial daily bar (if fetched before market close)
-2. Adds data_date (actual bar date) to candidate
-3. Adds data_is_final flag
-4. Excludes weekends
+DAYS-BOT V5.0.10 — Swing Discovery (Daily Data + ATR + TRUE Gap + Partial Bar Detection)
 """
 import yfinance as yf
 import pandas as pd
 import pytz
-from datetime import datetime, timedelta, time as dtime
-from typing import List, Dict, Tuple
+from datetime import datetime, time as dtime
+from typing import List, Tuple
 import math
 
 ET = pytz.timezone("America/New_York")
@@ -42,12 +37,14 @@ def _compute_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> float:
 
 
 def _is_partial_bar(last_bar_date, now_et: datetime) -> bool:
-    """Returns True if last bar is today AND market is still open (partial)."""
-    if last_bar_date != now_et.date():
-        return False  # Not today → it's a closed bar
-    # It's today. Is the market closed?
+    try:
+        last_date = last_bar_date.date() if hasattr(last_bar_date, 'date') else last_bar_date
+    except Exception:
+        return False
+    if last_date != now_et.date():
+        return False
     if now_et.time() < MARKET_CLOSE:
-        return True  # Still open → partial bar
+        return True
     return False
 
 
@@ -56,7 +53,6 @@ def run_swing_discovery(universe_tickers: List[str]) -> Tuple[List[dict], dict]:
     print(f"[SwingDiscovery] Starting daily scan on {len(universe_tickers)} symbols...")
     print(f"[SwingDiscovery] Current ET time: {now_et.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # 🚨 NEW: Block weekends
     if now_et.weekday() >= 5:
         print("[SwingDiscovery] Weekend detected. Aborting scan.")
         return [], {"error": "weekend", "universe": len(universe_tickers)}
@@ -74,14 +70,10 @@ def run_swing_discovery(universe_tickers: List[str]) -> Tuple[List[dict], dict]:
 
     candidates = []
     diagnostics = {
-        "universe": len(universe_tickers),
-        "passed_filters": 0,
-        "reject_price": 0,
-        "reject_volume": 0,
-        "reject_trend": 0,
-        "reject_gap": 0,
-        "reject_atr": 0,
-        "reject_partial_bar": 0,  # NEW
+        "universe": len(universe_tickers), "passed_filters": 0,
+        "reject_price": 0, "reject_volume": 0, "reject_trend": 0,
+        "reject_gap": 0, "reject_atr": 0, "reject_partial_bar": 0,
+        "reject_insufficient_data": 0,
     }
 
     for ticker in universe_tickers:
@@ -95,18 +87,18 @@ def run_swing_discovery(universe_tickers: List[str]) -> Tuple[List[dict], dict]:
 
             df = df.dropna()
             if len(df) < 20:
+                diagnostics["reject_insufficient_data"] += 1
                 continue
 
-            # 🚨 NEW: Drop partial last bar
-            last_bar_date = df.index[-1].date() if hasattr(df.index[-1], 'date') else df.index[-1]
-            if _is_partial_bar(last_bar_date, now_et):
+            last_bar_idx = df.index[-1]
+            if _is_partial_bar(last_bar_idx, now_et):
                 df = df.iloc[:-1]
                 diagnostics["reject_partial_bar"] += 1
                 if len(df) < 20:
+                    diagnostics["reject_insufficient_data"] += 1
                     continue
-                print(f"[SwingDiscovery] {ticker}: dropped partial bar from {last_bar_date}")
+                print(f"[SwingDiscovery] {ticker}: dropped partial bar from {last_bar_idx}")
 
-            # Now `latest` is guaranteed to be a CLOSED bar
             latest = df.iloc[-1]
             prev = df.iloc[-2]
             data_date = df.index[-1].strftime("%Y-%m-%d")
@@ -154,9 +146,9 @@ def run_swing_discovery(universe_tickers: List[str]) -> Tuple[List[dict], dict]:
                 "spread_pct": 0.5,
                 "data_status": "ACTIONABLE",
                 "trade_type": "SWING_1_3D",
-                "data_date": data_date,           # 🚨 NEW
-                "data_is_final": True,            # 🚨 NEW (always True after drop)
-                "market_session": "CLOSE",         # 🚨 NEW
+                "data_date": data_date,
+                "data_is_final": True,
+                "market_session": "CLOSE",
             })
 
         except Exception:
