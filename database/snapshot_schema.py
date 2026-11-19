@@ -1,18 +1,8 @@
 """
-DAYS-BOT V5.0.6.3 — Snapshot Schema
-
-V5.0.6.3 changes:
-  - research_run metadata columns on snapshots:
-      is_scheduled, in_pm_window, preflight_passed
-    These are populated from env vars set by the workflow, and used
-    by the evaluator to filter the primary sample to research_run=1
-    (scheduled AND in PM window AND preflight passed).
-
-V5.0.6.4 changes:
-  - Added pm_vwap_status to snapshots to distinguish real VWAP from TWAP fallback.
-
-F7 — cost model columns
-F1 — R from actual fill columns
+DAYS-BOT V5.0.10 — Snapshot Schema
+Adds: data_date, data_is_final, market_session, macro metadata
+Adds: outcomes evaluation_type, performance_bucket, ambiguous_bar, entry_date
+Adds: unique index on outcomes
 """
 import json
 import os
@@ -36,45 +26,21 @@ CREATE TABLE IF NOT EXISTS snapshots (
     gap_sign              TEXT,
     gap_bucket            TEXT,
     is_extreme_gap        INTEGER,
-    pm_high               REAL,
-    pm_low                REAL,
-    pm_vwap               REAL,
-    pm_volume             INTEGER,
-    pm_bars               INTEGER,
-    pm_bars_json          TEXT,
-    pm_source             TEXT,
-    pm_data_quality       TEXT,
-    pm_volume_status      TEXT,
-    pm_vwap_status        TEXT,  -- NEW V5.0.6.4
-    float                 REAL,
-    float_source          TEXT,
-    short_interest        REAL,
-    short_ratio           REAL,
-    spread_pct            REAL,
-    atr                   REAL,
-    rs_score              REAL,
-    regime                TEXT,
-    catalyst_type         TEXT,
-    catalyst_score        REAL,
-    catalyst_summary      TEXT,
-    composite_score       REAL,
-    swing_score           REAL,
-    early_score           REAL,
-    entry                 REAL,
-    stop                  REAL,
-    target_1              REAL,
-    target_2              REAL,
-    position_size         INTEGER,
-    risk_per_share        REAL,
-    max_loss              REAL,
-    hold_type             TEXT,
-    data_status           TEXT,
-    trade_type            TEXT,
+    pm_high               REAL, pm_low REAL, pm_vwap REAL, pm_volume INTEGER,
+    pm_bars               INTEGER, pm_bars_json TEXT, pm_source TEXT,
+    pm_data_quality       TEXT, pm_volume_status TEXT, pm_vwap_status TEXT,
+    float                 REAL, float_source TEXT,
+    short_interest        REAL, short_ratio REAL,
+    spread_pct            REAL, atr REAL, rs_score REAL, regime TEXT,
+    catalyst_type         TEXT, catalyst_score REAL, catalyst_summary TEXT,
+    composite_score       REAL, swing_score REAL, early_score REAL,
+    entry                 REAL, stop REAL, target_1 REAL, target_2 REAL,
+    position_size         INTEGER, risk_per_share REAL, max_loss REAL,
+    hold_type             TEXT, data_status TEXT, trade_type TEXT,
     strategy_version      TEXT    NOT NULL,
     filter_version        TEXT    NOT NULL,
     score_version         TEXT    NOT NULL,
     plan_version          TEXT    NOT NULL,
-    -- V5.0.6.3 — research_run metadata
     is_scheduled          INTEGER DEFAULT 0,
     in_pm_window          INTEGER DEFAULT 0,
     preflight_passed      INTEGER DEFAULT 0,
@@ -90,12 +56,8 @@ CREATE TABLE IF NOT EXISTS trigger_results (
     trigger_method        TEXT    NOT NULL,
     trigger_version       TEXT    NOT NULL,
     hit                   INTEGER,
-    trigger_time_utc      TEXT,
-    trigger_time_et       TEXT,
-    trigger_price         REAL,
-    elapsed_sec_from_t0   INTEGER,
-    window                TEXT,
-    trigger_data_mode     TEXT,
+    trigger_time_utc      TEXT, trigger_time_et TEXT, trigger_price REAL,
+    elapsed_sec_from_t0   INTEGER, window TEXT, trigger_data_mode TEXT,
     metadata_json         TEXT,
     created_at            DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (snapshot_id) REFERENCES snapshots(snapshot_id),
@@ -112,12 +74,8 @@ CREATE TABLE IF NOT EXISTS outcomes (
     trigger_version           TEXT,
     outcome_horizon           TEXT    NOT NULL,
     t0_price                  REAL,
-    mfe                       REAL,
-    mae                       REAL,
-    mfe_pct                   REAL,
-    mae_pct                   REAL,
-    time_to_mfe_sec           INTEGER,
-    time_to_mae_sec           INTEGER,
+    mfe                       REAL, mae REAL, mfe_pct REAL, mae_pct REAL,
+    time_to_mfe_sec           INTEGER, time_to_mae_sec INTEGER,
     absolute_move_before_trigger_pct  REAL,
     relative_move_before_trigger_pct  REAL,
     entry_slippage_pct                REAL,
@@ -126,15 +84,11 @@ CREATE TABLE IF NOT EXISTS outcomes (
     exit_price                REAL,
     exit_time_utc             TEXT,
     hold_minutes              INTEGER,
-    gross_r                   REAL,
-    gross_pct                 REAL,
-    cost_spread               REAL,
-    cost_slippage             REAL,
-    cost_commission           REAL,
-    cost_tax                  REAL,
+    gross_r                   REAL, gross_pct REAL,
+    cost_spread               REAL, cost_slippage REAL,
+    cost_commission           REAL, cost_tax REAL,
     cost_total                REAL,
-    net_r                     REAL,
-    net_pct                   REAL,
+    net_r                     REAL, net_pct REAL,
     outcome                   TEXT,
     net_r_status              TEXT,
     exit_rules_version        TEXT    NOT NULL,
@@ -142,8 +96,7 @@ CREATE TABLE IF NOT EXISTS outcomes (
     created_at                DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at                DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (snapshot_id) REFERENCES snapshots(snapshot_id),
-    FOREIGN KEY (trigger_result_id) REFERENCES trigger_results(trigger_result_id),
-    UNIQUE(snapshot_id, trigger_method, trigger_version, outcome_horizon)
+    FOREIGN KEY (trigger_result_id) REFERENCES trigger_results(trigger_result_id)
 );
 """
 
@@ -153,12 +106,9 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_snapshots_time ON snapshots(snapshot_time_utc);",
     "CREATE INDEX IF NOT EXISTS idx_snapshots_research_run ON snapshots(is_scheduled, in_pm_window, preflight_passed);",
     "CREATE INDEX IF NOT EXISTS idx_trigger_snapshot ON trigger_results(snapshot_id);",
-    "CREATE INDEX IF NOT EXISTS idx_trigger_method ON trigger_results(trigger_method, hit);",
-    "CREATE INDEX IF NOT EXISTS idx_trigger_data_mode ON trigger_results(trigger_data_mode);",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_snapshot ON outcomes(snapshot_id);",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_trigger ON outcomes(trigger_method, outcome_horizon);",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_outcome ON outcomes(outcome);",
-    "CREATE INDEX IF NOT EXISTS idx_outcomes_trigger_result_id ON outcomes(trigger_result_id);",
     "CREATE INDEX IF NOT EXISTS idx_outcomes_net_status ON outcomes(net_r_status);",
 ]
 
@@ -181,12 +131,24 @@ MIGRATIONS = [
     ("outcomes", "t1_used", "REAL"),
     ("outcomes", "t2_used", "REAL"),
     ("outcomes", "risk_actual", "REAL"),
-    # V5.0.6.3 — research_run metadata
+    # V5.0.6.3
     ("snapshots", "is_scheduled", "INTEGER DEFAULT 0"),
     ("snapshots", "in_pm_window", "INTEGER DEFAULT 0"),
     ("snapshots", "preflight_passed", "INTEGER DEFAULT 0"),
-    # V5.0.6.4 — VWAP / TWAP distinction
+    # V5.0.6.4
     ("snapshots", "pm_vwap_status", "TEXT"),
+    # V5.0.10 — Data integrity + macro
+    ("snapshots", "data_date", "TEXT"),
+    ("snapshots", "data_is_final", "INTEGER DEFAULT 0"),
+    ("snapshots", "market_session", "TEXT"),
+    ("snapshots", "macro_checked_at", "TEXT"),
+    ("snapshots", "macro_gate_passed", "INTEGER DEFAULT 0"),
+    ("snapshots", "spy_price_at_scan", "REAL"),
+    ("snapshots", "sma20_at_scan", "REAL"),
+    ("outcomes", "performance_bucket", "TEXT"),
+    ("outcomes", "evaluation_type", "TEXT DEFAULT 'LIVE'"),
+    ("outcomes", "ambiguous_bar", "INTEGER DEFAULT 0"),
+    ("outcomes", "entry_date", "TEXT"),
 ]
 
 
@@ -196,8 +158,6 @@ def _ensure_column(cur, table, col, col_type):
     if col not in existing:
         cur.execute("ALTER TABLE " + table + " ADD COLUMN " + col + " " + col_type)
         print("[schema] Added " + table + "." + col + " (" + col_type + ")")
-    else:
-        print("[schema] " + table + "." + col + " already present")
 
 
 def init_snapshot_schema():
@@ -210,6 +170,14 @@ def init_snapshot_schema():
         _ensure_column(cur, table, col, col_type)
     for idx in INDEXES:
         cur.execute(idx)
+    # V5.0.10: unique index for outcomes
+    try:
+        cur.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_outcomes_unique
+            ON outcomes(snapshot_id, outcome_horizon, exit_rules_version)
+        """)
+    except Exception as e:
+        print(f"[schema] WARN: could not create unique index: {e}")
     conn.commit()
     conn.close()
 
@@ -222,8 +190,6 @@ def save_snapshot(candidate, scan_id, now_et):
     composite = candidate.get("composite_score")
     swing = candidate.get("swing_score")
 
-    print("[save_snapshot] " + ticker + " | composite=" + str(composite) + " | swing=" + str(swing))
-
     pm_json = candidate.get("pm_bars_json")
     if pm_json is not None and not isinstance(pm_json, str):
         try:
@@ -235,14 +201,12 @@ def save_snapshot(candidate, scan_id, now_et):
     snapshot_time_utc = now_et.astimezone(tz=None).strftime("%Y-%m-%d %H:%M:%S")
     scan_date = now_et.strftime("%Y-%m-%d")
 
-    # V5.0.6.3 — research_run metadata from workflow env vars
     is_scheduled = int(os.environ.get("IS_SCHEDULED", "0"))
     in_pm_window = int(os.environ.get("IN_PM_WINDOW", "0"))
     preflight_passed = int(os.environ.get("PREFLIGHT_PASSED", "0"))
 
     params = {
-        "scan_id": scan_id,
-        "ticker": ticker,
+        "scan_id": scan_id, "ticker": ticker,
         "snapshot_time_utc": snapshot_time_utc,
         "snapshot_time_et": snapshot_time_et,
         "scan_date": scan_date,
@@ -252,16 +216,13 @@ def save_snapshot(candidate, scan_id, now_et):
         "gap_sign": candidate.get("gap_sign"),
         "gap_bucket": candidate.get("gap_bucket"),
         "is_extreme_gap": 1 if candidate.get("is_extreme_gap") else 0,
-        "pm_high": candidate.get("pm_high"),
-        "pm_low": candidate.get("pm_low"),
-        "pm_vwap": candidate.get("pm_vwap"),
-        "pm_volume": candidate.get("pm_volume"),
-        "pm_bars": candidate.get("pm_bars"),
-        "pm_bars_json": pm_json,
+        "pm_high": candidate.get("pm_high"), "pm_low": candidate.get("pm_low"),
+        "pm_vwap": candidate.get("pm_vwap"), "pm_volume": candidate.get("pm_volume"),
+        "pm_bars": candidate.get("pm_bars"), "pm_bars_json": pm_json,
         "pm_source": candidate.get("pm_source"),
         "pm_data_quality": candidate.get("pm_data_quality"),
         "pm_volume_status": candidate.get("pm_volume_status"),
-        "pm_vwap_status": candidate.get("pm_vwap_status"),  # NEW
+        "pm_vwap_status": candidate.get("pm_vwap_status"),
         "float": candidate.get("float"),
         "float_source": candidate.get("float_source"),
         "short_interest": candidate.get("short_interest"),
@@ -273,11 +234,9 @@ def save_snapshot(candidate, scan_id, now_et):
         "catalyst_type": candidate.get("catalyst_type"),
         "catalyst_score": candidate.get("catalyst_score"),
         "catalyst_summary": candidate.get("catalyst_summary"),
-        "composite_score": composite,
-        "swing_score": swing,
+        "composite_score": composite, "swing_score": swing,
         "early_score": candidate.get("early_score"),
-        "entry": candidate.get("entry"),
-        "stop": candidate.get("stop"),
+        "entry": candidate.get("entry"), "stop": candidate.get("stop"),
         "target_1": candidate.get("target_1"),
         "target_2": candidate.get("target_2"),
         "position_size": candidate.get("position_size"),
@@ -286,14 +245,19 @@ def save_snapshot(candidate, scan_id, now_et):
         "hold_type": candidate.get("hold_type"),
         "data_status": candidate.get("data_status"),
         "trade_type": candidate.get("trade_type"),
-        "strategy_version": candidate.get("strategy_version", "V5.0.6"),
-        "filter_version": "F1",
-        "score_version": "S1",
-        "plan_version": "P1",
-        # V5.0.6.3 — research_run metadata
+        "strategy_version": candidate.get("strategy_version", "V5.0.10"),
+        "filter_version": "F1", "score_version": "S1", "plan_version": "P1",
         "is_scheduled": is_scheduled,
         "in_pm_window": in_pm_window,
         "preflight_passed": preflight_passed,
+        # V5.0.10 NEW
+        "data_date": candidate.get("data_date"),
+        "data_is_final": 1 if candidate.get("data_is_final") else 0,
+        "market_session": candidate.get("market_session", "CLOSE"),
+        "macro_checked_at": candidate.get("macro_checked_at"),
+        "macro_gate_passed": 1 if candidate.get("macro_gate_passed") else 0,
+        "spy_price_at_scan": candidate.get("spy_price_at_scan"),
+        "sma20_at_scan": candidate.get("sma20_at_scan"),
     }
 
     conn = sqlite3.connect(DB_PATH)
@@ -313,7 +277,10 @@ def save_snapshot(candidate, scan_id, now_et):
                 position_size, risk_per_share, max_loss, hold_type,
                 data_status, trade_type,
                 strategy_version, filter_version, score_version, plan_version,
-                is_scheduled, in_pm_window, preflight_passed
+                is_scheduled, in_pm_window, preflight_passed,
+                data_date, data_is_final, market_session,
+                macro_checked_at, macro_gate_passed,
+                spy_price_at_scan, sma20_at_scan
             ) VALUES (
                 :scan_id, :ticker, :snapshot_time_utc, :snapshot_time_et, :scan_date,
                 :price, :prev_close, :gap_pct, :gap_sign, :gap_bucket, :is_extreme_gap,
@@ -327,24 +294,18 @@ def save_snapshot(candidate, scan_id, now_et):
                 :position_size, :risk_per_share, :max_loss, :hold_type,
                 :data_status, :trade_type,
                 :strategy_version, :filter_version, :score_version, :plan_version,
-                :is_scheduled, :in_pm_window, :preflight_passed
+                :is_scheduled, :in_pm_window, :preflight_passed,
+                :data_date, :data_is_final, :market_session,
+                :macro_checked_at, :macro_gate_passed,
+                :spy_price_at_scan, :sma20_at_scan
             )
         """, params)
         conn.commit()
-        snap_id = cur.lastrowid
-        print(
-            "[save_snapshot] OK " + ticker +
-            " | snapshot_id=" + str(snap_id) +
-            " | scheduled=" + str(is_scheduled) +
-            " in_pm=" + str(in_pm_window) +
-            " pf=" + str(preflight_passed)
-        )
-        return snap_id
+        return cur.lastrowid
     except sqlite3.IntegrityError:
-        print("[save_snapshot] Duplicate: " + ticker)
         return None
     except Exception as e:
-        print("[save_snapshot] ERROR " + ticker + ": " + type(e).__name__ + ": " + str(e))
+        print(f"[save_snapshot] ERROR {ticker}: {e}")
         return None
     finally:
         conn.close()
