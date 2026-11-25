@@ -1,9 +1,12 @@
-name: DAYS-BOT V5.0.9 Swing Pipeline
+name: DAYS-BOT V5.0.10 Swing Pipeline
 
 on:
   schedule:
+    # Macro (בוקר) - 09:37 ET (14:37 UTC בחורף)
     - cron: '37 14 * * 1-5' 
+    # Scan (אחרי סגירה) - 16:37 ET (21:37 UTC בחורף)
     - cron: '37 21 * * 1-5'
+    # Evaluate - 17:33 ET (22:33 UTC בחורף)
     - cron: '33 22 * * 1-5'
   workflow_dispatch:
     inputs:
@@ -18,7 +21,7 @@ on:
           - both
           - backtest
           - macro
-          - cleanup   # <--- נוסף כאן
+          - migration   # <--- נוסף כאן
 
 permissions:
   actions: read
@@ -190,11 +193,11 @@ jobs:
           retention-days: 30
 
   # =========================================================================
-  # JOB 4: CLEANUP (ניקוי כפילויות)
+  # JOB 3: MIGRATION (ניקוי DB - הרצה חד פעמית)
   # =========================================================================
-  cleanup:
+  migration:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'cleanup'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'migration'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -220,8 +223,8 @@ jobs:
             });
             require('fs').writeFileSync('db.zip', Buffer.from(dl.data));
             require('child_process').execSync('unzip -o db.zip -d data/');
-      - name: Run Cleanup
-        run: python3 scripts/clean_duplicates.py
+      - name: Run Migration
+        run: python3 scripts/migrate_v5010.py
       - name: Upload DB for next run
         uses: actions/upload-artifact@v4
         with:
@@ -231,7 +234,7 @@ jobs:
           retention-days: 90
 
   # =========================================================================
-  # JOB 3: BACKTEST
+  # JOB 4: BACKTEST
   # =========================================================================
   backtest:
     runs-on: ubuntu-latest
